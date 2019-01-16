@@ -15,10 +15,12 @@ import gzip
 from tqdm import tqdm
 from shutil import copytree, rmtree, copyfile
 from openpyxl import load_workbook
+from pypinyin import lazy_pinyin
 
 
 __dir__ = os.path.dirname(os.path.abspath(__file__))
 __script__ = os.path.join(__dir__, "run_seurat.R")
+__script2__ = os.path.join(__dir__, "run_seurat2.R")
 __static__ = os.path.join(__dir__, "static")
 
 
@@ -43,10 +45,11 @@ class RunSeurat:
         if not os.path.exists(self.output):
             os.makedirs(self.output)
 
+        self.xlsx = args.xlsx
         self.processes = args.processes
 
     @staticmethod
-    def run_seurat_single(args):
+    def run_seurat_clustering_single(args):
         u"""
         run seurat
         :param args: {"input": , "output":}
@@ -67,7 +70,7 @@ class RunSeurat:
             except sp.CalledProcessError:
                 print(" ".join(cmds))
 
-    def run_seurat(self):
+    def run_seurat_clustering(self):
         u"""
         Run seurat in batch
         :return:
@@ -81,7 +84,96 @@ class RunSeurat:
             })
 
         with mp.Pool(processes=self.processes) as pool:
-            list(tqdm(pool.imap_unordered(self.run_seurat_single, args), total=len(args)))
+            list(tqdm(pool.imap_unordered(self.run_seurat_clustering_single, args), total=len(args)))
+
+    @staticmethod
+    def run_seurat_comparison_single(args):
+        cmds = [
+            "Rscript",
+            __script2__,
+            "-c {cancer} -n {normal} -o {output} -l {label}".format(**args)
+        ]
+
+        with open(os.devnull, "w") as w:
+            try:
+                sp.check_call(" ".join(cmds), shell=True, stdout=w, stderr=w)
+            except sp.CalledProcessError:
+                print(" ".join(cmds))
+
+    def run_seurat_comparison(self):
+        u"""
+        Run seurat comparison
+        :return:
+        """
+        wb = load_workbook(self.xlsx)
+        ws = wb[wb.sheetnames[0]]
+
+        data = {}
+
+        header = {
+            "Name": None,
+            "tissue_type": None,
+            "status": None,
+            "patient": None
+        }
+        for row_idx, row in enumerate(ws.rows):
+            if row_idx == 0:
+                for col_idx, col in enumerate(row):
+                    if col.value in header.keys():
+                        header[col.value] = col_idx
+            elif not row[0].value:
+                continue
+            else:
+                if row[header["status"]].value == 0:
+                    continue
+
+                if row[header["patient"]].value not in data.keys():
+                    tmp = {}
+                else:
+                    tmp = data[row[header["patient"]].value]
+
+                tmp[row[header["tissue_type"]].value.strip()] = row[header["Name"]].value
+
+                data[str(row[header["patient"]].value.strip())] = tmp
+
+        inputs = {}
+        for i in os.listdir(self.input):
+            inputs[i] = os.path.abspath(os.path.join(self.input, i))
+
+        args = []
+        for key, value in data.items():
+            if len(value) < 2:
+                continue
+
+            key = "_".join(lazy_pinyin(key))
+
+            out_dir = os.path.join(self.output, key)
+
+            try:
+                normal = value["normal"]
+
+                for k, v in value.items():
+                    if k == "normal":
+                        continue
+
+                    k = k.replace(" ", "_")
+
+                    real_out_dir = os.path.join(out_dir, k)
+                    if not os.path.exists(real_out_dir):
+                        os.makedirs(real_out_dir)
+
+                    args.append({
+                        "normal": inputs[normal],
+                        "cancer": inputs[v],
+                        "label": k,
+                        "output": real_out_dir
+                    })
+
+            except KeyError:
+                continue
+
+        with mp.Pool(processes=self.processes) as pool:
+            list(tqdm(pool.imap_unordered(self.run_seurat_comparison_single, args), total=len(args)))
 
 
 class Report:
@@ -102,7 +194,11 @@ class Report:
             os.makedirs(self.output)
         self.xlsx = args.xlsx
 
-    def generate_report(self):
+    def generate_report(
+            self,
+            plots,
+            columns
+    ):
         u"""
         Generate report
         :return:
@@ -115,7 +211,7 @@ class Report:
 
         copytree(__static__, target)
 
-        home = self.__generate_home_page__()
+        home = self.__generate_home_page__(columns)
 
         with open(os.path.join(self.output, "index.html"), "w+") as w:
             w.write(home)
@@ -145,11 +241,11 @@ class Report:
                     )
 
             with open(os.path.join(out_html, i + ".html"), "w+") as w:
-                w.write(self.__generate_single_page__(i))
+                w.write(self.__generate_single_page__(i, plots))
 
-    def __generate_home_page__(self):
+    def __generate_home_page__(self, columns):
         u"""
-
+        :param columns: list of ints, to which columns are kept of xlsx
         :return:
         """
         head = []
@@ -222,11 +318,12 @@ class Report:
         wb = load_workbook(self.xlsx)
         ws = wb[wb.sheetnames[0]]
 
-        columns = [1,2,3,4,8,9,10,11,12,13]
-
         data = {"thead": "", "tbody": "", "head": head}
 
         for row in range(1, ws.max_row + 1):
+
+            if not ws[row][0].value:
+                continue
 
             tmp = "<tr>\n%s</tr>\n"
             tbody_row = []
@@ -249,9 +346,9 @@ class Report:
         return html % (data)
 
     @staticmethod
-    def __generate_single_page__(indir):
+    def __generate_single_page__(indir, plots):
         u"""
-
+        :param plots: {fig name: fig alias}
         :return:
         """
         head = []
@@ -266,18 +363,6 @@ class Report:
                 )
 
         head = "\n".join(head)
-
-        plots = [
-            "VlnPlot",
-            "GenePlot",
-            "Variable",
-            "VizPCA",
-            "PCAPlot",
-            "JackStrawPlot",
-            "PCElbowPlot",
-            "PCHeatmap",
-            "tSNE"
-        ]
 
         label = os.path.basename(indir)
 
@@ -321,7 +406,7 @@ class Report:
             </html>
         """
         content = []
-        for i in plots:
+        for i in plots.keys():
             content.append(
                 """
                 <div class="bs-docs-section">
@@ -337,8 +422,8 @@ class Report:
                     </div>
                 </div>
                 """ % ({
-                    "img": '<img width="90%" height="800" src="../img/{0}/{1}.png" />'.format(label, i),
-                    "label": i
+                    "img": '<img width="90%" height="800" src="../img/{0}/{1}" />'.format(label, i),
+                    "label": plots[i]
                 })
             )
 
@@ -422,17 +507,29 @@ if __name__ == '__main__':
         type=int,
     )
     parser.add_argument(
+        "-x",
+        "--xlsx",
+        help="Path to meta info xlsx",
+        required=True,
+        type=str
+    )
+    parser.add_argument(
         "--decompress",
         action="store_true",
         default=False,
         help="Compress files"
     )
     parser.add_argument(
-        "-x",
-        "--xlsx",
-        default=None,
-        help="Path to meta info xlsx",
-        type=str
+        "--clustering",
+        action="store_true",
+        default=False,
+        help="Do clustering rather than comparision"
+    )
+    parser.add_argument(
+        "--html",
+        action="store_true",
+        default=False,
+        help="Collect results into output html"
     )
 
     if len(sys.argv) <= 1:
@@ -440,8 +537,37 @@ if __name__ == '__main__':
     else:
         args = parser.parse_args(sys.argv[1:])
 
-        if args.xlsx:
-            Report(args).generate_report()
+        default_columns = [1, 2, 3, 4, 9, 10, 11, 12, 13, 14]
+
+        if args.clustering:
+            default_plots = {
+                "VlnPlot.png": "Vln Plot",
+                "GenePlot.png": "Gene Plot",
+                "Variable.png": "Variable Genes",
+                "VizPCA.png": "Viz PCA",
+                "PCAPlot.png": "PCA Plot",
+                "PCHeatmap.png": "PCA Heatmap",
+                "JackStrawPlot.png": "Jack Straw Plot",
+                "PCElbowPlot.png": "PCElBowPlot",
+                "tSNE.png": "tSNE"
+            }
+        else:
+            default_plots = {
+                "CCA.png": "CCA",
+                "MetageneBiorPlot.png": "Meta gene Bior Plot",
+                "DimHeatmap.png": "Dim Heatmap",
+                "AlignedCCAVlnPlot.png": "Aligned CCA Vln Plot",
+                "tSNE.png": "tSNE",
+                "feature.png": "feature",
+                "tSNE_with_cell_name.png": "tSNE with cell name",
+                "SpliceDotPlotGG.png": "Splice Dot Plot GG"
+            }
+
+        if args.html:
+            Report(args).generate_report(
+                columns= default_columns,
+                plots=default_plots
+            )
         elif args.decompress:
             decompress(
                 args.input,
@@ -449,6 +575,11 @@ if __name__ == '__main__':
                 args.processes
             )
         else:
-            RunSeurat(args).run_seurat()
+            tmp = RunSeurat(args)
+
+            if args.clustering:
+                tmp.run_seurat_clustering()
+            else:
+                tmp.run_seurat_comparison()
 
 
