@@ -34,8 +34,6 @@ def main(args):
     rmsk = os.path.abspath(args.rmsk)
     indir = os.path.abspath(args.input)
 
-
-
     cmds = [
         "velocyto",
         "run10x",
@@ -46,7 +44,16 @@ def main(args):
         gene_gtf
     ]
 
-    files = [os.path.join(indir, i) for i in os.listdir(indir) if not i.endswith("sh")]
+    files = []
+    for i in os.listdir(indir):
+        sample = os.path.join(indir, i)
+
+        if os.path.isfile(sample):
+            continue
+
+        if not os.path.exists(os.path.join(sample, "velocyto")):
+            print(os.path.join(sample, "velocyto"))
+            files.append(sample)
 
     with ProgressBar(max_value=len(files), redirect_stdout=True) as bar:
         for idx, f in enumerate(files):
@@ -66,7 +73,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "-g",
-        "-gtf",
+        "--gtf",
         help="Path to cellranger prepared genes.gtf",
         type=str,
         required=True
@@ -78,7 +85,7 @@ if __name__ == '__main__':
         required=True
     )
 
-    if len(sys) <= 1:
+    if len(sys.argv) <= 1:
         parser.print_help()
     else:
         args = parser.parse_args(sys.argv[1:])
