@@ -26,7 +26,7 @@ load_pacages <- function() {
 load_pacages()
 
 basicConfig()
-addHandler(writeToConsole)
+# addHandler(writeToConsole)
 
 ### set command line arguments
 
@@ -209,25 +209,87 @@ ggsave(filename = "tSNE.png", plot = p)
 
 #### conserved marker
 
-nk.markers <- FindConservedMarkers(
-    immune.combined, 
-    ident.1 = 7, 
-    grouping.var = "stim", 
-    loginfo.bar = FALSE
+
+# customize_Seurat_FeaturePlot <- function(p, alpha.use = 1, gradient.use = c("yellow", "red"), expression.threshold = 0, is.log1p.transformed = F) {
+#     
+#     #### Main function ####
+#     main_function <- function(p = p, alpha.use = alpha.use, gradient.use = gradient.use, expression.threshold = expression.threshold, is.log1p.transformed = is.log1p.transformed) {
+#         
+#         # Order data by gene expresion level
+#         p$data <- p$data[order(p$data$gene),]
+#         
+#         # Define lower limit of gene expression level
+#         if (isTRUE(is.log1p.transformed)) {
+#             expression.threshold <- expression.threshold
+#         } else {
+#             expression.threshold <- log1p(expression.threshold)
+#         }
+#         
+#         # Compute maximum value in gene expression
+#         max.exp <- max(p$data$gene)
+#         
+#         # Fill points using the gene expression levels
+#         p$layers[[1]]$mapping$fill <- p$layers[[1]]$mapping$colour
+#         
+#         # Define transparency of points
+#         p$layers[[1]]$mapping$alpha <- alpha.use
+#         
+#         # Change fill and colour gradient values
+#         p <- p + scale_colour_gradientn(colours = gradient.use, guide = F, limits = c(expression.threshold, max.exp), na.value = "grey") +
+#             scale_fill_gradientn(colours = gradient.use, name = expression(atop(Expression, (log))), limits = c(expression.threshold, max.exp), na.value = "grey") +
+#             scale_alpha_continuous(range = alpha.use, guide = F)
+#     }
+#     
+#     #### Execution of main function ####
+#     # Apply main function on all features
+#     p <- lapply(X = p, alpha.use = alpha.use, gradient.use = gradient.use, 
+#                 expression.threshold = expression.threshold, is.log1p.transformed = is.log1p.transformed,
+#                 FUN = main_function)
+#     
+#     # Arrange all plots using cowplot
+#     # Adapted from Seurat
+#     # https://github.com/satijalab/seurat/blob/master/R/plotting.R#L1100
+#     # ncol argument adapted from Josh O'Brien
+#     # https://stackoverflow.com/questions/10706753/how-do-i-arrange-a-variable-list-of-plots-using-grid-arrange
+#     # cowplot::plot_grid(plotlist = p, ncol = ceiling(sqrt(length(p))))
+#     marrangeGrob(p, nrow=3, ncol=3)
+# }
+
+
+nk.markers <- FindAllMarkers(
+    immune.combined,
+    genes.use = genes.use
 )
+
+# nk.markers <- FindConservedMarkers(
+#     immune.combined, 
+#     ident.1 = 7, 
+#     grouping.var = "stim", 
+#     loginfo.bar = FALSE
+# )
+
+get_makers <- function(markers, num=5) {
+    res = c()
+    for (i in unique(markers$cluster)) {
+        tmp = markers[markers$cluster == i, ]
+        tmp = markers[order(markers$p_val_adj), ]
+        res = c(res, tmp$gene[1:num])
+    }
+    
+    return(res)
+}
+
+markers = get_makers(nk.markers, 3)
 
 ####
 #### 这里需要不同的基因list来确定具体细胞群的类别
 #### 此处先采用血细胞的buf
 ####
 
+
 p <- FeaturePlot(
     object = immune.combined, 
-    features.plot = c(
-        "CD3D", "SELL", "CREM", 
-         "CD8A", "GNLY", "CD79A", 
-        "FCGR3A", "CCL2", "PPBP"
-    ), 
+    features.plot = markers, 
     min.cutoff = "q9", 
     cols.use = c("lightgrey", "blue"), 
     pt.size = 0.5
@@ -303,7 +365,7 @@ ggsave(filename = "tSNE_with_cell_name.png", plot = p)
 
 sdp <- SplitDotPlotGG(
     immune.combined,
-    genes.plot = genes.use[1:10],
+    genes.plot = unique(markers),
     cols.use = c("blue", "red"),
     x.lab.rot = T,
     plot.legend = T,

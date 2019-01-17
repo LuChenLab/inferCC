@@ -35,12 +35,12 @@ class RunSeurat:
         :param args: argparse namespace
         """
 
-        self.input = args.input
+        self.input = os.path.abspath(args.input)
 
         if not os.path.exists(self.input):
             raise ValueError("%s not exists" % self.input)
 
-        self.output = args.output
+        self.output = os.path.abspath(args.output)
 
         if not os.path.exists(self.output):
             os.makedirs(self.output)
@@ -194,7 +194,7 @@ class Report:
             os.makedirs(self.output)
         self.xlsx = args.xlsx
 
-    def generate_report(
+    def generate_report_clustering(
             self,
             plots,
             columns
@@ -211,7 +211,9 @@ class Report:
 
         copytree(__static__, target)
 
-        home = self.__generate_home_page__(columns)
+        table = self.__generate_table_clustering__(columns)
+
+        home = self.__generate_home_page__(table)
 
         with open(os.path.join(self.output, "index.html"), "w+") as w:
             w.write(home)
@@ -243,82 +245,77 @@ class Report:
             with open(os.path.join(out_html, i + ".html"), "w+") as w:
                 w.write(self.__generate_single_page__(i, plots))
 
-    def __generate_home_page__(self, columns):
+    def generate_report_comparison(
+            self,
+            plots,
+            columns,
+    ):
         u"""
-        :param columns: list of ints, to which columns are kept of xlsx
+        Generate report
         :return:
         """
-        head = []
-        for i in sorted([x for x in os.listdir(__static__) if os.path.isfile(os.path.join(__static__, x))]):
-            if i.endswith("js"):
-                head.append(
-                    '<script type="text/javascript" src="./static/%s"></script>' % i
-                )
-            else:
-                head.append(
-                    '<link rel="stylesheet" href="./static/%s">' % i
-                )
-        head = "\n".join(head)
 
-        html = """
-        <html>
-            <head>
-                <meta charset="utf-8">
-                <title>Seurat report</title>
-                %(head)s
-            </head>
-    
-            <body>
-                <div class="navbar navbar-expand-lg fixed-top navbar-dark bg-primary">
-                    <div class="container">
-                        <a href="." class=".">Home</a> 
-                    </div>
-                </div>
-                <div class="container">
-                    <hr>
-                    <div class="bs-docs-section">
-                        <div class="page-header">
-                            <div class="row">
-                                <div class="col-lg-12">
-                                    <h3>统计信息</h3>
-                                </div>
-                            </div>
-                        </div>
-                    
-                        <div class="row">
-                            <div class="col-lg-12">
-                                <div class="page-header">
-                                    <h4 id="tables">测序质量</h4>
-                                </div>
-                                <div class="bs-component">
-                                    <table id="table" class="table table-hover">
-                                    <thead>
-                                        <tr>
-                                        %(thead)s
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        %(tbody)s
-                                    </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <script type="text/javascript">
-                    $(document).ready(function() {
-                        $("#table").DataTable();
-                    } );
-                </script>
-            </body>
-        </html>
+        target = os.path.join(self.output, "static")
+
+        if os.path.exists(target):
+            rmtree(target)
+
+        copytree(__static__, target)
+
+        table = self.__generate_table_comparision__(columns)
+
+        home = self.__generate_home_page__(table)
+
+        with open(os.path.join(self.output, "index.html"), "w+") as w:
+            w.write(home)
+
+        out_html = os.path.join(self.output, "html")
+        if not os.path.exists(out_html):
+            os.makedirs(out_html)
+
+        out_img = os.path.join(self.output, "img")
+        if not os.path.exists(out_img):
+            os.makedirs(out_img)
+
+        files = glob(os.path.join(self.input, "*/*/*.png"))
+        files_info = {}   # html_name: {order, image path, image alias}
+        for f in files:
+            patient = os.path.basename(os.path.dirname(os.path.dirname(f)))
+            type_ = os.path.basename(os.path.dirname(f))
+
+            key = "%s_%s" % (patient, type_)
+
+            tmp = files_info.get(key, [])
+            tmp.append({
+                "name": os.path.basename(f),
+                "source": f
+            })
+            files_info[key] = tmp
+
+        for key, value in files_info.items():
+            out_img_dir = os.path.join(out_img, key)
+
+            if not os.path.exists(out_img_dir):
+                os.makedirs(out_img_dir)
+
+            for v in value:
+                copyfile(
+                    v["source"],
+                    os.path.join(out_img_dir, v["name"])
+                )
+
+            with open(os.path.join(out_html, key + ".html"), "w+") as w:
+                w.write(self.__generate_single_page__(indir=out_img_dir, plots=plots))
+
+    def __generate_table_clustering__(self, columns):
+        u"""
+        Generate clustering home page table
+        :return:
         """
-
         wb = load_workbook(self.xlsx)
         ws = wb[wb.sheetnames[0]]
 
-        data = {"thead": "", "tbody": "", "head": head}
+        data = {"thead": "", "tbody": ""}
 
         for row in range(1, ws.max_row + 1):
 
@@ -343,7 +340,203 @@ class Report:
                         )
             if tbody_row:
                 data["tbody"] += tmp % "\n".join(tbody_row)
-        return html % (data)
+
+        return data
+
+    def __generate_table_comparision__(self, columns):
+        u"""
+
+        :param table:
+        :return:
+        """
+
+        wb = load_workbook(self.xlsx)
+        ws = wb[wb.sheetnames[0]]
+
+        meta_info = {}
+
+        data = {"thead": "", "tbody": ""}
+
+        header = {
+            "Name": None,
+            "tissue_type": None,
+            "status": None,
+            "patient": None
+        }
+
+        tmp_data = {}
+
+        for row_idx, row in enumerate(ws.rows):
+            if row_idx == 0:
+                for col_idx, col in enumerate(row):
+                    if col.value in header.keys():
+                        header[col.value] = col_idx
+
+                for i in columns:
+                    data["thead"] += "<th>%s</th>" % row[i].value
+
+            elif not row[0].value:
+                continue
+            else:
+                if row[header["status"]].value == 0:
+                    continue
+
+                if row[header["patient"]].value not in meta_info.keys():
+                    tmp = {}
+                else:
+                    tmp = meta_info[row[header["patient"]].value]
+
+                tmp[row[header["tissue_type"]].value.strip()] = row[header["Name"]].value
+
+                meta_info[str(row[header["patient"]].value.strip())] = tmp
+
+                tmp_data[row[0].value] = []
+                for i in columns:
+                    tmp_data[row[0].value].append(row[i].value)
+
+        for key, value in meta_info.items():
+            if len(value) <= 1:
+                continue
+
+            try:
+                normal = value["normal"]
+
+                normal_row = []
+
+                for i, j in enumerate(tmp_data[normal]):
+                    if i == 0:
+                        normal_row.append('<td rowspan="2">{link}</td>')
+                    else:
+                        normal_row.append('<td>%s</td>' % j)
+
+                normal_row = "\n".join(normal_row)
+
+                for k, v in value.items():
+
+                    if k == "normal":
+                        continue
+
+                    link = '<a href="./html/{0}_{1}.html">{2}</a>'.format(
+                        "_".join(lazy_pinyin(key)),
+                        k.replace(" ", "_"),
+                        key
+                    )
+
+                    cancer_row = []
+                    for i in tmp_data[v][1:]:
+                        cancer_row.append('<td>%s</td>' % i)
+
+                    data["tbody"] += "<tr>%s</tr><tr>%s</tr>" % (
+                        normal_row.format(**{"link": link}),
+                        "\n".join(cancer_row)
+                    )
+
+            except KeyError:
+                continue
+
+        return data
+
+    @staticmethod
+    def __generate_home_page__(table):
+        u"""
+        :param columns: list of ints, to which columns are kept of xlsx
+        :param table: {thead: "", tbody: "" }
+        :return:
+        """
+        head = []
+        jss = [
+            "jquery-3.3.1.js",
+            "jquery.dataTables.min.js",
+            "dataTables.buttons.min.js",
+            "buttons.bootstrap4.min.js",
+            "jszip.min.js",
+            "buttons.print.min.js",
+            "buttons.html5.min.js"
+        ]
+
+        for i in sorted([x for x in os.listdir(__static__) if os.path.isfile(os.path.join(__static__, x))]):
+            if i.startswith("."):
+                continue
+            elif i.endswith("css"):
+                head.append(
+                    '<link rel="stylesheet" href="./static/%s">' % i
+                )
+
+        for js in jss:
+            head.append(
+                '<script type="text/javascript" src="./static/%s"></script>' % js
+            )
+
+        head = "\n".join(head)
+
+        table["head"] = head
+
+        html = """
+        <html>
+            <head>
+                <meta charset="utf-8">
+                <title>Seurat report</title>
+                %(head)s
+            </head>
+    
+            <body>
+                <div class="navbar navbar-expand-lg fixed-top navbar-dark bg-primary">
+                    <div class="container">
+                        <a href="./index.html" class="navbar-brand">Home</a> 
+                    </div>
+                </div>
+                <div class="container">
+                    <div class="bs-docs-section">
+                        <div class="page-header">
+                            <div class="row">
+                                <div class="col-lg-12">
+                                    <h3>统计信息</h3>
+                                </div>
+                            </div>
+                        </div>
+                    
+                        <div class="row">
+                            <div class="col-lg-12">
+                                <div class="page-header">
+                                    <h4 id="tables">测序质量</h4>
+                                </div>
+                                <div class="bs-component">
+                                    <table id="table" class="table table-hover table-striped">
+                                    <thead>
+                                        <tr>
+                                        %(thead)s
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        %(tbody)s
+                                    </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <script type="text/javascript">
+                    $(document).ready(function() {
+                        $("#table").DataTable({dom: "lBfrtip"});
+                    } );
+                </script>
+                
+                <div class="container">
+                    <footer id="footer">
+                        <div class="row">
+                            <div class="col-lg-12">
+                                <p>© 2019 Sichuan University (四川大学)</p>
+                                <p>The Chenlinlab - State Key Laboratory of Biotherapy (生物治疗国家重点实验室)</p>
+                            </div>
+                        </div>
+                    </footer>
+                </div>
+            </body>
+        </html>
+        """
+
+        return html % table
 
     @staticmethod
     def __generate_single_page__(indir, plots):
@@ -377,10 +570,9 @@ class Report:
                 <body>
                     <div class="navbar navbar-expand-lg fixed-top navbar-dark bg-primary">
                       <div class="container">
-                         <a href="../index.html" class=".">Home</a> 
+                         <a href="../index.html" class="navbar-brand">Home</a> 
                       </div>
                     </div>
-                    <hr>
                     <div class="container">
                         <div class="page-header">
                             <div class="row">
@@ -392,15 +584,22 @@ class Report:
                         <div class="bs-docs-section">
                             <div class="row">
                                 <div class="col-lg-12">
-                                    <div class="page-header">
-                                        <h4>%(label)s</h4>
-                                    </div>
                                     <div class="bs-component">
                                         %(content)s
                                     </div>
                                 </div>
                             </div>
                         </div>
+                    </div>
+                    <div class="container">
+                        <footer id="footer">
+                            <div class="row">
+                                <div class="col-lg-12">
+                                    <p>© 2019 Sichuan University (四川大学)</p>
+                                    <p>The Chenlinlab - State Key Laboratory of Biotherapy (生物治疗国家重点实验室)</p>
+                                </div>
+                            </div>
+                        </footer>
                     </div>
                 </body>
             </html>
@@ -426,8 +625,6 @@ class Report:
                     "label": plots[i]
                 })
             )
-
-            content.append("<hr />")
 
         return html % ({
             "head": head,
@@ -537,37 +734,41 @@ if __name__ == '__main__':
     else:
         args = parser.parse_args(sys.argv[1:])
 
-        default_columns = [1, 2, 3, 4, 9, 10, 11, 12, 13, 14]
-
-        if args.clustering:
-            default_plots = {
-                "VlnPlot.png": "Vln Plot",
-                "GenePlot.png": "Gene Plot",
-                "Variable.png": "Variable Genes",
-                "VizPCA.png": "Viz PCA",
-                "PCAPlot.png": "PCA Plot",
-                "PCHeatmap.png": "PCA Heatmap",
-                "JackStrawPlot.png": "Jack Straw Plot",
-                "PCElbowPlot.png": "PCElBowPlot",
-                "tSNE.png": "tSNE"
-            }
-        else:
-            default_plots = {
-                "CCA.png": "CCA",
-                "MetageneBiorPlot.png": "Meta gene Bior Plot",
-                "DimHeatmap.png": "Dim Heatmap",
-                "AlignedCCAVlnPlot.png": "Aligned CCA Vln Plot",
-                "tSNE.png": "tSNE",
-                "feature.png": "feature",
-                "tSNE_with_cell_name.png": "tSNE with cell name",
-                "SpliceDotPlotGG.png": "Splice Dot Plot GG"
-            }
-
         if args.html:
-            Report(args).generate_report(
-                columns= default_columns,
-                plots=default_plots
-            )
+            tmp = Report(args)
+
+            if args.clustering:
+                default_columns = [1, 2, 3, 4, 10, 11, 12, 13, 14, 15]
+
+                default_plots = {
+                    "VlnPlot.png": "Vln Plot",
+                    "GenePlot.png": "Gene Plot",
+                    "Variable.png": "Variable Genes",
+                    "VizPCA.png": "Viz PCA",
+                    "PCAPlot.png": "PCA Plot",
+                    "PCHeatmap.png": "PCA Heatmap",
+                    "JackStrawPlot.png": "Jack Straw Plot",
+                    "PCElbowPlot.png": "PCElBowPlot",
+                    "tSNE.png": "tSNE"
+                }
+
+                tmp.generate_report_clustering(plots=default_plots, columns=default_columns)
+            else:
+                default_columns = [4, 1, 2, 3, 10, 11, 12, 13, 14, 15]
+
+                default_plots = {
+                    "CCA.png": "CCA",
+                    "MetageneBiorPlot.png": "Meta gene Bior Plot",
+                    "DimHeatmap.png": "Dim Heatmap",
+                    "AlignedCCAVlnPlot.png": "Aligned CCA Vln Plot",
+                    "tSNE.png": "tSNE",
+                    "feature.png": "feature",
+                    "tSNE_with_cell_name.png": "tSNE with cell name",
+                    "SpliceDotPlotGG.png": "Splice Dot Plot GG"
+                }
+
+                tmp.generate_report_comparison(plots=default_plots, columns=default_columns)
+
         elif args.decompress:
             decompress(
                 args.input,
