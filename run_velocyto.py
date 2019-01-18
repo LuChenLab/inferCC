@@ -21,7 +21,7 @@ def call(cmd):
     try:
         sp.check_call(" ".join(cmd), shell=True)
     except sp.CalledProcessError:
-        call(cmd)
+        print(" ".join(cmd))
 
 
 def main(args):
@@ -50,10 +50,7 @@ def main(args):
 
         if os.path.isfile(sample):
             continue
-
-        if not os.path.exists(os.path.join(sample, "velocyto")):
-            print(os.path.join(sample, "velocyto"))
-            files.append(sample)
+        files.append(sample)
 
     with ProgressBar(max_value=len(files), redirect_stdout=True) as bar:
         for idx, f in enumerate(files):

@@ -21,6 +21,12 @@ load_pacages <- function() {
         
         library("logging")
     }
+    
+    if(!require("dplyr")) {
+        install.packages("dplyr")
+        
+        library("dplyr")
+    }
 }
 
 load_pacages()
@@ -207,6 +213,8 @@ p <- plot_grid(p1, p2)
 
 ggsave(filename = "tSNE.png", plot = p)
 
+
+
 #### conserved marker
 
 
@@ -258,114 +266,44 @@ ggsave(filename = "tSNE.png", plot = p)
 
 nk.markers <- FindAllMarkers(
     immune.combined,
-    genes.use = genes.use
+    only.pos = TRUE, 
+    min.pct = 0.25, 
+    thresh.use = 0.25
 )
 
-# nk.markers <- FindConservedMarkers(
-#     immune.combined, 
-#     ident.1 = 7, 
-#     grouping.var = "stim", 
-#     loginfo.bar = FALSE
-# )
+nk.markers <- nk.markers[nk.markers$p_val_adj<0.05,]
+nk.markers %>% group_by(cluster) %>% top_n(10) -> top10
+nk.markers %>% group_by(cluster) %>% top_n(2) -> top2
 
-get_makers <- function(markers, num=5) {
-    res = c()
-    for (i in unique(markers$cluster)) {
-        tmp = markers[markers$cluster == i, ]
-        tmp = markers[order(markers$p_val_adj), ]
-        res = c(res, tmp$gene[1:num])
-    }
-    
-    return(res)
-}
+save(file = "immune_combined.rdata")
 
-markers = get_makers(nk.markers, 3)
 
 ####
 #### 这里需要不同的基因list来确定具体细胞群的类别
 #### 此处先采用血细胞的buf
 ####
 
-
-p <- FeaturePlot(
+png("feature.png", res = 300, width = 3200, height = 3200)
+FeaturePlot(
     object = immune.combined, 
-    features.plot = markers, 
+    features.plot = top10$gene, 
     min.cutoff = "q9", 
     cols.use = c("lightgrey", "blue"), 
     pt.size = 0.5
 )
+dev.off()
 
-ggsave(filename = "feature.png", plot = p)
 
 
 #### Draw tSNE based on clustering
-
-# new.ident <- c(
-#     "CD14 Mono",
-#     "CD4 Naive T",
-#     "CD4 Memory T",
-#     "B",
-#     "CD16 Mono",
-#     "T activated",
-#     "CD8 T",
-#     "NK",
-#     "DC",
-#     "B activated",
-#     "Mk",
-#     "pDC",
-#     "Eryth"
-# )
-
-## assign cell type to cluster
-# for (i in 0:11) {
-#     immune.combined <- RenameIdent(
-#         object = immune.combined,
-#         old.ident.name = i,
-#         new.ident.name = i # new.ident[i + 1]
-#     )
-# }
 
 p <- TSNEPlot(immune.combined, do.label = T, pt.size = 0.5)
 ggsave(filename = "tSNE_with_cell_name.png", plot = p)
 
 
-# immune.combined@ident <- factor(
-#     immune.combined@ident,
-#     levels = (
-#         c(
-#             "pDC", "Eryth",
-#             "Mk", "DC",
-#             "CD14 Mono",
-#             "CD16 Mono",
-#             "B activated",
-#             "B", "CD8 T",
-#             "NK", "T activated",
-#             "CD4 Naive T",
-#             "CD4 Memory T"
-#         )
-#     )
-# )
-# 
-# markers.to.plot <- c(
-#     "CD3D", "CREM",
-#     "HSPH1", "SELL",
-#     "GIMAP5", "CACYBP",
-#     "GNLY", "NKG7",
-#     "CCL5", "CD8A",
-#     "MS4A1", "CD79A",
-#     "MIR155HG", "NME1",
-#     "FCGR3A", "VMO1",
-#     "CCL2", "S100A9",
-#     "HLA-DQA1", "GPR183",
-#     "PPBP", "GNG11",
-#     "HBA2", "HBB",
-#     "TSPAN13", "IL3RA"
-# )
-
-
 sdp <- SplitDotPlotGG(
     immune.combined,
-    genes.plot = unique(markers),
+    genes.plot = sort(unique(top10$gene)),
     cols.use = c("blue", "red"),
     x.lab.rot = T,
     plot.legend = T,
@@ -374,7 +312,130 @@ sdp <- SplitDotPlotGG(
     grouping.var = "stim"
 )
 
-ggsave(filename="SpliceDotPlotGG.png", plot = sdp) 
+ggsave(filename="SpliceDotPlotGG.png", plot = sdp, width = 10 + 1 * len(unique(top10$gene))) 
+
+
+
+#### 
+
+LabelPoint <- function(plot, genes, exp.mat, adj.x.t = 0, adj.y.t = 0, adj.x.s = 0, 
+                       adj.y.s = 0, text.size = 2.5, segment.size = 0.1) {
+    for (i in genes) {
+        x1 <- exp.mat[i, 1]
+        y1 <- exp.mat[i, 2]
+        plot <- plot + annotate("text", x = x1 + adj.x.t, y = y1 + adj.y.t, 
+                                label = i, size = text.size)
+        plot <- plot + annotate("segment", x = x1 + adj.x.s, xend = x1, y = y1 + 
+                                    adj.y.s, yend = y1, size = segment.size)
+    }
+    return(plot)
+}
+
+LabelUR <- function(plot, genes, exp.mat, adj.u.t = 0.1, adj.r.t = 0.15, adj.u.s = 0.05, 
+                    adj.r.s = 0.05, ...) {
+    return(LabelPoint(plot, genes, exp.mat, adj.y.t = adj.u.t, adj.x.t = adj.r.t, 
+                      adj.y.s = adj.u.s, adj.x.s = adj.r.s, ...))
+}
+
+LabelUL <- function(plot, genes, exp.mat, adj.u.t = 0.1, adj.l.t = 0.15, adj.u.s = 0.05, 
+                    adj.l.s = 0.05, ...) {
+    return(LabelPoint(plot, genes, exp.mat, adj.y.t = adj.u.t, adj.x.t = -adj.l.t, 
+                      adj.y.s = adj.u.s, adj.x.s = -adj.l.s, ...))
+}
+
+
+t.cells <- SubsetData(immune.combined, ident.use = "Normal", subset.raw = T)
+t.cells <- SetAllIdent(t.cells, id = "stim")
+avg.t.cells <- log1p(AverageExpression(t.cells, show.progress = FALSE))
+avg.t.cells$gene <- rownames(avg.t.cells)
+
+cd14.mono <- SubsetData(immune.combined, ident.use = "Cancer", subset.raw = T)
+cd14.mono <- SetAllIdent(cd14.mono, id = "stim")
+avg.cd14.mono <- log1p(AverageExpression(cd14.mono, show.progress = FALSE))
+avg.cd14.mono$gene <- rownames(avg.cd14.mono)
+
+p1 <- ggplot(avg.t.cells, aes(normal, cancer)) + 
+    geom_point() + 
+    ggtitle("Cancer")
+
+p1 <- LabelUR(
+    p1, 
+    genes = c(genes.to.label1, genes.to.label2), 
+    avg.t.cells, 
+    adj.u.t = 0.3, 
+    adj.u.s = 0.23
+)
+
+p1 <- LabelUL(
+    p1, 
+    genes = top10$gene, 
+    avg.t.cells, 
+    adj.u.t = 0.5, 
+    adj.u.s = 0.4, 
+    adj.l.t = 0.25, 
+    adj.l.s = 0.25
+)
+
+p2 <- ggplot(
+    avg.cd14.mono, 
+    aes(normal, cancer)) + 
+    geom_point() + 
+    ggtitle("Cancer")
+
+p2 <- LabelUR(
+    p2, 
+    genes = top10$gene, 
+    avg.cd14.mono, 
+    adj.u.t = 0.3, 
+    adj.u.s = 0.23
+)
+
+p2 <- LabelUL(
+    p2, 
+    genes = genes.to.label2, 
+    avg.cd14.mono, 
+    adj.u.t = 0.5, 
+    adj.u.s = 0.4, 
+    adj.l.t = 0.25, 
+    adj.l.s = 0.25
+)
+
+p <- plot_grid(p1, p2)
+
+ggsave("differential_expressed_genes.png", plot = p)
+
+
+immune.combined@meta.data$celltype.stim <- paste0(
+    immune.combined@ident, 
+    "_", 
+    immune.combined@meta.data$stim
+)
+
+immune.combined <- StashIdent(
+    immune.combined, 
+    save.name = "celltype"
+)
+immune.combined <- SetAllIdent(
+    immune.combined, 
+    id = "celltype.stim"
+)
+b.interferon.response <- FindMarkers(
+    immune.combined, 
+    ident.1 = "Normal", 
+    ident.2 = "Cancer", 
+    print.bar = FALSE
+)
+
+png("feature_heatmap.png", width = 2400, height = 2400, res= 300)
+FeatureHeatmap(
+    immune.combined, 
+    features.plot = top10$gene, 
+    group.by = "stim", 
+    pt.size = 0.25, 
+    key.position = "top", 
+    max.exp = 3
+)
+dev.off()
 
 
 saveRDS(immune.combined, file = "immune_combined.rds")

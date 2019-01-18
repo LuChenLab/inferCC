@@ -96,7 +96,7 @@ class RunSeurat:
 
         with open(os.devnull, "w") as w:
             try:
-                sp.check_call(" ".join(cmds), shell=True, stdout=w, stderr=w)
+                sp.check_call(" ".join(cmds), shell=True)
             except sp.CalledProcessError:
                 print(" ".join(cmds))
 
@@ -114,7 +114,7 @@ class RunSeurat:
             "Name": None,
             "tissue_type": None,
             "status": None,
-            "patient": None
+            "patient_id": None
         }
         for row_idx, row in enumerate(ws.rows):
             if row_idx == 0:
@@ -124,17 +124,17 @@ class RunSeurat:
             elif not row[0].value:
                 continue
             else:
-                if row[header["status"]].value == 0:
-                    continue
+                # if row[header["status"]].value == 0:
+                #     continue
 
-                if row[header["patient"]].value not in data.keys():
+                if row[header["patient_id"]].value not in data.keys():
                     tmp = {}
                 else:
-                    tmp = data[row[header["patient"]].value]
+                    tmp = data[row[header["patient_id"]].value]
 
                 tmp[row[header["tissue_type"]].value.strip()] = row[header["Name"]].value
 
-                data[str(row[header["patient"]].value.strip())] = tmp
+                data[row[header["patient_id"]].value] = tmp
 
         inputs = {}
         for i in os.listdir(self.input):
@@ -145,7 +145,9 @@ class RunSeurat:
             if len(value) < 2:
                 continue
 
-            key = "_".join(lazy_pinyin(key))
+            key = str(key).strip()
+
+            # key = "_".join(lazy_pinyin(key))
 
             out_dir = os.path.join(self.output, key)
 
@@ -361,7 +363,7 @@ class Report:
             "Name": None,
             "tissue_type": None,
             "status": None,
-            "patient": None
+            "patient_id": None
         }
 
         tmp_data = {}
@@ -381,14 +383,14 @@ class Report:
                 if row[header["status"]].value == 0:
                     continue
 
-                if row[header["patient"]].value not in meta_info.keys():
+                if row[header["patient_id"]].value not in meta_info.keys():
                     tmp = {}
                 else:
-                    tmp = meta_info[row[header["patient"]].value]
+                    tmp = meta_info[row[header["patient_id"]].value]
 
                 tmp[row[header["tissue_type"]].value.strip()] = row[header["Name"]].value
 
-                meta_info[str(row[header["patient"]].value.strip())] = tmp
+                meta_info[row[header["patient_id"]].value] = tmp
 
                 tmp_data[row[0].value] = []
                 for i in columns:
@@ -417,8 +419,8 @@ class Report:
                         continue
 
                     link = '<a href="./html/{0}_{1}.html">{2}</a>'.format(
-                        "_".join(lazy_pinyin(key)),
-                        k.replace(" ", "_"),
+                        str(key),
+                        str(k).replace(" ", "_"),
                         key
                     )
 
