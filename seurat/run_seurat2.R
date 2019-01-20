@@ -101,12 +101,12 @@ normal <- CreateSeuratObject(raw.data = normal, min.cells = 5, project = "10X")
 cancer <- CreateSeuratObject(raw.data = cancer, min.cells = 5, project = "10X")
 
 
-normal@meta.data$stim <- "Normal"
+normal@meta.data$stim <- basename(args$normal)
 normal <- FilterCells(normal, subset.names = "nGene", low.thresholds = 500, high.thresholds = Inf)
 normal <- NormalizeData(normal)
 normal <- ScaleData(normal, display.progress = F)
 # Set up stimulated object
-cancer@meta.data$stim <- "Cancer"
+cancer@meta.data$stim <- basename(args$cancer)
 cancer <- FilterCells(cancer, subset.names = "nGene", low.thresholds = 500, high.thresholds = Inf)
 cancer <- NormalizeData(cancer)
 cancer <- ScaleData(cancer, display.progress = F) 
@@ -275,7 +275,7 @@ nk.markers <- nk.markers[nk.markers$p_val_adj<0.05,]
 nk.markers %>% group_by(cluster) %>% top_n(10) -> top10
 nk.markers %>% group_by(cluster) %>% top_n(2) -> top2
 
-save(file = "immune_combined.rdata")
+saveRDS(immune.combined, file = "1_immune_combined.rds")
 
 
 ####
@@ -283,10 +283,10 @@ save(file = "immune_combined.rdata")
 #### 此处先采用血细胞的buf
 ####
 
-png("feature.png", res = 300, width = 3200, height = 3200)
+png("feature.png", res = 300, width = 6400, height = 6400)
 FeaturePlot(
     object = immune.combined, 
-    features.plot = top10$gene, 
+    features.plot = sort(unique(top10$gene))[1:10], 
     min.cutoff = "q9", 
     cols.use = c("lightgrey", "blue"), 
     pt.size = 0.5
@@ -312,7 +312,7 @@ sdp <- SplitDotPlotGG(
     grouping.var = "stim"
 )
 
-ggsave(filename="SpliceDotPlotGG.png", plot = sdp, width = 10 + 1 * len(unique(top10$gene))) 
+ggsave(filename="SpliceDotPlotGG.png", plot = sdp, width = 15) 
 
 
 
