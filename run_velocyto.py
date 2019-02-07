@@ -8,7 +8,9 @@ import os
 import sys
 import argparse as ap
 import subprocess as sp
-from progressbar import ProgressBar
+import multiprocessing as mp
+# from progressbar import ProgressBar
+from tqdm import tqdm
 
 
 def call(cmd):
@@ -17,12 +19,13 @@ def call(cmd):
     :param cmd:
     :return:
     """
-    print(" ".join(cmd))
+    print(cmd)
     try:
-        sp.check_call(" ".join(cmd), shell=True)
+        with open(os.devnull, "w+") as w:
+            sp.check_call(cmd, shell=True)
     except sp.CalledProcessError:
-        print(" ".join(cmd))
-
+        # print(cmd)
+        pass
 
 def main(args):
     u"""
@@ -52,11 +55,20 @@ def main(args):
             continue
         files.append(sample)
 
-    with ProgressBar(max_value=len(files), redirect_stdout=True) as bar:
-        for idx, f in enumerate(files):
-            bar.update(idx)
-            cmds[-2] = f
-            call(cmds)
+    args = []
+    for f in files:
+        cmds[-2] = f
+        # args.append(" ".join(cmds))
+        call(" ".join(cmds))
+
+    # with mp.Pool(4) as pool:
+    #     list(tqdm(pool.imap_unordered(call, args), total=len(args)))
+
+    # with ProgressBar(max_value=len(files), redirect_stdout=True) as bar:
+    #     for idx, f in enumerate(files):
+    #         bar.update(idx)
+    #         cmds[-2] = f
+    #         call(cmds)
 
 
 if __name__ == '__main__':
