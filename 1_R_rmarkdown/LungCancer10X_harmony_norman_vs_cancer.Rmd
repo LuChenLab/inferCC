@@ -1,0 +1,352 @@
+---
+title: "LungCancer10X_cca"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+load_packages <- function() {
+    library("Seurat")
+    library("dplyr")
+    library("cowplot")
+    library("repr")
+    library("openxlsx")
+    library("gridExtra")
+    library("here")
+    library("harmony")
+}
+
+suppressPackageStartupMessages(load_packages())
+
+filenames = list()
+
+dpi = 300
+
+cols = 3
+size = 10
+dpi = 300
+filenames = list()
+
+
+custom_colors <- c(
+    "#1B62A3",
+    "#9CB8DD",
+    "#EE6719",
+    "#F8A966",
+    "#278F36",
+    "#8CC873",
+    "#C70F1F",
+    "#EF7E82",
+    "#7D509A",
+    "#B59BC7",
+    "#76423A",
+    "#B48880",
+    "#CB60A1",
+    "#F1A3C5",
+    "#7E7F83",
+    "#BDC3C4",
+    "#ABB126",
+    "#D1D57A",
+    "#1DAFC3",
+    "#8BCFDA"
+)
+```
+
+
+
+#### 1. load seurat obj
+```{r}
+obj =  readRDS(here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_base.rds"))
+```
+
+
+### 2. load meta info from all samples
+```{r}
+meta <- read.csv(here("00_data_ingest", "03_annotation_csv", "20190407_seurat_meta.csv"))
+```
+
+
+### 3. Create new seurat object, which only kept normal and cancer
+the cells in batch 3 and batch 2 is too few
+```{r}
+obj <- CreateSeuratObject(
+    raw.data = obj@raw.data[, rownames(obj@meta.data[obj@meta.data$Tissue %in% c("Normal", "Tumor"), ])],
+    meta.data = obj@meta.data[obj@meta.data$Tissue %in% c("Normal", "Tumor"), ],
+    project = "Normal_vs_cancer"
+)
+```
+
+```{r}
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@raw.data), value = TRUE)
+percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+
+# AddMetaData adds columns to object@meta.data, and is a great place to
+# stash QC stats
+obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+
+obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = 100)
+```
+```{r}
+obj <- RunHarmony(obj, c("Tissue"))
+```
+
+```{r}
+temp <- as.data.frame(apply(obj@dr$harmony@cell.embeddings, 2, sd))
+colnames(temp) <- c("sd")
+temp$Harmony = 1:nrow(temp)
+
+ggplot(temp, aes(x=Harmony, y=sd)) + geom_point() + ylab("Standard Dei of Harmony")
+```
+
+## 分群感觉分的不是很开，调整参数重新分群看效果
+```{r}
+n.pcs = 25
+obj <- RunTSNE(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "harmony", reduction.name = "tsne")
+# obj <- RunUMAP(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "harmony")
+obj <- FindClusters(object = obj, reduction.type = "harmony", dims.use = 1:n.pcs, resolution = 0.6, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+```
+
+```{r}
+saveRDS(obj, here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_harmony_normal_vs_cancer.rds"))
+```
+
+### 4. check the CCA effect
+
+```{r include=FALSE}
+p1 <- DimPlot(
+    object = obj, 
+    reduction.use = "cca", 
+    group.by = "Batch", 
+    pt.size = 0.5, 
+    do.return = TRUE
+)
+p2 <- VlnPlot(
+    object = obj, 
+    features.plot = "CC1", 
+    group.by = "Batch", 
+    do.return = TRUE
+)
+
+filenames[["dim_vln_plot"]] <- here(image_dir, "00_dim_vln_plot.png")
+png(filename = filenames[["dim_vln_plot"]], width = 12, height = 6, res = dpi, units = "in")
+plot_grid(p1, p2)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["dim_vln_plot"]])
+```
+
+
+#### perform cluster and tSNE
+
+```{r}
+obj <- RunPCA(
+    object = obj,
+    pc.genes = var_genes,
+    pcs.compute = 100,
+    do.print = TRUE,
+    pcs.print = 1,
+    genes.print = 1
+)
+```
+```{r include=FALSE}
+p1 <- DimPlot(
+    object = obj, 
+    reduction.use = "pca", 
+    group.by = "Batch", 
+    pt.size = 0.5, 
+    do.return = TRUE
+)
+p2 <- VlnPlot(
+    object = obj, 
+    features.plot = "PC1", 
+    group.by = "Batch", 
+    do.return = TRUE
+)
+
+filenames[["pca_dim_vln_plot"]] <- here(image_dir, "05_pca_dim_vln_plot.png")
+png(filename = filenames[["pca_dim_vln_plot"]], width = 12, height = 6, res = dpi, units = "in")
+plot_grid(p1, p2)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["pca_dim_vln_plot"]])
+```
+
+### 6. decide use how many cca after
+```{r include=FALSE}
+filenames[["MetageneBicor"]] <- here(image_dir, "01_meta_gene_bicor_plot.png")
+png(filename = filenames[["MetageneBicor"]], width = 12, height = 6, res = dpi, units = "in")
+MetageneBicorPlot(
+    obj, 
+    grouping.var = "Batch",
+    dims.eval = 1:30, 
+    display.progress = FALSE
+)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["MetageneBicor"]])
+```
+
+
+```{r}
+filenames[["DimHeatmap"]] <- here(image_dir, "02_cca_dim_heatmap_plot.png")
+png(filename = filenames[["DimHeatmap"]], width = 12, height = 40, res = dpi, units = "in")
+DimHeatmap(object = obj, reduction.type = "cca", cells.use = 500, dim.use = 1:30, do.balanced = TRUE)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["DimHeatmap"]])
+```
+
+
+### 7. align cca subspace and calculate pca
+- PCA is used for the CCA effect comparision
+```{r}
+n.ccs = 5
+
+obj <- AlignSubspace(obj, reduction.type = "cca", grouping.var = "Batch", dims.align = 1:n.ccs)
+
+# saveRDS(obj, here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_cca_aligned_2.rds"))
+```
+
+
+### 8. decide how many pcs to use
+```{r include=FALSE}
+filenames[["PCEbow"]] <- here(image_dir, "03_pca_bow_plot.png")
+png(filename = filenames[["PCEbow"]], width = 12, height = 6, res = dpi, units = "in")
+PCElbowPlot(object = obj, num.pc = 100)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["PCEbow"]])
+```
+
+
+```{r fig.width=18, fig.height=24}
+filenames[["DimHeatmap"]] <- here(image_dir, "04_pca_heatmap_plot.png")
+png(filename = filenames[["DimHeatmap"]], width = 12, height = 6, res = dpi, units = "in")
+PCHeatmap(
+    object = obj,
+    pc.use = 1:12,
+    cells.use = 500,
+    do.balanced = TRUE,
+    label.columns = FALSE,
+    do.return = TRUE
+)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["DimHeatmap"]])
+```
+
+### 9. Run tSNE
+```{r}
+n.pcs = 50
+
+obj <- RunTSNE(obj, reduction.use = "cca.aligned", dims.use = 1:n.ccs, do.fast = T)
+obj <- RunTSNE(obj, reduction.use = "pca", dim.use = 1:n.pcs, reduction.name = "tSNE", reduction.key = "tSNE_")
+obj <- FindClusters(obj, genes.use = var_genes, reduction.type = "cca.aligned", resolution = 0.6, dims.use = 1:n.ccs, force.recalc=TRUE, print.output = FALSE)
+```
+
+
+
+```{r}
+# 
+# 整合各种已有数据
+row.names(meta) <- meta$Cell
+after_cca@meta.data <- cbind(after_cca@meta.data, meta[meta$Cell %in% rownames(after_cca@meta.data),])
+after_cca@meta.data <- cbind(after_cca@meta.data, after_cca@dr$tSNE@cell.embeddings)
+after_cca@meta.data <- cbind(after_cca@meta.data, after_cca@dr$umap@cell.embeddings)
+after_cca@meta.data <- cbind(after_cca@meta.data, as.data.frame(after_cca@ident))
+colnames(after_cca@meta.data)[ncol(after_cca@meta.data)] = "cluster_id"
+
+
+saveRDS(after_cca, "20190226_cca_normal_tumor.rds")
+
+after_cca <- readRDS("20190226_cca_normal_tumor.rds")
+```
+
+```{r}
+p1 <- TSNEPlot(after_cca, do.return = T, pt.size = 0.5, group.by = "stim")
+p2 <- TSNEPlot(after_cca, do.label = T, do.return = T, pt.size = 0.5)
+plot_grid(p1, p2)
+```
+
+
+
+
+```{r}
+after_cca@meta.data$cell_name <- after_cca@meta.data$cluster_id
+
+current.cluster.ids <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24)
+new.cluster.ids <- c(
+    "CD8 T cells", # 0
+    "T cells", # 1,
+    "CD14+ Monocytes",  # 2
+    "NK cells",  # 3
+    "CD14+ Monocytes",  # 4
+    "NK cells",  # 5
+    "Basal cells", # 6
+    "Dendritic", # 7
+    "CD14+ Monocytes",  # 8
+    "CD14+ Monocytes", # 9
+    "Club cells", # 10
+    "Club cells", # 11
+    12,
+    "T cells", # 13,
+    "B cells", # 14 
+    15, 
+    16, 
+    "CD14+ Monocytes", # 17
+    "CD14+ Monocytes", # 18
+    19, 
+    "T cells", # 20, 
+    21, 22, 23, 
+    "Basal cells" # 24
+)
+
+
+after_cca@meta.data$cell_name <- plyr::mapvalues(x = after_cca@meta.data$cell_name, from = current.cluster.ids, to = new.cluster.ids)
+
+DimPlot(
+    object = obj, 
+    reduction.use = "tSNE", 
+    pt.size = 0.01, 
+    do.return = TRUE,
+    group.by = "cell_name", 
+    do.label = TRUE
+)
+
+FeaturePlot(
+    object = obj, 
+    features.plot = c(
+        "MS4A1",    # B
+        "GNLY",     # NK
+        "CD3E",    
+        "CD14",     # CD14+ Monocytes
+        "FCER1A",   # Dendritic Cells
+        "FCGR3A",   # FCGR3A+ Monocytes
+        "LYZ",      # CD14+ Monocytes
+        "PPBP",     # Megakaryocytes
+        "CD8A",     # CD8
+        "NKG7",     # NK
+        "KRT5",     # basal
+        "SCGB1A1",   # club,
+        "CCR7",      # CD8
+        "C1orf186"   # mast
+    ), 
+    cols.use = c(
+        "grey", 
+        "blue"
+    ), 
+    reduction.use = "tSNE"
+)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

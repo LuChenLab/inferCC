@@ -1,0 +1,190 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+---
+title: "LungCancer10X_sctransform"
+output: html_document
+---
+
+Note: sctransform is integrated with Seurat 3.0
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+detach("package:Seurat", character.only = TRUE)
+
+library(devtools)
+library(withr)
+
+libpath = "/home/zhangyiming/R/x86_64-pc-linux-gnu-library/3.5_seurat3.0/"
+
+
+load_packages <- function() {
+    library(Matrix)
+    library(Seurat, lib.loc = libpath)
+    library(here)
+    library(data.table)
+    library(gridExtra)
+    library(dplyr)
+    library(ggpubr)
+    library(sctransform, lib.loc = libpath)
+}
+
+suppressPackageStartupMessages(load_packages())
+options(future.globals.maxSize= 1000000000)
+
+cols = 3
+size = 10
+dpi = 300
+filenames = list()
+
+
+custom_colors <- c(
+    "#1B62A3",
+    "#9CB8DD",
+    "#EE6719",
+    "#F8A966",
+    "#278F36",
+    "#8CC873",
+    "#C70F1F",
+    "#EF7E82",
+    "#7D509A",
+    "#B59BC7",
+    "#76423A",
+    "#B48880",
+    "#CB60A1",
+    "#F1A3C5",
+    "#7E7F83",
+    "#BDC3C4",
+    "#ABB126",
+    "#D1D57A",
+    "#1DAFC3",
+    "#8BCFDA"
+)
+```
+
+
+### load Rds that pre-processed in harmony pipeline
+```{r}
+obj = readRDS(here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_base.rds"))
+
+obj <- CreateSeuratObject(counts = obj@raw.data, meta.data = obj@meta.data)
+```
+
+```{r}
+obj[["percent.mt"]] <- PercentageFeatureSet(object = obj, pattern = "^MT-")
+
+
+filenames[["vln"]] <- here("01_figures", "sctransform", "VlnPlot.png")
+png(filename = filenames[["vln"]], width = 18, height = 6, res = dpi, units = "in")
+VlnPlot(object = obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+dev.off()
+```
+
+```{r}
+filenames[["par"]] <- here("01_figures", "sctransform", "GenePlot.png")
+
+png(filename = filenames[["par"]], width = 12, height = 6, res = dpi, units = "in")
+
+plot1 <- FeatureScatter(object = obj, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(object = obj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1, plot2))
+
+dev.off()
+```
+
+
+```{r}
+obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+
+obj <- FindVariableFeatures(object = obj, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(x = VariableFeatures(object = obj), 10)
+
+# plot variable features with and without labels
+filenames[["par1"]] <- here("01_figures", "sctransform", "GenePlot1.png")
+
+png(filename = filenames[["par1"]], width = 12, height = 6, res = dpi, units = "in")
+
+plot1 <- VariableFeaturePlot(object = obj)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+CombinePlots(plots = list(plot1, plot2))
+
+dev.off()
+```
+
+```{r}
+obj <- ScaleData(object = obj, vars.to.regress = c("percent.mt", "nCount_RNA"))
+
+obj <- RunPCA(object = obj, features = VariableFeatures(object = obj), npcs = 100)
+```
+
+
+```{r}
+obj <- SCTransform(object = obj, verbose = TRUE)
+```
+
+```{r}
+obj <- RunPCA(object = obj, verbose = TRUE, npcs = 100)
+```
+
+```{r}
+filenames[["pc"]] <- here("01_figures", "sctransform", "ElbowPlot.png")
+png(filename = filenames[["pc"]], width = 12, height = 6, res = dpi, units = "in")
+ElbowPlot(object = obj, ndims=100)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["pc"]])
+```
+
+```{r}
+
+n.pcs = 50
+obj <- RunHarmony(obj, c("batch"))
+obj <- RunTSNE(object = obj, dims = 1:n.pcs, verbose = FALSE, reduction = "pca")
+obj <- RunUMAP(object = obj, dims = 1:n.pcs, verbose = TRUE, reduction = "pca")
+obj <- FindNeighbors(object = obj, dims = 1:n.pcs, verbose = FALSE, reduction = "pca")
+obj <- FindClusters(object = obj, dims = 1:n.pcs, verbose = FALSE, reduction = "pca")
+```
+
+```{r}
+p1 <- DimPlot(obj, reduction = "tsne", group.by = "SCT_snn_res.0.8", legend = TRUE, label = TRUE, do.return = TRUE, pt.size = 0.1) + 
+  theme(legend.position = "none")
+p2 <- DimPlot(obj, reduction = "tsne", group.by = "batch", legend = FALSE, label = FALSE, do.return = TRUE, pt.size = 0.1)
+
+p3 <- DimPlot(obj, reduction = "umap", group.by = "SCT_snn_res.0.8", legend = TRUE, label = TRUE, do.return = TRUE, pt.size = 0.1) + 
+  theme(legend.position = "none")
+p4 <- DimPlot(obj, reduction = "umap", group.by = "batch", legend = FALSE, label = FALSE, do.return = TRUE, pt.size = 0.1)
+
+p <- ggarrange(p1, p2, p3, p4, nrow=2, ncol=2)
+
+filenames[["harmony_tsne"]] <- here("01_figures", "sctransform", "sctransform_tsne.png")
+ggsave(filenames[["harmony_tsne"]], plot = p, width = 12, height = 12, dpi = dpi, units = "in")
+```
+
+
+```{r}
+saveRDS(obj, here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_sctransform.rds"))
+```
+
+```{r}
+markers <- read.xlsx(here("00_data_ingest", "03_annotation_csv", "20190326_gene_markers.xlsx"), sheet = 3)
+
+genes <- intersect(unique(markers$Markers), rownames(x=obj))
+
+p <- DotPlot(obj, features = genes, split = "SCT_snn_res.0.8", x.lab.rot = TRUE, do.return = TRUE) + coord_flip() + labs(title = "Harmony")
+
+filenames[["dotplot"]] <- here("01_figures", "sctransform", "sctransform_dotplot.png")
+ggsave(filename = filenames[["dotplot"]], plot = p, width = 10, height = 20, units = "in", dpi = dpi)
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+

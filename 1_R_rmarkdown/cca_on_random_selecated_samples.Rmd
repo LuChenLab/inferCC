@@ -1,0 +1,563 @@
+---
+title: "cca_on_random_selected_samples"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "/mnt/raid62/Lung_cancer_10x/"
+knitr::opts_knit$set(root.dir = root.dir)
+# setwd(root.dir)
+
+
+cols = 3
+size = 10
+dpi = 300
+filenames = list()
+
+
+custom_colors <- c(
+    "#1B62A3",
+    "#9CB8DD",
+    "#EE6719",
+    "#F8A966",
+    "#278F36",
+    "#8CC873",
+    "#C70F1F",
+    "#EF7E82",
+    "#7D509A",
+    "#B59BC7",
+    "#76423A",
+    "#B48880",
+    "#CB60A1",
+    "#F1A3C5",
+    "#7E7F83",
+    "#BDC3C4",
+    "#ABB126",
+    "#D1D57A",
+    "#1DAFC3",
+    "#8BCFDA"
+)
+```
+
+```{r}
+load_packages <- function() {
+    library(Matrix)
+    library(Seurat)
+    library(here)
+    library(data.table)
+    library(gridExtra)
+    library(openxlsx)
+    library(ape)
+    library(dplyr)
+    library(grid)
+    library(ggpubr)
+    library(slalom)
+}
+
+suppressPackageStartupMessages(load_packages())
+```
+
+### 读取原始counts
+```{r cars}
+raw_counts <- here("00_data_ingest", "00_raw_data", "raw_counts_clean.csv.gz")
+
+data <- fread(paste("zcat", raw_counts))
+
+# https://www.kaggle.com/cartographic/data-table-to-sparsematrix
+to_sparse <- function(d_table){
+
+  i_list <- lapply(d_table, function(x) which(x != 0))
+  counts <- unlist(lapply(i_list, length), use.names = F)
+
+  sparseMatrix(
+    i = unlist(i_list, use.names = F),
+    j = rep(1:ncol(d_table), counts),
+    x = unlist(lapply(d_table, function(x) x[x != 0]), use.names = F),
+    dims = dim(d_table),
+    dimnames = list(NULL, names(d_table)))
+}
+
+spareData <- to_sparse(data[ ,2:ncol(data)])
+rownames(spareData) <- data$V1
+
+data <- spareData
+rm(spareData)
+```
+
+
+### 做cluster的function
+```{r}
+perform_cluster <- function(obj, n.pcs = 75, res = 0.6, umap=TRUE) {
+    obj <- FindClusters(
+        object = obj,
+        reduction.type = "pca",
+        dims.use = 1:n.pcs,
+        resolution = res,
+        print.output = 0,
+        save.SNN = TRUE
+    )
+    
+    obj <- RunTSNE(
+        object = obj,
+        reduction.use = "pca",
+        dims.use = 1:n.pcs,
+        max_iter = 2000,
+        check_duplicates = FALSE,
+        reduction.name = "tSNE",
+        reduction.key = "tSNE_"
+    )
+    
+    obj@meta.data <- cbind(obj@meta.data, obj@dr$tSNE@cell.embeddings[rownames(obj@meta.data),])
+    
+    if (umap) {
+        obj <- RunUMAP(
+            object = obj,
+            reduction.use = "pca",
+            dims.use = 1:n.pcs,
+            min_dist = 0.75
+        )
+    
+        obj@meta.data <- cbind(obj@meta.data, obj@dr$umap@cell.embeddings[rownames(obj@meta.data),])
+  
+    }
+  
+    return(obj)
+}
+```
+
+
+### Test CCA on random selected cells
+
+#### 随机选择cells、 读取meta info
+```{r}
+set.seed(99)
+data <- data[, sample(1:ncol(data), 0.1 * ncol(data))]
+
+meta <- readRDS(here("00_data_ingest", "04_rds_generated", "meta_all.rds"))
+```
+
+```{r}
+obj <- CreateSeuratObject(data, project = "Test", meta.data = meta)
+
+rownames(meta) <- meta$Cell
+for(i in colnames(meta)) {
+    if (i %in% colnames(obj@meta.data)) {
+        print(i)
+        obj@meta.data[,i] <- meta[rownames(obj@meta.data), i]
+    }
+}
+```
+
+## 普通流程中，质量控制
+
+通常情况下，随机选取的细胞，其质控的分布情况应与原始的数据一致
+
+```{r fig.height=8, fig.width=12}
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@data), value = TRUE)
+percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+
+# AddMetaData adds columns to object@meta.data, and is a great place to
+# stash QC stats
+obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+
+filenames[["vlnplot"]] <- here("04_cca_plots", "all", "00_before_cca_vlnplot.png")
+png(type="cairo", filenames[["vlnplot"]], res = dpi, width = 12, height = 6, units = "in")
+VlnPlot(object = obj, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
+dev.off()
+
+knitr::include_graphics(filenames[["vlnplot"]])
+```
+
+
+```{r fig.height=6, fig.width=12}
+filenames[["geneplot"]] <- here("04_cca_plots", "all", "01_without_cca_geneplot.png")
+png(type="cairo", filenames[["geneplot"]], res = dpi, width = 12, height = 6, units = "in")
+par(mfrow = c(1, 2))
+GenePlot(object = obj, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = obj, gene1 = "nUMI", gene2 = "nGene")
+dev.off()
+
+knitr::include_graphics(filenames[["geneplot"]])
+```
+
+### 归一化处理，以及识别variable genes
+
+```{r }
+obj <- NormalizeData(
+    object = obj, 
+    normalization.method = "LogNormalize", 
+    scale.factor = 10000
+)
+
+
+obj <- FindVariableGenes(
+    object = obj, 
+    mean.function = ExpMean, 
+    dispersion.function = LogVMR, 
+    x.low.cutoff = 0.0125, 
+    x.high.cutoff = 3, 
+    y.cutoff = 0.5
+)
+
+
+obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+```
+
+```{r}
+obj <- RunPCA(
+    object = obj, 
+    pc.genes = obj@var.genes,
+    do.print = FALSE,
+    pcs.compute = 100,
+    pcs.print = 1:5, 
+    genes.print = 5
+)
+```
+
+检查PC的分布情况
+
+```{r}
+filenames[["pcaplot"]] <- here("04_cca_plots", "all", "01_without_cca_pcaplot.png")
+png(type="cairo", filenames[["pcaplot"]], res = dpi, width = 6, height = 6, units = "in")
+PCAPlot(object = obj, dim.1 = 1, dim.2 = 2)
+dev.off()
+
+knitr::include_graphics(filenames[["pcaplot"]])
+
+filenames[["pcaheatplot"]] <- here("04_cca_plots", "all", "01_without_cca_pcaheatmap.png")
+png(type="cairo", filenames[["pcaheatplot"]], res = dpi, width = 18, height = 18, units = "in")
+PCHeatmap(object = obj, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, label.columns = FALSE, use.full = FALSE)
+dev.off()
+
+knitr::include_graphics(filenames[["pcaheatplot"]])
+```
+
+
+```{r}
+filenames[["pceplot"]] <- here("04_cca_plots", "all", "01_without_cca_pcemap.png")
+png(type="cairo", filenames[["pceplot"]], res = dpi, width = 18, height = 6, units = "in")
+PCElbowPlot(object = obj, num.pc=100)
+dev.off()
+
+knitr::include_graphics(filenames[["pceplot"]])
+```
+
+
+```{r}
+obj <- perform_cluster(obj, n.pcs = 50, umap = FALSE)
+```
+
+```{r include=FALSE}
+p_list = list()
+p_list[[1]] = DimPlot(object = obj, do.label = TRUE, reduction.use = "tSNE", pt.size = 0.1, no.legend = TRUE, do.return = TRUE)
+p_list[[2]] = DimPlot(object = obj, do.label = FALSE, reduction.use = "tSNE", pt.size = 0.1, no.legend = FALSE, group.by = "Batch")
+
+filenames[["tSNE"]] <- here("04_cca_plots", "all", "01_without_cca_tSNE.png")
+png(type="cairo", filename = filenames[["tSNE"]], width = 15, height = 6, res = dpi, units = "in")
+grid.arrange(grobs = p_list, ncol = 2)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["tSNE"]])
+```
+
+---
+## Perform cca
+```{r}
+batches = list()
+
+for (i in unique(obj@meta.data$Batch)) {
+    temp = obj@meta.data[obj@meta.data$Batch == i,]
+    
+    temp <- CreateSeuratObject(
+        raw.data = obj@raw.data[, rownames(temp)],
+        meta.data = temp,
+        project = as.character(i)
+    )
+    
+    temp <- NormalizeData(temp)
+    
+    temp <- ScaleData(temp, display.progress = F)
+    
+    temp <- FindVariableGenes(temp, do.plot = F)
+    
+    batches[[i]] <- temp
+}
+```
+
+### 进行CCA
+```{r}
+genes.use <- c()
+
+for(i in batches) {
+    genes.use = c(genes.use, head(rownames(i@hvg.info), 1000))
+}
+
+for(i in batches) {
+    genes.use = intersect(genes.use, rownames(i@scale.data))
+}
+
+obj_cca <- RunMultiCCA(batches, genes.use = genes.use, num.cc = 30)
+```
+
+
+### 初步检查CCA效果
+```{r include=FALSE}
+filenames[["cca_vlnplot"]] <- here("04_cca_plots", "all", "02_after_cca_pcemap.png")
+png(type="cairo", filenames[["cca_vlnplot"]], res = dpi, width = 12, height = 6, units = "in")
+
+p1 <- DimPlot(
+    object = obj_cca, 
+    reduction.use = "cca", 
+    group.by = "Batch", 
+    pt.size = 0.5, 
+    do.return = TRUE
+    )
+p2 <- VlnPlot(
+    object = obj_cca, 
+    features.plot = "CC1", 
+    group.by = "Batch", 
+    do.return = TRUE
+    )
+plot_grid(p1, p2)
+
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["cca_vlnplot"]])
+```
+
+### 作图选择使用多少个CC
+
+```{r include=FALSE}
+filenames[["metagene"]] <- here("04_cca_plots", "all", "02_after_cca_metagenebio.png")
+png(type="cairo", filenames[["metagene"]], res = dpi, width = 18, height = 6, units = "in")
+MetageneBicorPlot(obj_cca, grouping.var = "Batch", dims.eval = 1:30, display.progress = FALSE)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["metagene"]])
+```
+
+
+```{r}
+obj_cca <- AlignSubspace(obj_cca, reduction.type = "cca", grouping.var = "Batch", dims.align = 1:30)
+obj_cca <- RunTSNE(obj_cca, reduction.use = "cca.aligned", dims.use = 1:30, do.fast = T)
+obj_cca <- FindClusters(obj_cca, reduction.type = "cca.aligned", resolution = 0.6, dims.use = 1:30, print.output = FALSE)
+```
+
+
+### plot tSNE
+
+检查CCA的效果
+```{r}
+p1 <- DimPlot(obj, do.return = T, pt.size = 0.1, group.by = "Batch", reduction.use = "tSNE", plot.title = "Without CCA")
+p2 <- DimPlot(obj_cca, do.return = T, pt.size = 0.1, group.by = "Batch", plot.title = "With CCA", reduction.use = "tsne")
+p3 <- DimPlot(obj_cca, do.label = T, do.return = T, pt.size = 0.1, no.legend=TRUE, reduction.use = "tsne")
+p4 <- DimPlot(obj_cca, do.return = T, pt.size = 0.1, group.by = "Batch", plot.title = "With CCA", reduction.use = "cca.aligned")
+
+filenames[["cca_tsne"]] <- here("04_cca_plots", "all", "02_after_cca_tsne.png")
+png(type="cairo", filenames[["cca_tsne"]], res = dpi, width = 12, height = 12, units = "in")
+plot_grid(p1, p2, p3, p4)
+dev.off()
+
+knitr::include_graphics(filenames[["cca_tsne"]])
+```
+
+
+---
+
+### Save Rds
+```{r}
+saveRDS(obj, here("00_data_ingest", "04_rds_generated", "without_cca_random_selected_samples.rds"))
+saveRDS(obj_cca, here("00_data_ingest", "04_rds_generated", "with_cca_random_selected_samples.rds"))
+```
+
+---
+
+### 用这三万个细胞分下群
+是否能够拿到一致的细胞亚群，如果CCA后分群效果反而不好，那么CCA的结果就有问题
+
+```{r}
+obj <- readRDS(here("00_data_ingest", "04_rds_generated", "without_cca_random_selected_samples.rds"))
+obj_cca <- readRDS(here("00_data_ingest", "04_rds_generated", "with_cca_random_selected_samples.rds"))
+
+markers <- read.xlsx(here("00_data_ingest", "03_annotation_csv", "20190326_gene_markers.xlsx"), sheet = 3)
+```
+
+
+```{r include=FALSE}
+p1 <- DotPlot(obj, genes.plot = unique(markers$Markers), group.by = "res.0.6", x.lab.rot = TRUE, do.return = TRUE) + coord_flip() + labs(title = "Withou CCA")
+p2 <- DotPlot(obj_cca, genes.plot = unique(markers$Markers), group.by = "res.0.6", x.lab.rot = TRUE, do.return = TRUE) + coord_flip() + labs(title = "With CCA")
+
+p <- ggarrange(p1, p2)
+
+filenames[["cca_dotplot"]] <- here("04_cca_plots", "all", "03_dotplot_comparision.png")
+ggsave(filename = filenames[["cca_dotplot"]], plot = p, width = 16, height = 20, units = "in", dpi = dpi)
+```
+```{r}
+knitr::include_graphics(filenames[["cca_dotplot"]])
+```
+
+
+---
+```{r}
+obj <- readRDS(here("00_data_ingest", "04_rds_generated", "without_cca_random_selected_samples.rds"))
+obj_cca <- readRDS(here("00_data_ingest", "04_rds_generated", "with_cca_random_selected_samples.rds"))
+```
+
+```{r}
+write.csv(as.matrix(obj@raw.data), file = here("00_data_ingest", "04_rds_generated", "cca_random_raw_counts.csv"))
+
+write.csv(obj@meta.data, file=here("00_data_ingest", "04_rds_generated", "cca_random_meta_info.csv"))
+```
+
+---
+### 也按照总体的情况，统计下各群体中细胞的来源信息与情况
+```{r}
+temp <- as.data.frame(obj_cca@meta.data %>% select(res.0.6, Cell) %>% group_by(res.0.6) %>% tally())
+
+colnames(temp) <- c("Cluster", "counts")
+
+ggplot(data=temp, aes(x=Cluster, y=log10(counts))) + geom_bar(stat = "identity")
+```
+
+
+##### 每个cluster中，具体涉及到不同患者
+```{r fig.height=8, fig.width=12}
+# 1. count the number of cells from different patients in each cluster
+# 2. convert the counts into percentage
+temp = as.data.frame(obj_cca@meta.data %>% select(res.0.6, PatientID) %>% group_by(res.0.6, PatientID) %>% add_tally() %>% unique() %>% group_by(res.0.6) %>% mutate(freq = n / sum(n)))
+
+colnames(temp) <- c("Cluster", "PatientID", "counts", "freq")
+
+p1 <- ggplot(
+    data=temp, 
+    aes(x=reorder(Cluster, -counts), y=log10(counts), fill=PatientID)
+) + 
+    geom_bar(stat = "identity") + 
+    labs(x="Cluster", y="log10(counts)")
+
+p2 <- ggplot(
+    data=temp, aes(x=Cluster, y=freq, fill = PatientID)
+    ) + 
+    geom_bar(stat = "identity", position = position_stack())
+
+ggarrange(p1, p2, nrow=1, ncol=2, common.legend = TRUE, legend = "bottom")
+```
+
+#### 按照每个cluster中，不同疾病时期的情况做分布
+```{r fig.height=6, fig.width=12}
+# change stage into new stage
+obj_cca@meta.data$newStage <- gsub("[^IV]", "", obj_cca@meta.data$Stage)
+
+
+# 1. count the number of cells from different patients in each cluster
+# 2. convert the counts into percentage
+temp = as.data.frame(obj_cca@meta.data %>% select(res.0.6, newStage) %>% group_by(res.0.6, newStage) %>% add_tally() %>% unique() %>% group_by(res.0.6) %>% mutate(freq = n / sum(n)))
+
+colnames(temp) <- c("Cluster", "Stage", "counts", "freq")
+
+p1 <- ggplot(
+    data=temp, 
+    aes(x=reorder(Cluster, -counts), y=log10(counts), fill=Stage)
+) + 
+    geom_bar(stat = "identity") + 
+    labs(x="Cluster", y="log10(counts)")
+
+p2 <- ggplot(
+    data=temp, aes(x=Cluster, y=freq, fill = Stage)
+    ) + 
+    geom_bar(stat = "identity", position = position_stack())
+
+ggarrange(p1, p2, nrow=1, ncol=2, common.legend = TRUE, legend = "bottom")
+```
+
+#### 腺癌中原位、微浸润和浸润的占比
+
+```{r fig.height=6, fig.width=12}
+# 1. count the number of cells from different patients in each cluster
+# 2. convert the counts into percentage
+temp = as.data.frame(obj_cca@meta.data %>% select(res.0.6, Disease, Phage) %>% filter(Disease == "Adenocarcinoma") %>% group_by(res.0.6, Phage) %>% add_tally() %>% unique() %>% group_by(res.0.6) %>% mutate(freq = n / sum(n)))
+
+colnames(temp) <- c("Cluster", "Disease", "Phage", "counts", "freq")
+
+p1 <- ggplot(
+    data=temp, 
+    aes(x=reorder(Cluster, -counts), y=log10(counts), fill=Phage)
+) + geom_bar(
+    stat = "identity"
+    ) + labs(
+            x="Cluster", y="log10(counts)"
+        )
+    
+
+p2 <- ggplot(
+    data=temp, aes(x=Cluster, y=freq, fill = Phage)
+    ) + 
+    geom_bar(
+        stat = "identity", 
+        position = position_stack()
+    )
+
+ggarrange(p1, p2, nrow=1, ncol=2, common.legend = TRUE, legend = "right")
+```
+
+---
+# Test slalom
+
+```{r}
+obj <- readRDS(here("00_data_ingest", "04_rds_generated", "without_cca_random_selected_samples.rds"))
+```
+
+```{r}
+exprs_matrix <- SingleCellExperiment::logcounts(as.SingleCellExperiment(obj))
+mesc1 <- SingleCellExperiment::SingleCellExperiment(
+    assays = list(logcounts = as.matrix(exprs_matrix)[obj@var.genes,])
+)
+```
+
+h.all.v6.2.symbols.gmt download from `http://software.broadinstitute.org/gsea/msigdb/collections.jsp#H`
+```{r}
+genesets <- GSEABase::getGmt(here("00_data_ingest", "00_raw_data", "h.all.v6.2.symbols.gmt"))
+```
+
+```{r}
+model <- newSlalomModel(mesc1, genesets, n_hidden = 5, min_genes = 1)
+```
+
+```{r}
+model <- initSlalom(model)
+```
+
+```{r}
+model <- trainSlalom(model, nIterations = 5000, shuffle = TRUE, pretrain = TRUE, seed = 222)
+```
+
+```{r}
+topTerms(model)
+```
+
+```{r}
+plotTerms(model)
+```
+
+```{r}
+plotRelevance(model)
+```
+
+```{r}
+mesc2 <- addResultsToSingleCellExperiment(mesc1, model)
+```
+
+```{r}
+model <- readRDS(here("00_data_ingest", "07_generated_by_slalom", "cca_random_selected_model.rds"))
+```
+
+```{r}
+topTerms(model)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

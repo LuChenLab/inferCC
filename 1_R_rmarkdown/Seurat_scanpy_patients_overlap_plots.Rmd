@@ -1,0 +1,153 @@
+---
+title: "Seurat_percentage_plots"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(ggplot2)
+library(here)
+library(ggpubr)
+library(dplyr)
+
+filenames = list()
+
+dpi = 300
+```
+
+## Scanpy and seurat
+```{r}
+sc1 <- read.csv("/mnt/data5/zhangyiming/scanpy1.csv")
+sc1 <- sc1[, 1:4]
+sc1$louvain <- as.character(sc1$louvain)
+sc1 <- as.data.frame(sc1 %>% select(louvain, cell_name, cell) %>% group_by(louvain) %>% mutate(freq = cell / sum(cell)))
+
+
+p <- ggplot(data = sc1, aes(x=louvain, y=freq, fill=cell_name)) + geom_bar(stat = "identity", position = "stack")
+ggsave(filename = "/mnt/raid62/Lung_cancer_10x/00_data_ingest/05_scanpy_generated/scanpy_cluster_with_seurat_1.png", width = 12, height = 6, dpi = 300, units = "in")
+
+
+sc2 <- read.csv("/mnt/data5/zhangyiming/scanpy2.csv")
+sc2 <- sc2[, 1:4]
+sc2 <- as.data.frame(sc2 %>% select(louvain, cell_name, cell) %>% group_by(louvain) %>% mutate(freq = cell / sum(cell)))
+sc2$louvain <- as.character(sc2$louvain)
+
+p <- ggplot(data = sc2, aes(x=louvain, y=freq, fill=cell_name)) + geom_bar(stat = "identity", position = "stack")
+ggsave(filename = "/mnt/raid62/Lung_cancer_10x/00_data_ingest/05_scanpy_generated/scanpy_cluster_with_seurat_2.png", width = 12, height = 6, dpi = 300, units = "in")
+
+
+ggplot(data = sc1, aes(x=cell_name, fille=cell_name, y=cell)) + geom_bar(stat = "identity", position = "dodge") + facet_grid(louvain~., scales = "free_y")
+
+
+
+p1 <- ggplot(sc1, aes(y=cell_name, x=louvain, size=cell, color=freq)) + 
+    geom_point() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+p2 <- ggplot(sc2, aes(y=cell_name, x=louvain, size=cell, color=freq)) + 
+    geom_point() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+p <- ggarrange(p1, p2)
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/00_data_ingest/05_scanpy_generated/scanpy_cluster_with_seurat_points.png", 
+    plot=p, 
+    width = 24, 
+    height = 8, 
+    dpi = 300, 
+    units = "in"
+)
+```
+
+
+## Seurat and patients overlap
+
+The cluster of each patients and percentage
+```{r}
+patients_rds = here("00_data_ingest", "06_seurat_by_patients")
+
+rds = list.files(path = patients_rds, pattern = "*.rds", recursive = T, full.names = T)
+
+data <- readRDS(rds[1])
+meta <- data@meta.data
+
+for (i in rds[2:length(rds)]) {
+    print(i)
+    data <- readRDS(i)
+    meta <- rbind(meta, data@meta.data)
+}
+
+meta$cell = rownames(meta)
+```
+
+load meta info
+```{r}
+obj <- readRDS(here("00_data_ingest", "04_rds_generated", "seurat_obj_pcs75_res0.6.rds"))
+obj <- obj@meta.data
+
+obj <- data.bak
+data.bak = obj
+obj$cell_name <- gsub("\\*", "", obj$cell_name)
+obj$cell_name <- gsub("Dentritic", "Dendritic", obj$cell_name)
+
+obj = obj[, c("cell_name", "PatientID"), drop = FALSE]
+obj$cell = rownames(obj)
+```
+
+```{r}
+meta.bak = meta
+
+meta <- meta.bak
+meta$cell = rownames(meta)
+meta <- merge(meta, obj, by = "cell", all = TRUE)
+```
+
+```{r}
+
+test = as.data.frame(meta %>% select(res.0.6, cell_name, PatientID) %>% group_by(res.0.6, cell_name, PatientID) %>%count() %>% group_by(PatientID) %>% mutate(freq = n / sum(n)))
+
+
+p <- ggplot(test, aes(x = res.0.6, y = cell_name, size=n, color=freq)) + geom_point() + facet_wrap(~PatientID, ncol=3, scales = "free_x")
+ggsave(filename = "/mnt/raid62/Lung_cancer_10x/00_data_ingest/06_seurat_by_patients/seurat_overlap_by_patients.png", plot = p, width = 10, height = 40, limitsize = FALSE, units = "in", dpi = dpi)
+```
+
+```{r}
+obj <- data.bak
+
+obj$cell_name <- gsub("\\*", "", obj$cell_name)
+obj$cell_name <- gsub("Dentritic", "Dendritic", obj$cell_name)
+
+
+test1 <- as.data.frame(obj %>% group_by(cell_name, PatientID) %>% count() %>% group_by(cell_name) %>% mutate(freq = n / sum(n)))
+
+p <- ggplot(test1, aes(x = cell_name, y = PatientID, size = n, color = freq)) + 
+    geom_point() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/00_data_ingest/06_seurat_by_patients/seurat_patients_component.png", 
+    plot = p, 
+    width = 8, 
+    height = 12, 
+    limitsize = FALSE, 
+    units = "in", 
+    dpi = dpi
+)
+```
+
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

@@ -1,0 +1,372 @@
+---
+title: "LungCancer10X_Heterogeneity"
+author: "Yiming Zhang"
+date: "2019/3/5"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+cols = 3
+size = 10
+dpi = 300
+filenames = list()
+```
+
+```{r}
+load_packages <- function() {
+    library(Seurat)
+    library(here)
+    library(openxlsx)
+    library(dplyr)
+}
+
+suppressPackageStartupMessages(load_packages())
+```
+
+```{r}
+obj <- readRDS(here("00_data_ingest", "04_rds_generated", "seurat_obj_pcs75_res0.6.rds"))
+```
+
+## Functions
+以下为来自于[tabula-muris](https://github.com/czbiohub/tabula-muris/blob/master/32_cluster_heterogeneity/ClusterHeterogeneity.Rmd)的异质性计算方法。
+
+```{r}
+# function 1
+# 该function用来算同一个样本的matrix中不同样本之间的distance
+# :param mat: matrix, 格式未知, 应当是raw.data类似的matrix
+# :param n_samples: int, use calculate distance between how many samples
+avg_pairwise_distance <- function(mat, n_samples = 1000){
+    n = dim(mat)[1]
+    total_distance = 0
+    for(s in 1:n_samples){
+        samples = sample(n,2)
+        diff = mat[samples[1],] - mat[samples[2],]
+        distance = sqrt(sum(diff**2))
+        total_distance = total_distance + distance
+    }
+    average_distance = total_distance/n_samples
+    return(average_distance)
+}
+
+
+
+# test on identity matrix, where all pairwise distances are sqrt(2)
+# test_mat = matrix(c(1,0,0,0,1,0,0,0,1), nrow = 3)
+# avg_pairwise_distance(test_mat)
+# n.pcs
+
+
+# functions 2
+# 该functions属于function 1的套皮functions
+# 用来计算不同cluster之间的distance
+# :param apa_s: added by zhang at 2019.02.19 to isolate the inside and outside envs
+# :param j: presume should be int, represent the cluster id
+# :param n.pcs: int, calculate distance between how many pcs
+avg_cluster_distance <- function(apa_s, j, n.pcs = 100){
+    cells = apa_s@meta.data %>% filter(cluster == j) %>% pull(cell)
+    mat = apa_s@dr$pca@cell.embeddings[cells, 1:n.pcs]
+    return(avg_pairwise_distance(mat))
+}
+
+
+# functions  3
+# same as function 1
+avg_pairwise_distance2 <- function(mat1, mat2, n_samples = 1000){
+    n1 = dim(mat1)[1]
+    n2 = dim(mat2)[1]
+    total_distance = 0
+    for(s in 1:n_samples){
+        sample1 = sample(n1, 1)
+        sample2 = sample(n2, 1)
+        diff = mat1[sample1,] - mat2[sample2,]
+        distance = sqrt(sum(diff**2))
+        total_distance = total_distance + distance
+    }
+    average_distance = total_distance/n_samples
+    return(average_distance)
+}
+
+
+
+# functions 4
+# this functions is used to create a square matrix of distance between each other
+# :param mat: matrix
+# :param ids: ???
+# :param n_samples: int, use how many samples
+# :param min_id_size: int, at least how many same id show up in ids (a list)
+# :param verbose: show detail messages
+avg_pairwise_distance_set <- function(mat, ids, n_samples = 1000, min_id_size = 1, verbose = F){
+    id_list = unique(ids)
+    # Keep only those ids occuring at least twice
+    id_list = id_list[sapply(id_list, function(x){
+        if(sum(ids == x) < min_id_size){
+            if(verbose){
+                print(paste0("Too few instances of ", x))
+            }
+            FALSE
+        }
+        else{
+            TRUE
+        }
+    }
+    )]
+        
+    n_ids = length(id_list)
+    distance_mat = matrix(NA, nrow = n_ids, ncol = n_ids)
+    rownames(distance_mat) = id_list
+    colnames(distance_mat) = id_list
+    for(i in 1:length(id_list)){
+        id_1 = id_list[i]
+                
+        # First do the self-distances
+        mat_1 = mat[ids == id_1,]
+        distance_mat[i,i] = avg_pairwise_distance(mat[ids == id_1,])
+        if(i < length(id_list)){
+            for(j in (i+1):length(id_list)){
+                id_2 = id_list[j]
+                mat_2 = mat[ids == id_2,]
+                distance_mat[i,j] = avg_pairwise_distance2(mat_1, mat_2)
+                distance_mat[j,i] = distance_mat[i,j]
+            }
+        }
+    }
+    return(distance_mat)
+}
+
+
+
+# function 5
+# 最复杂的function 主要是将做需要的特征提取成对应的matrix和id
+# :param apa_s: seurat object
+# :param j: 所需要比较的分类的label
+# :param n.pcs: int,需要比较多少个pc
+# :param min_id_size: int, id至少需要出现多少次才进行计算，也就是说cluster中样本的数量不能太小，否则不予理会
+# :param isDropNa: 是否将NA去掉
+average_cluster_differences_set <- function(
+    apa_s,
+    j, 
+    n.pcs = 100, 
+    min_id_size = 5, 
+    isDropNa = T
+){
+    # 这行filter中是主要的特征，比如我的可以是PatientID，is.na中的是次要特征，比如cluster的id。
+    # 但是这两个标签都是从meta.data中获取，因此，需要现将cluster的结果与meta.data整合
+    # 以我自己的数据为例，此处是获取某个病人的所有样本
+    # is.na那一项，可以随便填写，根据自己需求来，看需要去除哪一项的na
+    cluster_metadata = apa_s@meta.data %>% filter(PatientID == j & (!(isDropNa & is.na(Cell))))
+    cluster_metadata$cluster = cluster_metadata$cluster_id
+    
+    # print("cluster_metadata")
+    # print(head(cluster_metadata))
+    
+    # 获取该病人样本的所有cells信息
+    # 便于根据cell的id从pca中提取matrix
+    cells = cluster_metadata %>% pull(Cell)
+    
+    # print("cells")
+    # print(head(cells))
+    
+    # 获取该病人样本的pca matrix
+    mat = apa_s@dr$pca@cell.embeddings[cells, 1:n.pcs]
+    
+    # 计算病人每个cluster中细胞的数据
+    class_sizes = cluster_metadata %>% 
+        mutate(Celltype = 
+                   ifelse(is.na(cluster), "NA", as.character(PatientID)))%>%
+        mutate(class = paste0(cluster, " (", PatientID, ")")) %>% group_by(class) %>%
+        count() %>% mutate(class_with_size = paste0(class, " (", n,")"))
+    
+    # print("class_sizes")
+    # print(head(class_sizes))
+    
+    # 计算每个病人的xy坐标轴，也就是用来做heatmap的x y坐标轴
+    classes = cluster_metadata %>% 
+        mutate(cluster = 
+                   ifelse(is.na(cluster), "NA", as.character(cluster))) %>%
+        mutate(class = paste0(cluster, " (", PatientID, ")")) %>% 
+        pull(class)
+    
+    classes = plyr::mapvalues(x = classes, 
+                              from = class_sizes$class,
+                              to = class_sizes$class_with_size)
+    
+    # print("classes")
+    # print(head(classes))
+    
+    # print(head(mat[, 1:10]))
+    # print(classes)
+    
+    return(avg_pairwise_distance_set(mat, classes, min_id_size = min_id_size))
+}
+
+
+# @deprecated -> use pheatmap instead
+# 该functions 功能简单，就是用于批量作图
+# :param dists: 上边functions计算出的不同类别之间的distances
+# :param relative: bool, 如何设定图的breaks
+# :param xmin: only work with relative=True
+# :param xmax: only work with relative=True
+plot_dist <- function(dists, relative = TRUE, xmin = 10, xmax = 40){
+  ncol = 100
+  n_types = dim(dists)[1]
+  if(relative){
+    heatmap.2(dists, trace = "none", col = viridis(ncol), 
+            symm = TRUE, revC = TRUE, breaks = seq(xmin, xmax, (xmax - xmin)/ncol), dendrogram = "none", density.info = "none")
+  }
+  else{
+    heatmap.2(dists, trace = "none", col = viridis(ncol), 
+            symm = TRUE, revC = TRUE)
+  }
+}
+
+```
+
+
+```{r fig.height=6, fig.width=12}
+# function to make tSNE plot
+# :param meta: part of customized obj@meta.data
+# :return : ggplot object
+make_tSNE_plot <- function(meta) {
+    p <- ggplot(data=meta, aes(x=tSNE_1, y=tSNE_2, color=cluster_id)) + 
+        geom_point(size = 1) +
+        theme(legend.position = "none", legend.title=element_blank()) + 
+        guides(color = guide_legend(ncol = 12), shape = guide_legend(ncol = 12)) +
+        scale_shape_manual(values=seq(0,length(unique(meta$cluster_id))))                    # 根据cluster的数量指定shape的数量
+    
+    for (i in unique(meta$cluster)) {                                                     # add cluster by median coords of tSNE
+        temp = meta %>% filter(cluster_id == i)
+        
+        x = median(temp$tSNE_1)
+        y = median(temp$tSNE_2)
+                
+        p = p + annotate("text", x=x, y=y, label= as.character(i))
+    }
+    return(p)
+}
+
+
+# learn how use combine ggplot with peahtmap from 
+# - https://www.biostars.org/p/128229/
+# - https://stackoverflow.com/questions/39590849/using-a-pheatmap-in-arrangegrob
+
+for (i in sort(unique(obj@meta.data$PatientID))){
+    dists = average_cluster_differences_set(obj, i, min_id_size = 5)
+    if(dim(dists)[1] > 1){
+        x = pheatmap(dists, silent = TRUE)
+        
+        temp = obj@meta.data %>% filter(PatientID == i)
+        p = make_tSNE_plot(temp)
+        grid.arrange(grobs = list(x[[4]], p), ncol = 2)
+    }
+}
+```
+
+
+```{r}
+# 下边的流程基本上想统计什么级别上的异质性，就把columns names改成什么
+# 在下方计算distances时，其原本的function内部定死了只能选择那一列，及其不灵活。
+# 特此修改一个function，仅针对cluster_id的计算，就目前他原来的写法没有任何可移植性，换一个变量所有代码重复制一遍，然后就改一两个变量
+# function 6
+# 最复杂的function 主要是将做需要的特征提取成对应的matrix和id
+# :param cluster_metadata: seurat object's metadata, 做过筛选后的seurat object的meta data
+# :param j: 所需要比较的分类的label
+# :param n.pcs: int,需要比较多少个pc
+# :param min_id_size: int, id至少需要出现多少次才进行计算，也就是说cluster中样本的数量不能太小，否则不予理会
+# :param isDropNa: 是否将NA去掉
+average_cluster_differences_set_for_barplot <- function(
+    obj,
+    j, 
+    n.pcs = 100, 
+    min_id_size = 5, 
+    isDropNa = T
+){
+    # 这行filter中是主要的特征，比如我的可以是PatientID，is.na中的是次要特征，比如cluster的id。
+    # 但是这两个标签都是从meta.data中获取，因此，需要现将cluster的结果与meta.data整合
+    # 以我自己的数据为例，此处是获取某个病人的所有样本
+    # is.na那一项，可以随便填写，根据自己需求来，看需要去除哪一项的na
+    cluster_metadata = obj@meta.data %>% filter(cluster_id == j & (!(isDropNa & is.na(Cell))))
+    cluster_metadata$cluster = cluster_metadata$cluster_id
+    
+    # print("cluster_metadata")
+    # print(head(cluster_metadata))
+    
+    # 获取该病人样本的所有cells信息
+    # 便于根据cell的id从pca中提取matrix
+    cells = cluster_metadata %>% pull(Cell)
+    
+    # print("cells")
+    # print(head(cells))
+    
+    # 获取该病人样本的pca matrix
+    mat = obj@dr$pca@cell.embeddings[cells, 1:n.pcs]
+    
+    # 计算病人每个cluster中细胞的数据
+    class_sizes = cluster_metadata %>% 
+        mutate(Celltype = 
+                   ifelse(is.na(cluster), "NA", as.character(cluster_id)))%>%
+        mutate(class = paste0(cluster, " (", cluster_id, ")")) %>% group_by(class) %>%
+        count() %>% mutate(class_with_size = paste0(class, " (", n,")"))
+    
+    # 计算每个病人的xy坐标轴，也就是用来做heatmap的x y坐标轴
+    classes = cluster_metadata %>% 
+        mutate(cluster = 
+                   ifelse(is.na(cluster), "NA", as.character(cluster))) %>%
+        mutate(class = paste0(cluster, " (", cluster_id, ")")) %>% 
+        pull(class)
+    
+    classes = plyr::mapvalues(x = classes, 
+                              from = class_sizes$class,
+                              to = class_sizes$class_with_size)
+
+    return(avg_pairwise_distance_set(mat, classes, min_id_size = min_id_size))
+}
+
+
+distances = sapply(
+    as.vector(sort(unique(obj@meta.data$cluster_id))), 
+    function(i) { 
+        average_cluster_differences_set_for_barplot(obj, i, min_id_size = 5)
+    }, 
+    simplify = F
+)
+
+# calculate the heterogeneity between cells and patients
+patient_count = obj@meta.data %>% group_by(PatientID, cluster_id) %>% count() %>% ungroup() %>%
+  group_by(cluster_id) %>% count() %>% ungroup() %>% mutate(cluster = as.character(cluster_id))
+
+
+geo_normalize <- function(dists){
+  dists / (sqrt(diag(dists)) %o% sqrt(diag(dists)))
+}
+normalized_distances = lapply(distances, geo_normalize)
+
+
+global_avg = avg_pairwise_distance(obj@dr$pca@cell.embeddings[, 1:100], n_samples = 10000)
+```
+
+
+```{r fig.height=6, fig.width=12}
+
+max_dist = sapply(distances, max)/global_avg
+avg_dist = sapply(distances, mean)
+worst_dist = sapply(normalized_distances, max)
+df = tibble(cluster_id = as.character(unique(obj@meta.data$cluster_id)),
+            max_dist = max_dist,
+            worst_dist = worst_dist, 
+            n_types = sapply(distances, function(x){dim(x)[1]}),
+            rank = rank(max_dist)
+            )
+df = df %>% left_join(patient_count, by = 'cluster_id')
+
+
+ggplot(df, aes(reorder(cluster, rank), max_dist)) + geom_bar(stat = 'identity') +
+   geom_hline(aes(yintercept = 1.0)) + 
+    ylab('heterogeneity score') + 
+    xlab('cluster') +
+    theme(axis.text.x = element_text(angle = 90))
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

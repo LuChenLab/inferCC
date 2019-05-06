@@ -1,0 +1,316 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+The huge memory usage is not affordable, therefore, we use the loom version Seurat instead.
+
+Version 
+
+```{r}
+# install.packages("onlinePCA")
+# devtools::install_github(repo = "hhoeflin/hdf5r")
+# devtools::install_github(repo = "mojaveazure/loomR", ref = "develop")
+# devtools::install_github(repo = "satijalab/seurat", ref = "loom")
+
+load_packages <- function() {
+    library("loomR")
+    library("Seurat")
+    library("here")
+}
+
+suppressPackageStartupMessages(load_packages())
+
+filenames = list()
+image_dir = "04_cca_plots/loom"
+dir.create(here(image_dir), showWarnings = FALSE)
+dpi = 300
+
+sessionInfo()
+```
+
+
+## 1. Convert seurat obj to loom
+```
+obj <- readRDS(here("00_data_ingest", "04_rds_generated", "seurat_obj_cca_by_batch_3.rds"))
+
+batch1 = CreateSeuratObject(
+    raw.data = obj@raw.data[,rownames(obj@meta.data[obj@meta.data$Batch == 1, ])], 
+    meta.data = obj@meta.data, 
+    project="first"
+)
+batch2 = CreateSeuratObject(
+    raw.data = obj@raw.data[,rownames(obj@meta.data[obj@meta.data$Batch == 2, ])], 
+    meta.data = obj@meta.data, 
+    project="second"
+)
+batch3 = CreateSeuratObject(
+    raw.data = obj@raw.data[,rownames(obj@meta.data[obj@meta.data$Batch == 3, ])], 
+    meta.data = obj@meta.data, 
+    project="nature_medicine"
+)
+
+batch1 <- Convert(
+    from = batch1,
+    to = "loom",
+    filename = here("00_data_ingest", "04_rds_generated", "seurat_obj_cca_batch_1.loom"),
+    display.progress = TRUE
+)
+
+batch2 <- Convert(
+    from = batch2, 
+    to = "loom", 
+    filename = here("00_data_ingest", "04_rds_generated", "seurat_obj_cca_batch_2.loom"), 
+    display.progress = TRUE
+)
+
+batch3 <- Convert(
+    from = batch3, 
+    to = "loom", 
+    filename = here("00_data_ingest", "04_rds_generated", "seurat_obj_cca_batch_3.loom"), 
+    display.progress = TRUE
+)
+
+rm(obj)
+```
+
+```{r}
+batch1 <- as.SingleCellExperiment(batch1)
+batch2 <- as.SingleCellExperiment(batch2)
+batch3 <- as.SingleCellExperiment(batch3)
+
+correct <- fastMNN(batch1, batch2, batch3)
+```
+
+```{r}
+batch1 <- connect(filename = here("00_data_ingest", "04_rds_generated", "seurat_obj_cca_batch_1.loom"), mode = "r+")
+batch2 <- connect(filename = here("00_data_ingest", "04_rds_generated", "seurat_obj_cca_batch_2.loom"), mode = "r+")
+batch3 <- connect(filename = here("00_data_ingest", "04_rds_generated", "seurat_obj_cca_batch_3.loom"), mode = "r+")
+```
+
+
+```{r}
+genes.use = c()
+batch_list = list(batch1, batch2, batch3)
+
+for(i in 1:3) {
+    NormalizeData(object = batch_list[[i]], display.progress = TRUE, overwrite=TRUE)
+    FindVariableGenes(batch_list[[i]])
+
+    genes.use <- c(genes.use, head(x = GetVariableGenes(object = batch_list[[i]])$index, n = 1000))
+}
+
+genes.use <- intersect(genes.use, rownames(ctrl@scale.data))
+genes.use <- intersect(genes.use, rownames(stim@scale.data))
+
+
+obj <- RunMultiCCA(list(batch1, batch2, batch3), num.ccs = 30)
+```
+
+```{r}
+data <- read.csv("zcat /mnt/raid62/Lung_cancer_10x/00_data_ingest/00_raw_data/02_raw_counts_by_patients/PLC017.csv.gz")
+data <- as.data.frame(data)
+rownames(data) <- data$V1
+data <- data[, !colnames(data) %in% c("V1")]
+```
+
+```{r}
+dpi = 300
+num.pcs = 100
+
+
+parser <- ArgumentParser()
+
+# specify our desired options 
+# by default ArgumentParser will add an help option 
+parser$add_argument(
+    "-i", 
+    "--input", 
+    type="character",
+    help="Path to input csv.gz [default %(default)s]"
+)
+parser$add_argument(
+    "-o", 
+    "--output", 
+    help="Path to output directoy"
+)
+parser$add_argument(
+    "-l",
+    "--label",
+    help="",
+    default="LungCancer10X"
+)
+parser$add_argument(
+    "-m",
+    "--meta",
+    help=""
+)
+parser$add_argument(
+    "--dpi",
+    type="integer",
+    default=300
+)
+parser$add_argument(
+    "--pcs",
+    type="integer",
+    default=100
+)
+
+# get command line options, if help option encountered print help and exit,
+# otherwise if options not found on command line then set defaults, 
+args <- parser$parse_args()
+
+if (is.na(args$input)) {
+    stop("no input")
+} else if (is.na(args$input)) {
+    stop("no output")
+}
+
+input = args$input
+output = args$output
+label = args$label
+meta = args$meta
+
+if(dir.exists(output)) {
+    dir.create(output, recursive = TRUE)
+}
+
+
+data <- fread(paste("zcat", input, collapse = " "))
+
+
+to_sparse <- function(d_table){
+  
+  i_list <- lapply(d_table, function(x) which(x != 0))
+  counts <- unlist(lapply(i_list, length), use.names = F)
+
+  return(sparseMatrix(
+    i = unlist(i_list, use.names = F),
+    j = rep(1:ncol(d_table), counts),
+    x = unlist(lapply(d_table, function(x) x[x != 0]), use.names = F),
+    dims = dim(d_table),
+    dimnames = list(NULL, names(d_table)))
+  )
+}
+
+data1 <- as.data.frame(data)
+
+
+obj <- CreateSeuratObject(raw.data = data, min.cells = 3, min.genes = 200, project = label)
+
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@data), value = TRUE)
+percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+
+p <- VlnPlot(object = obj, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3, do.return = TRUE)
+ggsave(filename = paste(output, "00_vlnplot.png", collapse = "/"), plot = p, width = 12, height = 6, dpi = dpi, units = "in")
+
+
+png(paste(output, "01_geneplot.png", collapse = "/"), width = 12, height = 6, units = "in", res = dpi)
+par(mfrow = c(1, 2))
+GenePlot(object = pbmc, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = pbmc, gene1 = "nUMI", gene2 = "nGene")
+dev.off()
+
+obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, pcs.compute = num.pcs,do.print = FALSE)
+
+
+png(paste(output, "02_pcaplot.png", collapse = "/"), width = 6, height = 6, units = "in", res = dpi)
+PCAPlot(object = obj, dim.1 = 1, dim.2 = 2)
+dev.off()
+
+
+png(paste(output, "03_pcelbowplot.png", collapse = "/"), width = 12, height = 6, units = "in", res = dpi)
+PCElbowPlot(object = obj, num.pc = num.pcs)
+dev.off()
+
+# determine how many pcs to use
+pc.sd = apply(obj@dr$pca@cell.embeddings, 2, sd)
+diff.pc.sd = diff(pc.sd)
+sd.difference = max(pc.sd) - min(pc.sd)
+num.pcs = max(which(abs(diff.pc.sd) > 0.005 * sd.difference))
+
+# make pca heatmap
+if (num.pcs > 30) {
+    num.pcs.heatmap = 30
+    heatmap_row = 10
+} else {
+    heatmap_row = ceiling(num.pcs / 3)
+    num.pcs.heatmap = num.pcs
+}
+
+png(paste(output, "04_pcheatmap.png", collapse = "/"), width = 12, height = 4 * heatmap_row, units = "in", res = dpi)
+PCHeatmap(mca, pc.use = 1:num.pcs.heatmap, cells.use = 500, do.balanced = TRUE)
+dev.off()
+
+
+obj <- FindClusters(object = obj, reduction.type = "pca", dims.use = 1:num.pcs, resolution = 0.6, print.output = 0, save.SNN = TRUE)
+obj <- RunTSNE(object = obj, dims.use = 1:num.pcs, do.fast = TRUE)
+obj <- RunUMAP(object = obj, dims.use = 1:num.pcs)
+
+# make tsne and umap plot
+p1 <- TSNEPlot(object = obj, do.label = TRUE, pt.size = 0.1, label.size = 10, no.legend=TRUE, do.return=TRUE, dim.use = "tsne")
+p2 <- TSNEPlot(object = obj, do.label = TRUE, pt.size = 0.1, label.size = 10, no.legend=TRUE, do.return=TRUE, dim.use = "umap")
+
+p <- ggarrange(p1, p2, ncol = 2)
+ggsave(
+    filename = paste(output, "05_tsne_umap.png", collapse = "/"), 
+    plot = p, 
+    units = "in", 
+    width = 20, 
+    height = 10,
+    dpi = dpi
+)
+
+
+# make dot plot
+marker <- read.csv(meta)
+marker <- intersect(marker$Markers, rownames(obj@scale.data))
+
+p <- DotPlot(object = obj, genes.plot = marker, do.return = TRUE, x.lab.rot = TRUE)
+p <- p + coord_flip()
+ggsave(
+    filename = paste(output, "06_dotplot.png", collapse = "/"), 
+    plot = p, 
+    units = "in", 
+    width = length(unique(obj@meta.data$res.0.6)), 
+    height = 0.2 * length(marker),
+    dpi = dpi
+)
+
+saveRDS(obj, paste(output, "seurat_obj.rds", collapse = "/"))
+```
+
+```{r fig.height=4, fig.width=12}
+temp <- as.data.frame(colSums(obj@dr$pca@cell.embeddings))
+
+
+y <- apply(obj@dr$pca@cell.embeddings, 2, sd)
+x <- 1:100
+model <- lm(y~I(1/x))
+
+which(abs(model$residuals) > 0.1)
+
+```
+```{r}
+x = seq(1,15)
+y = c(4,5,6,5,5,6,7,8,7,7,6,6,7,8,9)
+plot(x,y,type="l",ylim=c(3,10))
+lo <- loess(y~x)
+xl <- seq(min(x),max(x), (max(x) - min(x))/1000)
+out = predict(lo,xl)
+lines(xl, out, col='red', lwd=2)
+
+infl <- c(FALSE, diff(diff(y)>0)!=0)
+points(xl[infl ], out[infl], col="blue")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
