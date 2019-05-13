@@ -6,6 +6,8 @@ u"""
 This scripts is used to pull down all the loom files from server
 """
 import os
+import fnmatch
+import re
 import sys
 
 import logging
@@ -24,9 +26,6 @@ __dir__ = os.path.abspath(os.path.dirname(__file__))
 __author__ = "ygidtu"
 __email__ = "ygidtu@gmail.com"
 __version__ = "0.1"
-
-
-remote = "/mnt/raid62/Lung_cancer_10x/CellRanger/lung_cancer"
 
 
 def connect(host: str, port: int, user: str, passwd: str) -> paramiko.SFTP:
@@ -51,14 +50,25 @@ def iter_all_over(sftp: paramiko.SFTP, target: str, postfix: str) -> list:
     for i in data:
         file_name = i.split()[-1]
         if "d" in i.split()[0]:
+
+            next_target = os.path.join(target, file_name)
+            
+            try:
+                sftp.stat(next_target)
+            except FileNotFoundError:
+                continue
+
             results += iter_all_over(
                 sftp=sftp,
-                target=os.path.join(target, file_name),
+                target=next_target,
                 postfix=postfix
             )
         else:
-            if postfix != "*" and i.endswith(postfix):
+            if postfix == "*":
                 results.append(os.path.join(target, file_name))
+            elif re.search(postfix, i, re.I):
+                results.append(os.path.join(target, file_name))
+
     return results
 
 
@@ -85,17 +95,31 @@ def main(args: Namespace):
     if not args.force and os.path.exists(temp_progress):
         with open(temp_progress) as r:
             files = json.load(r)
-    else:
-        logger.info("Finding targets")
+
+    elif args.glob:
         files = iter_all_over(
             sftp=sftp,
             target=args.dir,
-            postfix=args.file
+            postfix="*"
+        )
+        files = [x for x in files if fnmatch.fnmatch(x, args.glob)]
+    else:
+        logger.info("Finding targets")
+
+        postfix = args.file
+        postfix.rstrip("$")
+        postfix = "{0}$".format(postfix)
+
+        files = iter_all_over(
+            sftp=sftp,
+            target=args.dir,
+            postfix=postfix
         )
 
         with open(temp_progress, "w+") as w:
             json.dump(files, w, indent=4)
 
+    
     logger.info("Pulling")
     for i in files:
 
@@ -105,10 +129,13 @@ def main(args: Namespace):
         if not os.path.exists(os.path.dirname(local_path)):
             os.makedirs(os.path.dirname(local_path))
 
-        sftp.get(
-            remotepath=i,
-            localpath=local_path
-        )
+        try:
+            sftp.get(
+                remotepath=i,
+                localpath=local_path
+            )
+        except FileNotFoundError as err:
+            logger.warning(err)
 
 
 if __name__ == '__main__':
@@ -132,7 +159,6 @@ if __name__ == '__main__':
         "-port",
         help="Port",
         type=int,
-        required=True,
         default=22
     )
 
@@ -154,7 +180,7 @@ if __name__ == '__main__':
         "-dir",
         help="Target directory",
         type=str,
-        required=True
+        default=""
     )
 
     parser.add_argument(
@@ -169,6 +195,13 @@ if __name__ == '__main__':
         help="postfix of target files",
         type=str,
         default="*"
+    )
+
+    parser.add_argument(
+        "-glob",
+        help="used by Python grob, if this used, then -file is disabled, but work with -out",
+        type=str,
+        default=None
     )
 
     parser.add_argument(
