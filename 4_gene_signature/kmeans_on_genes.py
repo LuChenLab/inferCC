@@ -44,11 +44,16 @@ __email__ = "ygidtu@gmail.com"
 __dir__ = os.path.abspath(os.path.dirname(__file__))
 
 
-def load_from_csv(input_dir: str, counts_file: str="normalized_counts.csv.gz") -> (AnnData, AnnData):
+def load_from_csv(
+        input_dir: str,
+        counts_file: str="normalized_counts.csv.gz",
+        n_jobs=1
+) -> (AnnData, AnnData):
     u"""
     load data from csv files
     :param input_dir:
     :param counts_file:
+    :param n_jobs
     :return:
     """
     logger.info("Reading {0}".format(input_dir))
@@ -62,7 +67,7 @@ def load_from_csv(input_dir: str, counts_file: str="normalized_counts.csv.gz") -
     data.obs = meta
 
     logger.info("Perform ENN")
-    enn = EditedNearestNeighbours(n_jobs=10, return_indices=True)
+    enn = EditedNearestNeighbours(n_jobs=n_jobs, return_indices=True)
 
     mtx_enn, group_enn, idx_enn = enn.fit_resample(mtx, meta["Stage"])
 
@@ -71,7 +76,7 @@ def load_from_csv(input_dir: str, counts_file: str="normalized_counts.csv.gz") -
     data_enn.obs = meta.iloc[idx_enn, :]
 
     logger.info("Perform RENN")
-    renn = RepeatedEditedNearestNeighbours(n_jobs=10, return_indices=True)
+    renn = RepeatedEditedNearestNeighbours(n_jobs=n_jobs, return_indices=True)
 
     mtx_renn, group_renn, idx_renn = renn.fit_resample(mtx, meta["Stage"])
 
@@ -263,20 +268,30 @@ def estimate_best_k(
     """
 
     sum_of_squared_distances = []
+    max_cluster = min(max_cluster, data.shape[0])
     chs = []
     K = range(min_cluster, max_cluster + 1)
     res = {}
     for k in tqdm(K):
         logger.debug("Estimate best k {0}/{1}".format(k, max_cluster))
 
-        km = KMeans(n_clusters=k, random_state=random_state, n_jobs=n_jobs)
-        km = km.fit(data)
-        sum_of_squared_distances.append(km.inertia_)
+        try:
+            km = KMeans(n_clusters=k, random_state=random_state, n_jobs=n_jobs)
+            km = km.fit(data)
+            sum_of_squared_distances.append(km.inertia_)
 
-        res[k] = list(km.labels_)
-
+            res[k] = list(km.labels_)
+        except ValueError as err:
+            logger.error(err)
+            logger.error(k)
+            logger.error(data.shape)
+            break
         if k > 1:
-            chs.append(calinski_harabasz_score(data, km.labels_))
+            try:
+                chs.append(calinski_harabasz_score(data, km.labels_))
+            except ValueError as err:
+                logger.error(err)
+                chs.append(0)
 
     kn = KneeLocator(K, sum_of_squared_distances, curve='convex', direction='decreasing')
 
@@ -372,7 +387,7 @@ def perform_kmeans_on_data(
         genes[row["ident"]] = temp
 
     mtx = data.to_df().transpose()
-    mtx = mtx.loc[set(group_spec.index) & set(mtx.index), :]
+    mtx = mtx.loc[set(group_spec["gene"]) & set(mtx.index), :]
 
     km, best_k = estimate_best_k(
         mtx,
@@ -486,7 +501,7 @@ def perform_ica_on_data(
     res = []
     mtx = data.to_df().transpose()
 
-    genes_use = set(group_spec.index) & set(mtx.index)
+    genes_use = set(group_spec["gene"]) & set(mtx.index)
 
     if genes_use:
         mtx = mtx.loc[genes_use, :]
@@ -570,7 +585,7 @@ def perform_ica_on_data(
     plt.tight_layout()
     plt.savefig("{0}_heatmap_by_group.png".format(prefix), dpi=600)
 
-    with open("{0}_ica_temp.pickle".format(prefix), "wb+") as w:
+    with open("{0}_data.pickle".format(prefix), "wb+") as w:
         pickle.dump(res, w)
 
 
@@ -578,7 +593,7 @@ def perform_mfuzz(
         data: str,
         output: str,
         genes,
-        rds:str,
+        rds: str,
         group_by="Stage",
         random_state=1,
 ):
@@ -689,7 +704,7 @@ def perform_wgcna(
         output: str,
         genes,
         rds,
-        group_by = "Stage",
+        group_by="Stage",
         random_state=1
 ):
     u"""
@@ -751,6 +766,19 @@ def perform_wgcna(
     sft = pickSoftThreshold(t(mtx), verbose = 5)
     # Plot the results:
     
+    power = sft$powerEstimate
+    
+    if (is.null(power) | is.na(power)) {
+        power = 3
+    }
+    
+    if (power < 1) {
+        power = 1
+    }
+    if (power > 30) {
+        power = 30
+    }
+    
     png(file = paste0(output, "_softthreshold.png"), width = 12, height = 9, res = 600, units = "in")
     par(mfrow = c(1,2));
     cex1 = 0.9;
@@ -759,7 +787,7 @@ def perform_wgcna(
          xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
          main = paste("Scale independence"));
     text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
-         labels=sft$powerEstimate,cex=cex1,col="red");
+         labels=power,cex=cex1,col="red");
     # this line corresponds to using an R^2 cut-off of h
     abline(h=0.90,col="red")
     # Mean connectivity as a function of the soft-thresholding power
@@ -770,7 +798,7 @@ def perform_wgcna(
     dev.off()
     
     ## make network
-    net = blockwiseModules(t(mtx), power = sft$powerEstimate,
+    net = blockwiseModules(t(mtx), power = power,
                            TOMType = "unsigned", minModuleSize = 30,
                            reassignThreshold = 0, mergeCutHeight = 0.25,
                            numericLabels = TRUE, pamRespectsDendro = FALSE,
@@ -846,7 +874,7 @@ def perform_wgcna(
     os.remove(temp)
 
 
-def make_upset_plot(data_labels, target_dir):
+def make_upset_plot(data_labels, target_dir, methods_num):
     u"""
     make upset plot
     :param data_labels:
@@ -886,27 +914,34 @@ def make_upset_plot(data_labels, target_dir):
                 if len(v) > 3:
                     data["{0}_{1}".format(key, k)] = v
 
-        for_upset, for_upset_data = [], []
+        for_upset, for_upset_data, jaccard = [], [], []
 
-        for i in range(1, len(data_labels) + 1):
-            for j in combinations(data.keys(), i):
-                if len(set([x.split("_")[0] for x in j])) == i:
+        for k in range(1, methods_num + 1):
+            for x in combinations(data.keys(), k):
+                if len(set([i.split("_")[0] for i in x])) == k:
 
                     temp_data = None
+                    jaccard.append(set())
 
-                    for k in j:
+                    for y in x:
+                        jaccard[-1] |= set(data[y])
                         if temp_data is None:
-                            temp_data = set(data[k])
+                            temp_data = set(data[y])
                         else:
-                            temp_data &= set(data[k])
+                            temp_data &= set(data[y])
 
-                    for_upset.append(j)
+                    for_upset.append(x)
                     for_upset_data.append(len(temp_data))
 
         for_upset = from_memberships(for_upset, data=for_upset_data)
 
         plot(for_upset)
-        plt.savefig(os.path.join(target_dir, "{0}_upset.png".format(i)), dpi=600)
+        plt.savefig(os.path.join(target_dir, "{0}_upset.png".format(i)), dpi=450)
+
+        with open(os.path.join(target_dir, "{0}_jaccard.txt".format(i)), "w+") as w:
+            for idx in range(len(for_upset)):
+                d, j, k = for_upset[idx], for_upset_data[idx], jaccard[idx]
+                w.write("{0}\t{1}\n".format("|".join(list(d)), j / len(k)))
 
 
 def command_line() -> ap.Namespace:
@@ -993,7 +1028,6 @@ def command_line() -> ap.Namespace:
     if len(sys.argv) <= 1:
         parser.print_help()
         exit(0)
-
     try:
         return parser.parse_args(sys.argv[1:])
     except ap.ArgumentError as err:
@@ -1031,64 +1065,68 @@ def main(args: ap.Namespace):
 
     data_labels = ["Imbalanced", "ENN", "RENN"]
 
-    for i, data in zip(data_labels, load_from_csv(args.i, counts_file=args.file_name)):
-        logger.info(i)
+    for i, data in zip(data_labels, load_from_csv(args.i, counts_file=args.file_name, n_jobs=args.p)):
+        logger.info("Processing of {0}".format(i))
 
-        temp_data = os.path.join(args.o, "{0}.csv.gz".format(i))
-        data.to_df().transpose().to_csv(temp_data)
+        try:
+            temp_data = os.path.join(args.o, "{0}.csv.gz".format(i))
+            data.to_df().transpose().to_csv(temp_data)
 
-        make_dotplot(
-            coord=tsne,
-            data=data,
-            filename="{0}.png".format(os.path.join(args.o, i))
-        )
-        perform_kmeans_on_data(
-            data=data,
-            group_spec=group_spec,
-            prefix=os.path.join(args.o, "{0}_KMeans".format(i)),
-            n_jobs=args.p,
-            min_cluster=1,
-            max_cluster=args.max_cluster,
-            random_state=args.random_state,
-            rds=args.rds,
-            group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
-        )
-
-        perform_ica_on_data(
-            data=data,
-            group_spec=group_spec,
-            prefix=os.path.join(args.o, "{0}_ICA".format(i)),
-            min_cluster=1,
-            max_cluster=args.max_cluster,
-            random_state=args.random_state,
-            n_jobs=args.p,
-            n_pcs=args.n_comps,
-            do_ard=args.ard,
-            rds=args.rds,
-            group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
-        )
-
-        if args.rds:
-            perform_mfuzz(
-                data=temp_data,
-                group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
-                rds=args.rds,
-                genes=group_spec.index,
+            make_dotplot(
+                coord=tsne,
+                data=data,
+                filename="{0}.png".format(os.path.join(args.o, i))
+            )
+            perform_kmeans_on_data(
+                data=data,
+                group_spec=group_spec,
+                prefix=os.path.join(args.o, "{0}_KMeans".format(i)),
+                n_jobs=40,
+                min_cluster=1,
+                max_cluster=args.max_cluster,
                 random_state=args.random_state,
-                output=os.path.join(args.o, "{0}_Mfuzz".format(i))
+                rds=args.rds,
+                group_by="res.0.6",
             )
 
-            perform_wgcna(
-                data=temp_data,
-                group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
-                rds=args.rds,
-                genes=group_spec.index,
+            perform_ica_on_data(
+                data=data,
+                group_spec=group_spec,
+                prefix=os.path.join(args.o, "{0}_ICA".format(i)),
+                min_cluster=1,
+                max_cluster=args.max_cluster,
                 random_state=args.random_state,
-                output=os.path.join(args.o, "{0}_WGCNA".format(i))
+                n_jobs=args.p,
+                n_pcs=args.n_comps,
+                do_ard=args.ard,
+                rds=args.rds,
+                group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
             )
+
+            if args.rds:
+                perform_mfuzz(
+                    data=temp_data,
+                    group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
+                    rds=args.rds,
+                    genes=group_spec["gene"],
+                    random_state=args.random_state,
+                    output=os.path.join(args.o, "{0}_Mfuzz".format(i))
+                )
+
+                perform_wgcna(
+                    data=temp_data,
+                    group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
+                    rds=args.rds,
+                    genes=group_spec["gene"],
+                    random_state=args.random_state,
+                    output=os.path.join(args.o, "{0}_WGCNA".format(i))
+                )
+        except Exception as err:
+            logger.error(err)
+            continue
 
     logger.info("Make upset plot")
-    make_upset_plot(data_labels, args.o)
+    make_upset_plot(data_labels, args.o, methods_num=4)
 
 
 if __name__ == '__main__':
