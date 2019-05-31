@@ -12,7 +12,7 @@ import pickle
 import sys
 from glob import glob
 from subprocess import check_call, CalledProcessError
-from multiprocessing import Pool
+from multiprocessing import Pool, Process
 
 import matplotlib
 
@@ -23,7 +23,7 @@ from kneed import KneeLocator
 from matplotlib import pyplot as plt
 import pandas as pd
 import seaborn as sns
-from anndata import AnnData
+from anndata import AnnData, read
 from imblearn.under_sampling import EditedNearestNeighbours, RepeatedEditedNearestNeighbours
 from sklearn.metrics import calinski_harabasz_score
 from tqdm import tqdm
@@ -32,6 +32,7 @@ from sklearn.linear_model import LassoLarsIC, ARDRegression
 
 from itertools import combinations
 from upsetplot import from_memberships, plot
+from matplotlib_venn import venn2, venn3
 
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] - [%(name)s] - [%(levelname)s] - %(message)s')
@@ -47,20 +48,35 @@ __dir__ = os.path.abspath(os.path.dirname(__file__))
 def load_from_csv(
         input_dir: str,
         counts_file: str="normalized_counts.csv.gz",
-        n_jobs=1
+        n_jobs=1,
+        low_expression=0.1
 ) -> (AnnData, AnnData):
     u"""
     load data from csv files
     :param input_dir:
     :param counts_file:
     :param n_jobs
+    :param str
     :return:
     """
     logger.info("Reading {0}".format(input_dir))
-    mtx = pd.read_csv(os.path.join(input_dir, counts_file), index_col=0, engine="c")
-    meta = pd.read_csv(os.path.join(input_dir, "meta.csv.gz"), index_col=0, engine="c")
+
+    input_file = os.path.join(input_dir, counts_file)
+
+    # if not os.path.exists(input_file):
+    #     input_file += ".gz"
+
+    mtx = pd.read_csv(input_file, index_col=0)
+    meta = pd.read_csv(os.path.join(input_dir, "meta.csv.gz"), index_col=0)
     meta = meta.loc[meta.index, :]
 
+    logger.info(mtx.shape)
+    # filter low expressed genes
+    genes_sum = [x / mtx.shape[1] > low_expression for x in mtx.sum(axis=1)]
+
+    mtx = mtx.loc[genes_sum, :]
+
+    logger.info(mtx.shape)
     mtx = mtx.transpose()
 
     data = AnnData(mtx, obs=meta)
@@ -292,6 +308,8 @@ def estimate_best_k(
             except ValueError as err:
                 logger.error(err)
                 chs.append(0)
+
+        del km
 
     kn = KneeLocator(K, sum_of_squared_distances, curve='convex', direction='decreasing')
 
@@ -607,27 +625,35 @@ def perform_mfuzz(
     :param rds:
     :return:
     """
+    output = os.path.abspath(output)
+    tmp_data = output + "_mfuzz_tmp.txt"
+    with open(tmp_data, "w+") as w:
+        w.write("\n".join(genes))
+
     rscript = """
         random_state = {0}
         data = "{1}"
-        genes = "{2}"
+        tmp_genes = "{2}"
         output = "{3}"
         group_by = "{4}"
         rds = "{5}"
         """.format(
             random_state,
             os.path.abspath(data),
-            ",".join(genes),
+            tmp_data,
             os.path.abspath(output),
             group_by,
             rds
         )
 
     rscript += """
-    library(ggplot2)
-    library(Mfuzz)
-    library(Seurat)
-    library(stringr)
+    load <- function(){
+        library(ggplot2)
+        library(Mfuzz)
+        library(Seurat)
+        library(stringr)
+    }
+    suppressPackageStartupMessages(load())
       
     if(str_detect(packageVersion("Seurat"), "^3.\\\\d.\\\\d")) {
         detach("package:Seurat")
@@ -640,7 +666,9 @@ def perform_mfuzz(
     r = gzfile(data)
     data = read.csv(r, row.names = 1)
     
-    genes = strsplit(genes, ",")[[1]]
+    genes = read.table(tmp_genes, header = F)
+    genes = genes[, 1]
+    # remove(tmp_genes)
        
     expr = ExpressionSet(
         as.matrix(data[intersect(genes, rownames(data)),])
@@ -650,7 +678,9 @@ def perform_mfuzz(
     
     res = as.data.frame(cl$cluster)
     write.table(res, file = paste0(output, "_data.txt"), quote=F, col.name=F, sep = "\t")
+    """
 
+    """
     groups = unique(cl$cluster)
     
     image_dir = paste(output, "heatmap", sep = "_")
@@ -686,7 +716,7 @@ def perform_mfuzz(
     }
     """
 
-    temp = os.path.join(__dir__, "tmp_r.R")
+    temp = output + "_mfuzz_tmp.R"
 
     with open(temp, "w+") as w:
         w.write(rscript)
@@ -697,6 +727,7 @@ def perform_mfuzz(
         logger.error(err)
     finally:
         os.remove(temp)
+        os.remove(tmp_data)
 
 
 def perform_wgcna(
@@ -705,7 +736,8 @@ def perform_wgcna(
         genes,
         rds,
         group_by="Stage",
-        random_state=1
+        random_state=1,
+        threads=1
 ):
     u"""
 
@@ -717,36 +749,47 @@ def perform_wgcna(
     :param rds
     :return:
     """
+    output = os.path.abspath(output)
+    tmp_data = output + "_wgcna_tmp.txt"
+    with open(tmp_data, "w+") as w:
+        w.write("\n".join(genes))
 
     rscript = """
     random_state = {0}
     data = "{1}"
-    genes = "{2}"
+    tmp_genes = "{2}"
     output = "{3}"
     rds = "{4}"
     group_by = "{5}"
+    threads = {6}
     """.format(
         random_state,
         os.path.abspath(data),
-        ",".join(genes),
+        tmp_data,
         os.path.abspath(output),
         os.path.abspath(rds),
-        group_by
+        group_by,
+        threads
     )
 
     rscript += """
-    library(WGCNA)
-    library(ggplot2)
-    library(Seurat)
+    load <- function(){
+        library(WGCNA)
+        library(ggplot2)
+        library(Seurat)
+    }
+    suppressPackageStartupMessages(load())
 
-    enableWGCNAThreads()
+    enableWGCNAThreads(nThreads = threads)
      
     set.seed(random_state)
-        
+            
     r = gzfile(data)
     data = read.csv(r, row.names = 1)
     
-    genes = strsplit(genes, ",")[[1]]
+    genes = read.table(tmp_genes, header = F)
+    genes = genes[, 1]
+    # remove(tmp_genes)
     
     mtx = data[intersect(genes, rownames(data)),]
     
@@ -770,32 +813,34 @@ def perform_wgcna(
     
     if (is.null(power) | is.na(power)) {
         power = 3
+    } else {
+        if (power < 1) {
+            power = 1
+        }
+        if (power > 30) {
+            power = 30
+        }
+        
+        tryCatch({
+            png(file = paste0(output, "_softthreshold.png"), width = 12, height = 9, res = 600, units = "in")
+            par(mfrow = c(1,2));
+            cex1 = 0.9;
+            # Scale-free topology fit index as a function of the soft-thresholding power
+            plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+                 xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+                 main = paste("Scale independence"));
+            text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+                 labels=power,cex=cex1,col="red");
+            # this line corresponds to using an R^2 cut-off of h
+            abline(h=0.90,col="red")
+            # Mean connectivity as a function of the soft-thresholding power
+            plot(sft$fitIndices[,1], sft$fitIndices[,5],
+                 xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+                 main = paste("Mean connectivity"))
+            text(sft$fitIndices[,1], sft$fitIndices[,5], labels=sft$powerEstimate, cex=cex1,col="red")
+            dev.off()  
+        }, finally = {})
     }
-    
-    if (power < 1) {
-        power = 1
-    }
-    if (power > 30) {
-        power = 30
-    }
-    
-    png(file = paste0(output, "_softthreshold.png"), width = 12, height = 9, res = 600, units = "in")
-    par(mfrow = c(1,2));
-    cex1 = 0.9;
-    # Scale-free topology fit index as a function of the soft-thresholding power
-    plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
-         xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
-         main = paste("Scale independence"));
-    text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
-         labels=power,cex=cex1,col="red");
-    # this line corresponds to using an R^2 cut-off of h
-    abline(h=0.90,col="red")
-    # Mean connectivity as a function of the soft-thresholding power
-    plot(sft$fitIndices[,1], sft$fitIndices[,5],
-         xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
-         main = paste("Mean connectivity"))
-    text(sft$fitIndices[,1], sft$fitIndices[,5], labels=sft$powerEstimate, cex=cex1,col="red")
-    dev.off()
     
     ## make network
     net = blockwiseModules(t(mtx), power = power,
@@ -822,8 +867,10 @@ def perform_wgcna(
                         addGuide = TRUE, guideHang = 0.05)
                         
     dev.off()
-    
-    
+    """
+
+    """
+        
     obj <- readRDS(rds)
     
     groups = unique(res[, 1])
@@ -860,30 +907,60 @@ def perform_wgcna(
                dpi = 600)
     }
     """
-    temp = os.path.join(__dir__, "tmp_r.R")
+
+
+    temp = output + "_wgcna_tmp.R"
 
     with open(temp, "w+") as w:
         w.write(rscript)
 
     try:
         check_call("Rscript {0}".format(temp), shell=True)
+        os.remove(temp)
+        os.remove(tmp_data)
     except CalledProcessError as err:
         logger.error(err)
-        exit(err)
-
-    os.remove(temp)
 
 
-def make_upset_plot(data_labels, target_dir, methods_num):
+def _make_venn_(args):
+    labels, genes, outfile = args
+
+    fig, ax = plt.subplots()
+    if len(labels) == 2:
+        venn2(genes, set_labels=labels, ax=ax)
+    elif len(labels) == 3:
+        venn3(genes, set_labels=labels, ax=ax)
+    else:
+        logger.warning("length of different sets not in 2,3")
+
+    plt.savefig(outfile, dpi=600)
+    plt.close(fig)
+
+
+def make_upset_plot(data_labels, target_dir, methods_num, group_spec, groups, n_jobs):
     u"""
     make upset plot
     :param data_labels:
-    :param target_dir
+    :param target_dir:
+    :param methods_num:
+    :param group_spec:
+    :param groups
+    :param n_jobs
     :return:
     """
+    group_genes = {}
+    for group in groups:
+        group_genes[group] = set(group_spec.loc[[str(x) == group for x in group_spec["ident"]], "gene"])
 
+    tasks = []
     for i in data_labels:
         logger.info("Make upset plot of {0}".format(i))
+
+        out_dir = os.path.join(target_dir, "venn/{0}".format(i))
+
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+
         data = {}
         out_files = glob(os.path.join(target_dir, "{0}_*_data.json".format(i)))
 
@@ -918,6 +995,16 @@ def make_upset_plot(data_labels, target_dir, methods_num):
 
         for k in range(1, methods_num + 1):
             for x in combinations(data.keys(), k):
+
+                if k == 1:
+                    temp_genes = list(group_genes.values())
+                    temp_labels = list(group_genes.keys())
+
+                    temp_labels.append(x[0])
+                    temp_genes.append(set(data[x[0]]))
+
+                    tasks.append([temp_labels, temp_genes, os.path.join(out_dir, "{0}.png".format(x[0]))])
+
                 if len(set([i.split("_")[0] for i in x])) == k:
 
                     temp_data = None
@@ -933,15 +1020,27 @@ def make_upset_plot(data_labels, target_dir, methods_num):
                     for_upset.append(x)
                     for_upset_data.append(len(temp_data))
 
-        for_upset = from_memberships(for_upset, data=for_upset_data)
-
-        plot(for_upset)
-        plt.savefig(os.path.join(target_dir, "{0}_upset.png".format(i)), dpi=450)
-
         with open(os.path.join(target_dir, "{0}_jaccard.txt".format(i)), "w+") as w:
             for idx in range(len(for_upset)):
                 d, j, k = for_upset[idx], for_upset_data[idx], jaccard[idx]
+
                 w.write("{0}\t{1}\n".format("|".join(list(d)), j / len(k)))
+
+        # for_upset = from_memberships(for_upset, data=for_upset_data)
+        #
+        # plot(for_upset)
+        # plt.savefig(os.path.join(target_dir, "{0}_upset.png".format(i)), dpi=450)
+
+    with Pool(n_jobs) as p:
+        p.map(_make_venn_, tasks)
+
+
+def __call__(cmd):
+    try:
+        with open(os.devnull, "w") as w:
+            check_call(cmd, shell=True, stderr=w, stdout=w)
+    except CalledProcessError as err:
+        print(err)
 
 
 def command_line() -> ap.Namespace:
@@ -1021,13 +1120,24 @@ def command_line() -> ap.Namespace:
     )
     parser.add_argument(
         "--specific-ident",
-        help="Only using markers of specific group",
+        help="Only using markers of specific group, eg: 1,2",
         type=str
+    )
+    parser.add_argument(
+        "--low-expression",
+        help="Remove low expression genes, int -> by gene expression, float -> by percentage",
+        type=str,
+        default="0.01"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true"
     )
 
     if len(sys.argv) <= 1:
         parser.print_help()
         exit(0)
+
     try:
         return parser.parse_args(sys.argv[1:])
     except ap.ArgumentError as err:
@@ -1061,15 +1171,44 @@ def main(args: ap.Namespace):
 
     group_spec = group_spec.loc[idx, :]
 
-    tsne = pd.read_csv(os.path.join(args.i, "tsne.csv.gz"), index_col=0, engine="c")
+    tsne = pd.read_csv(os.path.join(args.i, "tsne.csv.gz"), index_col=0)
 
     data_labels = ["Imbalanced", "ENN", "RENN"]
 
-    for i, data in zip(data_labels, load_from_csv(args.i, counts_file=args.file_name, n_jobs=args.p)):
+    # using h5ad file to make cache
+    h5ads = [os.path.join(args.o, "{0}.h5ad".format(i)) for i in data_labels]
+
+    if all([os.path.exists(i) for i in h5ads]) and not args.force:
+        datas = []
+        for i in h5ads:
+            datas.append(read(i))
+    else:
+        try:
+            low_expression = int(args.low_expression)
+        except ValueError:
+            low_expression = float(args.low_expression)
+
+        datas = load_from_csv(
+            args.i,
+            counts_file=args.file_name,
+            n_jobs=args.p,
+            low_expression=low_expression
+        )
+
+        for i, j in zip(h5ads, datas):
+            logger.info("Save to {0}".format(i))
+            j.write(i)
+
+    tasks = []
+    for i, data in zip(data_labels, datas):
+        # if i in ["Imbalanced", "ENN"]:
+        #     continue
+
         logger.info("Processing of {0}".format(i))
 
         try:
             temp_data = os.path.join(args.o, "{0}.csv.gz".format(i))
+
             data.to_df().transpose().to_csv(temp_data)
 
             make_dotplot(
@@ -1077,17 +1216,17 @@ def main(args: ap.Namespace):
                 data=data,
                 filename="{0}.png".format(os.path.join(args.o, i))
             )
-            perform_kmeans_on_data(
-                data=data,
-                group_spec=group_spec,
-                prefix=os.path.join(args.o, "{0}_KMeans".format(i)),
-                n_jobs=40,
-                min_cluster=1,
-                max_cluster=args.max_cluster,
-                random_state=args.random_state,
-                rds=args.rds,
-                group_by="res.0.6",
-            )
+            # perform_kmeans_on_data(
+            #     data=data,
+            #     group_spec=group_spec,
+            #     prefix=os.path.join(args.o, "{0}_KMeans".format(i)),
+            #     n_jobs=40,
+            #     min_cluster=1,
+            #     max_cluster=args.max_cluster,
+            #     random_state=args.random_state,
+            #     rds=args.rds,
+            #     group_by="res.0.6",
+            # )
 
             perform_ica_on_data(
                 data=data,
@@ -1104,29 +1243,48 @@ def main(args: ap.Namespace):
             )
 
             if args.rds:
-                perform_mfuzz(
-                    data=temp_data,
-                    group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
-                    rds=args.rds,
-                    genes=group_spec["gene"],
-                    random_state=args.random_state,
-                    output=os.path.join(args.o, "{0}_Mfuzz".format(i))
-                )
 
-                perform_wgcna(
-                    data=temp_data,
-                    group_by="Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
-                    rds=args.rds,
-                    genes=group_spec["gene"],
-                    random_state=args.random_state,
-                    output=os.path.join(args.o, "{0}_WGCNA".format(i))
-                )
+                tasks.append(Process(
+                    target=perform_mfuzz,
+                    args=(
+                        temp_data,
+                        os.path.join(args.o, "{0}_Mfuzz".format(i)),
+                        group_spec["gene"],
+                        args.rds,
+                        "Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
+                        args.random_state,
+                    )
+                ))
+
+                tasks.append(Process(
+                    target=perform_wgcna,
+                    args=(
+                        temp_data,
+                        os.path.join(args.o, "{0}_WGCNA".format(i)),
+                        group_spec["gene"],
+                        args.rds,
+                        "Stage" if args.x.endswith("stage.xlsx") else "res.0.6",
+                        args.random_state,
+                        1 if args.p < 3 else args.p // 3
+                    )
+                ))
+
         except Exception as err:
             logger.error(err)
             continue
 
-    logger.info("Make upset plot")
-    make_upset_plot(data_labels, args.o, methods_num=4)
+    [x.start() for x in tasks]
+    [x.join() for x in tasks]
+    #
+    # logger.info("Make upset plot")
+    # make_upset_plot(
+    #     data_labels,
+    #     args.o,
+    #     methods_num=4,
+    #     groups=args.specific_ident,
+    #     group_spec=group_spec,
+    #     n_jobs=args.p
+    # )
 
 
 if __name__ == '__main__':
