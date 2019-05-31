@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 STR_LIST = List[str]
 
 
-db = pw.SqliteDatabase(os.path.join("/mnt/data1/zhangyiming/CellRanger", "velocyto.db"))
+db = pw.SqliteDatabase(None)
 
 
 class BaseModel(pw.Model):
@@ -334,7 +334,7 @@ def insert_value(table: BaseModel, files: STR_LIST, processes: int):
         p.map(insert, args)
 
 
-def main(args: Namespace):
+def loom_to_file(args: Namespace):
     u"""
 
     :param args:
@@ -364,6 +364,8 @@ def main(args: Namespace):
 
     logger.info("Insert csv to database")
 
+    db.init(os.path.join(args.output, "velocyto.db"))
+
     barcodes = glob(os.path.join(csv_dir, "*/obs.csv.gz"))
     insert_barcodes(barcodes)
 
@@ -379,6 +381,28 @@ def main(args: Namespace):
     insert_value(Spliced, spliced, args.processes)
     insert_value(Unspliced, unspliced, args.processes)
     insert_value(Matrix, matrix, args.processes)
+
+
+def create_new_loom(barcodes: STR_LIST, output: str):
+    u"""
+    Create a new loom based on current data
+    :param barcodes:
+    :param output: output loom path
+    :return:
+    """
+
+    pass
+
+
+
+def main(args):
+    u"""
+    main entry of this script
+    :param args:
+    :return:
+    """
+    meta = pd.read_excel()
+    pass
 
 
 if __name__ == '__main__':
