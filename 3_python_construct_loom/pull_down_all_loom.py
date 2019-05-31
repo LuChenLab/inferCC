@@ -102,7 +102,9 @@ def main(args: Namespace):
             target=args.dir,
             postfix="*"
         )
-        files = [x for x in files if fnmatch.fnmatch(x, args.glob)]
+
+        files = [x for x in files if fnmatch.fnmatch(x, os.path.join(args.dir, args.glob))]
+
     else:
         logger.info("Finding targets")
 
@@ -199,7 +201,7 @@ if __name__ == '__main__':
 
     parser.add_argument(
         "-glob",
-        help="used by Python grob, if this used, then -file is disabled, but work with -out",
+        help="used by Python grob, if this used, then -file is disabled. NOTE: if using this to get directory, add * at end",
         type=str,
         default=None
     )
