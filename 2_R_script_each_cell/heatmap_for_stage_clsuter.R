@@ -1,5 +1,7 @@
+# Created at 20190506
 # scripts to make plots of different percentage of different stage and clusters
-# using heatmap
+# using pheatmap
+
 
 args = commandArgs(trailingOnly=TRUE)
 

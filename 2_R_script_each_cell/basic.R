@@ -178,8 +178,7 @@ get_smote_match <- function(meta, num.cells=NULL) {
         return(meta)
     }
         
-    
-    print(table(meta$Stage))
+
     meta1 = convert_int(meta[, c("PatientID", "Sex", "Age", "Disease", "Stage")])  
     temp = table(meta1$Stage)
     
@@ -204,43 +203,44 @@ get_smote_match <- function(meta, num.cells=NULL) {
 
 dump_seurat_for_scanpy <- function(object, path) {
     
-    dir.create(path)
+    dir.create(path, showWarnings = F)
     
-    output_files = c(
-        paste(path, "raw.csv.gz", sep = "/"),
-        paste(path, "scale.csv.gz", sep = "/"),
-        paste(path, "meta.csv.gz", sep = "/"),
-        paste(path, "pca.csv.gz", sep = "/"),
-        paste(path, "pca_gene.csv.gz", sep = "/"),
-        paste(path, "harmony.csv.gz", sep = "/"),
-        paste(path, "harnomy_gene.csv.gz", sep = "/"),
-        paste(path, "tsne.csv.gz", sep = "/"),
-        paste(path, "umap.csv.gz", sep = "/")
-    )
+    gz = gzfile(paste(path, "raw.csv.gz", sep = "/"), "w+")
+    write.csv(object@raw.data, file = gz)
+    close(gz)
     
+    gz = gzfile(paste(path, "scale.csv.gz", sep = "/"), "w+")
+    write.csv(object@scale.data, file = gz)
+    close(gz)
     
-    data = c(
-        object@raw.data,
-        object@scale.data,
-        object@meta.data,
-        object@dr$pca@cell.embeddings,
-        object@dr$pca@gene.loadings,
-        object@dr$harmony@cell.embeddings,
-        object@dr$harmony@gene.loadings,
-        object@dr$tsne@cell.embeddings,
-        object@dr$umap@cell.embeddings
-    )
+    gz = gzfile(paste(path, "meta.csv.gz", sep = "/"), "w+")
+    write.csv(object@meta.data, file = gz)
+    close(gz)
     
-    registerDoMC(length(output_files)) 
-    foreach(i=1:length(output_files)) %dopar% {
-        print(i)
-        gz = gzfile(output_files[i], "w+")
-        write.csv(data[i], file = gz)
-        close(gz)
-    }
+    gz = gzfile(paste(path, "pca.csv.gz", sep = "/"), "w+")
+    write.csv(object@dr$pca@cell.embeddings, file = gz)
+    close(gz)
     
+    gz = gzfile(paste(path, "pca_gene.csv.gz", sep = "/"), "w+")
+    write.csv(object@dr$pca@gene.loadings, file = gz)
+    close(gz)
+    
+    gz = gzfile(paste(path, "harmony.csv.gz", sep = "/"), "w+")
+    write.csv(object@dr$harmony@cell.embeddings, file = gz)
+    close(gz)
+    
+    gz = gzfile(paste(path, "harnomy_gene.csv.gz", sep = "/"), "w+")
+    write.csv(object@dr$harmony@gene.loadings, file = gz)
+    close(gz)
+    
+    gz = gzfile(paste(path, "tsne.csv.gz", sep = "/"), "w+")
+    write.csv(object@dr$tsne@cell.embeddings, file = gz)
+    close(gz)
+    
+    gz = gzfile(paste(path, "umap.csv.gz", sep = "/"), "w+")
+    write.csv(object@dr$umap@cell.embeddings, file = gz)
+    close(gz)
 }
-
 
 
 
