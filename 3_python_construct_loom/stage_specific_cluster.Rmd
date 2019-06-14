@@ -1,0 +1,282 @@
+---
+title: "某些时期特异细胞群的marker与预后的关系"
+author: "Ygidtu"
+date: "2019/5/8"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("/Volumes/WD/CloudStation/lung_cancer_10X/讨论/2019.05.10")
+
+load_pacakges <- function() {
+    library(here)
+    library(dplyr)
+    library(TCGAbiolinks)
+    library(SingleCellExperiment)
+    library(openxlsx)
+    library(ggpubr)
+    library(ggplot2)
+}
+
+root_dir = here()
+
+cluster_info = "annotation_results_by_cluster.xlsx"
+
+
+suppressPackageStartupMessages(load_pacakges())
+
+
+
+# function to extract specific markers table
+# :param markers: DataFrame of seurat FindMarkers output
+# :param stage_specific_cluster: named list, stage -> c(cluster id)
+# :param p_val_adj: threshold of adjust p value
+# :param logfc: threshold of logFC
+extract_stage_specific_markers <- function(
+    markers, 
+    stage_specific_clusters,
+    p_val_adj = 0.05,
+    logfc = 0
+    ) {
+    res = NULL
+    for (i in names(stage_specific_clusters)) {
+        print(i)
+        
+        
+        temp = markers[markers$ident %in% stage_specific_clusters[[i]], ]
+        temp$Stage = i
+        temp = temp[abs(temp$avg_logFC) > logfc & temp$p_val_adj < p_val_adj, ]
+        
+        if (is.null(res)) {
+            res = temp
+        } else {
+            res = rbind(res, temp)
+        }
+    }
+    
+    return(res)
+}
+
+
+# function to calculate the KM-survival info based on TCGA data
+# :param markers: selected markers
+# :param data: TCGA biolinks Query data
+calculate_km_survival <- function(
+    markers, 
+    data, 
+    clinical,
+    ThreshTop=0.67, 
+    ThreshDown=0.33, 
+    Survresult=F,
+    p.cut = 1
+) {
+    # get expression value
+    expression_raw <- assay(data, "raw_count")
+    expression_log <- log2(expression_raw)
+    
+    # prepare markers gene by TCGA rownames
+    genes = as.character(sapply(rownames(expression_log), function(x){strsplit(x, "\\|", perl=T)[[1]][1]}))
+    genes <- genes %in% markers$gene
+    
+    temp_genes = rownames(expression_log)[genes]
+
+    tabSurvKM <- TCGAanalyze_SurvivalKM(clinical,
+                                        expression_log,
+                                        Genelist = temp_genes,
+                                        Survresult = Survresult,
+                                        ThreshTop=ThreshTop,
+                                        ThreshDown=ThreshDown,
+                                        p.cut = p.cut
+                                        )
+    
+    tabSurvKM$gene = as.character(sapply(rownames(tabSurvKM), function(x){strsplit(x, "\\|", perl=T)[[1]][1]}))
+    tabSurvKM$entrezid = as.character(sapply(rownames(tabSurvKM), function(x){strsplit(x, "\\|", perl=T)[[1]][2]}))
+    
+    tabSurvKM <- merge(markers[, c("Stage", "ident", "gene")], tabSurvKM, by = "gene")
+    
+    return(tabSurvKM)
+}
+
+
+```
+
+
+---
+### 先做Basal
+经过heatmap查看
+- I -> 7
+- II -> 3, 6
+- III -> 1
+
+```{r}
+stage_specific_clusters = list()
+
+stage_specific_clusters[["I"]] <- c(7)
+stage_specific_clusters[["II"]] <- c(3, 6)
+stage_specific_clusters[["III"]] <- c(1)
+```
+
+
+1. heatmap 统计信息的步骤
+```{r}
+obj <- readRDS(basename(rds))
+
+temp <- obj@meta.data %>% 
+    dplyr::select(res.0.6, Stage) %>% 
+    dplyr::group_by(res.0.6, Stage) %>% 
+    dplyr::add_tally() %>%
+    unique() %>%
+    dplyr::group_by(res.0.6) %>%
+    dplyr::mutate(freq = n / sum(n) * 100)
+
+stages = sort(unique(obj@meta.data$Stage))
+cluster = sort(unique(obj@meta.data$res.0.6))
+
+temp <- dcast(temp, res.0.6~Stage, value.var = "freq")
+rownames(temp) <- temp[,1]
+temp <- temp[, 2:ncol(temp)]
+```
+
+2. 提取这几个cluster的marker
+```{r}
+markers = read.xlsx(paste(root_dir, "Basal", cluster_info, sep = "/"), rowNames = T)
+
+stage_specific_markers <- extract_stage_specific_markers(markers, stage_specific_clusters)
+
+```
+
+
+3. 做KM SA (survival analysis)
+```{r}
+data_luad <- readRDS("/Volumes/WD/TCGA/LUAD.rds")
+clinical_luad <- readRDS("/Volumes/WD/TCGA/LUAD_clinical.rds")
+
+km_luad <- calculate_km_survival(stage_specific_markers, data_luad, clinical_luad)
+
+# km_luad$Stage = stage_specific_markers[km_luad$gene, "Stage"]
+# km_luad$cluster = stage_specific_markers[km_luad$gene, "ident"]
+```
+
+
+4. make violin plots
+```{r}
+
+# set colors
+stage_colors = c("Benign"="#3E6596", "I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E")
+disease_colors = c("ADC" = "#063373", "LCC"="#FECC1B", "Normal"="#73BDFF", "Other"="#DA6906", "SCC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B", "LBT"="#0084D1")
+tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+
+colors = c(stage_colors, disease_colors, tissue_colors)
+
+
+# function to make pvalue denstiy plots, based on the KM SA results
+make_density_plots <- function(markers, colors) {
+    p <- ggplot(markers, aes(x = -log10(pvalue), color = Stage)) + 
+        geom_density() +
+        theme(legend.title = element_blank()) +
+        scale_color_manual(values = colors)
+   
+    return(p)
+}
+
+
+
+# function to make pvalue violin plots
+make_violin_plots <- function(markers, colors, method = "wilcox.test", title = "", dist = 2) {
+    # construct comparision
+    my_comparisons = list()
+    stages = as.character(unique(markers$Stage))
+    if ("Benign" %in% stages) {
+        for (i in stages) {
+            if (i != "Benign") {
+                my_comparisons[[length(my_comparisons) + 1]] = c("Benign", i)
+            }
+        }
+    } else if ("Normal" %in% stages) {
+        for (i in stages) {
+            if (i != "Normal") {
+                my_comparisons[[length(my_comparisons) + 1]] = c("Normal", i)
+            }
+        }
+    } else {
+        for (i in stages) {
+            if (i != "I") {
+                my_comparisons[[length(my_comparisons) + 1]] = c("I", i)
+            }
+        }
+    }
+    
+    
+    markers$pvalue_log10 = -log10(markers$pvalue)
+    markers$Stage = factor(markers$Stage, levels = c("Normal", "CPI", "Benign", "I", "II", "III", "IV"))
+   
+    p <- ggviolin(
+            markers, 
+            x = "Stage", 
+            y = "pvalue_log10", 
+            fill = "Stage",
+            add = "boxplot", 
+            add.params = list(fill = "white"),
+            palette = colors
+        ) +
+        # add p value into plot
+        # label -> p.format (show formatted p value), instead of p.signif (show **)
+        # paired -> wilcox
+        stat_compare_means(
+            comparisons = my_comparisons, 
+            label = "p.format", 
+            method = method
+            ) + # Add significance levels
+        stat_compare_means(
+            label.y = max(markers$pvalue_log10) * dist
+        ) +
+        theme(legend.title = element_blank()) +
+        labs(
+            title = title,
+            y = "-log10(pvalue)",
+            x = ""
+        )
+    
+    return(p)
+}
+```
+
+
+## 6. 封装成Rscript
+```{r}
+
+
+res = calculate_km_survival()
+
+p <- make_density_plots(km_luad, colors = colors)
+
+ggsave(paste0("density_tcga_km_pvalue_", label, "_.png"), width = 6, height = 4, dpi = 600, units = "in")
+
+p <- make_violin_plots(km_luad, colors = colors, dist = 1.5)
+
+ggsave(paste0("violin_tcga_km_pvalue_", label, "_stage_specific.png"), width = 6, height = 3, dpi = 600, units = "in")
+```
+
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
