@@ -13,7 +13,7 @@ from multiprocessing import Pool
 from fire import Fire
 
 
-__dir__ = os.path.join(os.path.abspath(__file__))
+__dir__ = os.path.dirname(os.path.abspath(__file__))
 
 
 def call(cmd):
@@ -25,7 +25,7 @@ def call(cmd):
 
 
 def main(path, n_jobs=15):
-    files = glob(os.path.join(path, "*/cluster_gene_module/results.xlsx"))
+    files = glob(os.path.join(os.path.abspath(path), "*/cluster_gene_module/results.xlsx"))
 
     tasks = []
     for i in files:

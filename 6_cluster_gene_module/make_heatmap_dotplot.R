@@ -19,6 +19,9 @@ load <- function() {
     library(KEGG.db)
     library(dplyr)
     library(reshape2)
+    library("wesanderson")
+    library(RColorBrewer)
+    library(ComplexHeatmap)
 }
 
 suppressPackageStartupMessages(load())
@@ -29,8 +32,8 @@ args = commandArgs(trailingOnly = TRUE)
 root.dir = args[1]
 rds = args[2]
 topN = as.numeric(args[3])
+group.by = args[4]
 
-print(root.dir)
 
 setwd(root.dir)
 
@@ -57,48 +60,109 @@ select_cluster_markers <- function(cluster_markers, qvalue=0.05, logfc=0.5) {
 }
 
 
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+make_complex_heatmap <- function(obj, module, module_id=NULL, group.by = "res.0.6", order.by = "Cluster") {
+
+    if (!is.null(module_id)) {
+        module = module[module$ident == module_id, ]
+    }
+
+    rownames(module) <- module$gene
+    temp_module <- module[, 1, drop=FALSE]
+    temp_module[,1] <- as.character(temp_module[, 1])
+
+    # print(colnames(obj@meta.data))
+    meta <- obj@meta.data[, c("Stage", "PatientID", group.by)]
+    colnames(meta) <- c("Stage", "Patient", "Cluster")
+    meta <- meta[order(meta[, order.by]), ]
+
+    ### extract temp information
+    stage_colors = c("Benign"="#3E6596", "I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E")
+    disease_colors = c("ADC" = "#063373", "LCC"="#FECC1B", "Normal"="#73BDFF", "Other"="#DA6906", "SCC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B", "LBT"="#0084D1")
+    tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+    patient_colors = gg_color_hue(50)
+
+    mat = MinMax(as.matrix(obj@scale.data)[rownames(module), rownames(meta)], -2.5, 2.5)
+
+    cols_stage = stage_colors[unique(meta$Stage)]
+    # print(cols_stage)
+
+    cols_patients = patient_colors[as.numeric(gsub("P", "", sort(unique(meta$Patient))))]
+    names(cols_patients) <- sort(unique(meta$Patient))
+    # print(cols_patients)
+
+    cols_cluster = wes_palette("Darjeeling2", length(unique(meta$Cluster)), type = "continuous")
+    names(cols_cluster) <- unique(meta$Cluster)
+    # print(cols_cluster)
+
+    ann_colors = list(
+        Stage = cols_stage,
+        Patient = cols_patients,
+        Cluster = cols_cluster
+    )
+
+
+    ha = HeatmapAnnotation(
+        df = meta,
+        col = ann_colors
+    )
+
+    ht = Heatmap(
+        mat,
+        name = "mat",
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        top_annotation = ha,
+        column_title = module_id
+    )
+    draw(ht)
+}
+
+
 
 # function to make heatmaps
 # :param obj Seurat obj
 # :param cluster results from perform_mfuzz
 # :param output_prefix: the output file prefix
 make_heatmap <- function(obj, cluster, output_prefix=NULL, group.by = "res.0.6") {
+
+
     for (i in sort(unique(cluster$ident))) {
         temp_genes = cluster[cluster$ident == i, "gene"]
-        
-        p <- DoHeatmap(
-            obj, 
-            group.by = group.by, 
-            genes.use = temp_genes, 
-            cex.col=0,
-            slim.col.label = TRUE, 
-            remove.key = TRUE,
-            do.plot = F,
-            title = i
-        )
-        
-        height = length(temp_genes) / 8
-        
-        if (height > 40) {
-            height = 40
+
+        height = length(temp_genes) / 6
+
+        if (height > 45) {
+            height = 45
         } else if (height < 5) {
             height = 5
         }
-        
+
         if (is.null(output_prefix)) {
-            print(p)
+            make_complex_heatmap(obj, cluster, i, group.by = group.by)
         } else {
-            ggsave(
-                paste(output_prefix, i, ".png", sep = ""),
-                p,
-                width = 12,
-                height = height,
-                dpi = 300,
-                units = "in"
-            )
+            # ggsave(
+            #     paste(output_prefix, i, ".png", sep = ""),
+            #     p,
+            #     width = 12,
+            #     height = height,
+            #     dpi = 300,
+            #     units = "in"
+            # )
+
+            png(paste(output_prefix, i, ".png", sep = ""), width = 12, height = height, res = 600, units = "in")
+            make_complex_heatmap(obj, cluster, i, group.by = group.by)
+            dev.off()
         }
     }
 }
+
 
 
 
@@ -119,7 +183,7 @@ make_dotplot <- function(obj, cluster, output_prefix=NULL, group.by="res.0.6") {
             do.return = T
         ) + labs(title = i) + coord_flip()
         
-        height = length(temp_genes) / 8
+        height = length(temp_genes) / 6
         
         if (height > 40) {
             height = 40
@@ -177,7 +241,7 @@ perform_mfuzz <- function(expr, cluster_markers, qvalue=0.05, logfc=0.5, init_cl
 # function to construct matrix of mean zscore
 construct_stage_group_zscore <- function(obj, expr, cluster) {
     groups = sort(unique(cluster$cluster))
-    stages = sort(unique(obj@meta.data$res.0.6))
+    stages = sort(unique(obj@meta.data[group.by]))
     
     res = as.data.frame(matrix(0, nrow = length(groups), ncol = length(stages)))
     rownames(res) = groups
@@ -188,7 +252,7 @@ construct_stage_group_zscore <- function(obj, expr, cluster) {
         
         for (j in stages) {
             # print(paste0(i, j))
-            temp_cells = rownames(obj@meta.data[obj@meta.data$res.0.6 == j, ])
+            temp_cells = rownames(obj@meta.data[obj@meta.data[group.by] == j, ])
             
             temp_expr = expr[intersect(temp_gene, rownames(expr)), temp_cells]
             # temp_expr = scale(temp_expr)
@@ -321,12 +385,14 @@ print(getwd())
 print(rds)
 
 
-expr = read_sctransform()
+# expr = read_sctransform()
 obj <- readRDS(rds)
 
 cluster_markers = "annotation_results_by_cluster.xlsx"
 cluster_markers = read.xlsx(paste(root.dir, cluster_markers, sep = "/"), rowNames = T)
 
+
+print(unique(cluster_markers$ident))
 
 genes = as.data.frame(cluster_markers %>% 
                           filter(p_val_adj < 0.05 & avg_logFC > 0) %>% 
@@ -337,7 +403,7 @@ print("heatmap")
 make_heatmap(
     obj, 
     genes,
-    group.by = "res.0.6",
+    group.by = group.by,
     output_prefix = paste(root.dir, "cluster_gene_module/heatmap_", sep = "/")
     )
 
@@ -345,14 +411,14 @@ print("dotplot")
 make_dotplot(
     obj, 
     genes,
-    group.by = "res.0.6",
+    group.by = group.by,
     output_prefix = paste(root.dir, "cluster_gene_module/dotplot_", sep = "/")
 )
 
 
 
 ## KEGG, GO and DOSE
-
+#
 # eg = get_entrzid(genes)
 #
 # kk <- NULL

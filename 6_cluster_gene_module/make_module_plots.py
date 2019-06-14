@@ -23,7 +23,7 @@ def call(cmd):
         print(err)
 
 
-def main(path, output, top_n=50, n_jobs=20):
+def main(path, top_n=50, n_jobs=20):
     u"""
     Main function
     :param path: path to input
@@ -44,7 +44,7 @@ def main(path, output, top_n=50, n_jobs=20):
         for j in rds:
             if "monocle" in j or "slingshot" in j or "wgcna" in j.lower():
                 continue
-            tasks.append(f"Rscript {os.path.join(__dir__, 'make_heatmap_dotplot.R')} {dirname} {j} {top_n}")
+            tasks.append(f"Rscript {os.path.join(__dir__, 'make_heatmap_dotplot.R')} {dirname} {j} {top_n} \"{'res.0.6' if 'Basal_SCC' not in j else 'res.0.4' }\"")
 
     with Pool(n_jobs) as p:
         p.map(call, tasks)

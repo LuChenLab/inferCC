@@ -46,10 +46,12 @@ if (height < 5) {
     height = 45
 }
 
+width = max(sapply(kk$Description, nchar)) / 10 + length(unique(unique(kk$ident))) / 2
+
 ggsave(
     filename = "kegg.png", 
     plot = p, 
-    width = 12, 
+    width = width,
     height = height, 
     dpi = 600, 
     units = "in",
@@ -62,9 +64,13 @@ go = read_data(res, sheet = 3)
 for (i in unique(go$ONTOLOGY)) {
     temp <- go[go$ONTOLOGY == i, ]
 
+    if (nrow(temp) > 5 * 45) {
+        temp = temp %>% group_by(ident) %>% top_n(-30, wt=p.adjust)
+    }
+
     p <- ggplot(
         data = temp,
-        aes(y=ident, x=Description, size=GeneRatio, color = p.adjust)
+        aes(x=ident, y=Description, size=GeneRatio, color = p.adjust)
     ) +
         geom_point() +
         scale_color_gradientn(colours = rainbow(5)) +
@@ -80,11 +86,12 @@ for (i in unique(go$ONTOLOGY)) {
         height = 45
     }
 
+    width = max(sapply(temp$Description, nchar)) / 10 + length(unique(unique(temp$ident))) / 2
     ggsave(
         filename = paste0(i, ".png"),
         plot = p,
-        width = height,
-        height = 12,
+        width = width,
+        height = height,
         dpi = 600,
         units = "in",
         limitsize = F
@@ -94,34 +101,38 @@ for (i in unique(go$ONTOLOGY)) {
 
 do = read_data(res, sheet = 4)
 
-# if (nrow(do) > 60) {
-#     do <- do %>% group_by(ident) %>% top_n(-20, wt=p.adjust)
-# }
+    if (!is.null(do) || nrow(do) > 0) {
+        # if (nrow(do) > 60) {
+    #     do <- do %>% group_by(ident) %>% top_n(-20, wt=p.adjust)
+    # }
 
-p <- ggplot(
-    data = do, 
-    aes(x=ident, y=Description, size=GeneRatio, color = p.adjust)
-) + 
-    geom_point() + 
-    scale_color_gradientn(colours = rainbow(5)) +
-    labs(x="", title = "DOSE")
+    p <- ggplot(
+        data = do,
+        aes(x=ident, y=Description, size=GeneRatio, color = p.adjust)
+    ) +
+        geom_point() +
+        scale_color_gradientn(colours = rainbow(5)) +
+        labs(x="", title = "DOSE")
 
 
-height = nrow(do) / 5
-if (height < 5) {
-    height = 5
-} else if (height > 45) {
-    height = 45
+    height = nrow(do) / 5
+    if (height < 5) {
+        height = 5
+    } else if (height > 45) {
+        height = 45
+    }
+    width = max(sapply(do$Description, nchar)) / 10 + length(unique(unique(do$ident))) / 2
+    ggsave(
+        filename = "do.png",
+        plot = p,
+        width = width,
+        height = height,
+        dpi = 600,
+        units = "in",
+        limitsize = F
+    )
 }
 
-ggsave(
-    filename = "do.png", 
-    plot = p, 
-    width = 12, 
-    height = height, 
-    dpi = 600, 
-    units = "in",
-    limitsize = F
-)
+
 
 
