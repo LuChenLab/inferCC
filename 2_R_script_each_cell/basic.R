@@ -195,7 +195,7 @@ get_smote_match <- function(meta, num.cells=NULL) {
     
     test = split(unname(test),names(test))
     meta1$Stage = as.factor(meta1$Stage)
-    newData <- SmoteClassif1(Stage ~ PatientID + Disease + Sex + Age, meta1, dist = "Overlap", C.perc = test)
+    newData <- SmoteClassif1(Stage ~ PatientID + Disease + Sex + Age, meta1, dist = "Overlap") # , C.perc = test)
     
     return(newData)
 }
