@@ -1,0 +1,26 @@
+[[source]]
+name = "pypi"
+url = "https://pypi.douban.com/simple/"
+verify_ssl = true
+
+[dev-packages]
+
+[packages]
+scanpy = "*"
+seaborn = "*"
+scikit-learn = "*"
+statsmodels = "*"
+numba = "*"
+tables = "*"
+pandas = "*"
+click = "*"
+tqdm = "*"
+pyecharts = "*"
+paramiko = "*"
+numpy = "*"
+fire = "*"
+xlsxwriter = "*"
+xlrd = "*"
+
+[requires]
+python_version = "3.7"

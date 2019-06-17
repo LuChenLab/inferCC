@@ -97,7 +97,7 @@ class GeneModule(object):
         self.cell = cell
         self.msig_id = set([msig_id])
         self.stage = stage
-        self.mfuzz_id = set([mfuzz_id])
+        self.mfuzz_id = mfuzz_id
         self.genes = set(genes)
         
     def __str__(self):
@@ -111,7 +111,8 @@ class GeneModule(object):
             "|".join(sorted(set([x[0] for x in msig_id]))),
             "|".join(sorted(set([x[1] for x in msig_id]))),    
             self.stage, 
-            "|".join([str(x) for x in sorted(set(self.mfuzz_id))]),
+            # "|".join([str(x) for x in sorted(set(self.mfuzz_id))]),
+            self.mfuzz_id,
             "|".join(sorted(self.genes)),
             len(self.genes)
         )
@@ -125,7 +126,8 @@ class GeneModule(object):
             "|".join(sorted(set([x[0] for x in msig_id]))),
             "|".join(sorted(set([x[1] for x in msig_id]))),    
             self.stage, 
-            "|".join([str(x) for x in sorted(set(self.mfuzz_id))]),
+            # "|".join([str(x) for x in sorted(set(self.mfuzz_id))]),
+            self.mfuzz_id,
             "|".join(sorted(self.genes)),
             len(self.genes) 
         ]
@@ -166,7 +168,7 @@ class GeneModule(object):
             raise ValueError("cell or stage not match")
         
         self.msig_id |= other.msig_id
-        self.mfuzz_id |= other.mfuzz_id
+        # self.mfuzz_id |= other.mfuzz_id
         self.genes |= other.genes
     
     def is_in_this(self, other):
@@ -212,7 +214,7 @@ def mergeSecondRound(module_list):
     
     res = {}
     for i in module_list:
-        key = "{0}{1}".format(i.cell, i.stage)
+        key = (i.cell, i.stage, i.mfuzz_id)
         
         temp = res.get(key)
         if temp is None:

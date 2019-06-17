@@ -1,0 +1,696 @@
+---
+title: "Test_tmod"
+author: "Zhang Yiming"
+date: "6/8/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tmod)
+library(openxlsx)
+library(gplots)
+library(dplyr)
+library(doMC)
+library(stringr)
+library(fmsb)
+```
+
+```{r}
+full.path <- function(path) {
+    return(paste("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II_ADC", path, sep = "/"))
+}
+
+
+# function to read and format the normalized_counts from sctransform
+read_sctransform <- function(path="paga/normalized_counts.csv.gz") {
+    print(path)
+    r = gzfile(path)
+    data = read.csv(r, row.names = 1)
+    
+    colnames(data) = gsub("\\.", "-", colnames(data), perl=F)
+    colnames(data) = gsub("^X", "", colnames(data), perl=T)
+    return(data)
+}
+
+obj <- readRDS(full.path("Alveolar_II.rds"))
+
+expr = read_sctransform(full.path("paga/normalized_counts.csv.gz"))
+
+module <- read.xlsx(full.path("mfuzz_gene_module/results.xlsx"))
+
+diff.exp = read.xlsx(full.path("annotation_results_by_stage.xlsx"))
+```
+
+之前的预处理中已经获得基因的p.value和logFC，后续直接使用该数据
+
+## analysis of transcriptomic responses to tuberculosis
+
+> examples
+
+```{r}
+library(limma)
+data(Egambia)
+design <- cbind(Intercept=rep(1, 30), TB=rep(c(0,1), each= 15))
+E <- as.matrix(Egambia[,-c(1:3)])
+fit <- eBayes(lmFit(E, design))
+tt <- topTable(fit, coef=2, number=Inf,
+genelist=Egambia[,1:3])
+
+head(tt)
+```
+
+```{r}
+group <- rep( c("CTRL", "TB"), each=15)
+showGene(E["20799",], group,
+main=Egambia["20799", "GENE_SYMBOL"])
+```
+
+```{r}
+l <- tt$GENE_SYMBOL
+resC <- tmodCERNOtest(l)
+head(resC, 15)
+```
+
+以自己的数据进行测试，计划从limma开始算，先计算I与II之间的区别，limma无法直接用在扎。所以必须修饰数据
+```{r}
+stagesToNum <- c("I"=1, "II"=2, "III"=3, "IV"=4)
+
+design <- obj@meta.data[, "Stage", drop = F]
+design$Stage = sapply(design$Stage, function(x){stagesToNum[x]})
+
+
+E <- as.matrix(obj@raw.data[, rownames(design)])
+
+fit <- eBayes(lmFit(E, design))
+
+# 获取msd的值
+x <- tmodLimmaTopTable(fit, coef="Stage")
+```
+
+## 检查logFC和qval以及msd的排序
+```{r}
+x <- x[ x$logFC.Stage > 0, ] # only to simplify the output!
+x2 <- x[ order(x$msd.Stage, decreasing=T),]
+```
+
+直接输入一行list of genes理论上即可进行计算，但是跟什么比，毕竟只是一个factor，
+理论上应该是数据和level的排序，影响结果。
+然而如何排序，q值还是logfc？都不靠谱
+
+```{r }
+msig <- tmodImportMSigDB("/mnt/raid62/Lung_cancer_10x/00_data_ingest/00_raw_data/msigdb_v6.2.xml")
+for (i in unique(module$gene_module_id)) {
+    l <- module$gene[module$gene_module_id == i]
+    print
+    resC <- tmodCERNOtest(l[order(x2[as.character(l), "msd.Stage"], decreasing = T)], mset = msig)
+
+    print(head(resC, 15))
+}
+
+
+```
+
+> Where logFC is the log fold change, CI.L is the left boundary of the 95% confidence
+interval of logFC and CI.R is the right boundary
+
+根据MSD进行排序，logFC > 0, CI.L; logFC < 0, -CI.R
+
+```{r}
+x <- tmodLimmaTopTable(fit, coef="TB", genelist=Egambia[,1:3])
+x.lfc <- x[ order(abs(x$logFC.TB), decreasing=T),]
+x.qval <- x[ order(x$qval.TB),]
+x.msd <- x[ order(x$msd.TB, decreasing=T),]
+comparison <- list(
+lfc=tmodCERNOtest(x.lfc$GENE_SYMBOL),
+qval=tmodCERNOtest(x.qval$GENE_SYMBOL),
+msd=tmodCERNOtest(x.msd$GENE_SYMBOL))
+tmodPanelPlot(comparison)
+```
+
+```{r}
+data = read.table("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II_ADC/tmod_stage/stage_3_data.txt", header = F)
+```
+
+```{r}
+res = tmodCERNOtest(data[data[,1] == 0, 2])msig
+```
+
+tmodLimmaDecideTests比较不同条件下，多少基因高表达，多少基因低表达，这个必须依赖limma的fit结果。然而，这个能够拿到我想要的结果么
+
+---
+### 测试下不同细胞的tmod富集效果
+
+
+```{R}
+obj <- readRDS("/mnt/raid62/Lung_cancer_10x/00_data_ingest/04_rds_generated/seurat_obj_selected_patients_harmony.rds")
+
+
+meta <- read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190506_meta.csv", row.names = 1)
+
+
+obj@meta.data = meta
+```
+
+```{r}
+saveRDS(obj, "/mnt/raid62/Lung_cancer_10x/00_data_ingest/04_rds_generated/20190610_seurat_obj_selected_patients_harmony_formatted_meta.rds")
+```
+
+```{r}
+# obj <- readRDS("/mnt/raid62/Lung_cancer_10x/00_data_ingest/99_seurat_by_patients/PLC029/seurat_obj.rds")
+# markers = find_markers(obj, group.by = "res.0.6", n.cores = 10)
+#
+# write.csv(markers, "/mnt/raid62/Lung_cancer_10x/00_data_ingest/99_seurat_by_patients/PLC029/markers.csv")
+
+markers = read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/99_seurat_by_patients/PLC029/markers.csv")
+
+temp = markers %>% filter(p_val_adj < 0.05) # %>% group_by(ident) %>% top_n(20, w = avg_logFC)
+
+res_p29 = NULL
+for (i in unique(temp$ident)) {
+    temp_res = temp[temp$ident == i, ]
+    temp_res = temp_res[order(temp_res$avg_logFC, decreasing = T), ]
+    temp_res = tmodCERNOtest(
+        temp_res$gene,
+        mset = msig,
+        qval=0.05
+    )
+
+    temp_res$ident = i
+    res_p29 = rbind(res_p29, temp_res)
+}
+
+res_p29 = res_p29[res_p29$N1 > 0, ]
+```
+
+```{r}
+markers = read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/99_seurat_by_patients/PLC012/markers.csv")
+
+temp = markers %>% filter(p_val_adj < 0.05) # %>% group_by(ident) %>% top_n(50, w = avg_logFC)
+
+res_p12 = NULL
+for (i in unique(temp$ident)) {
+    temp_res = temp[temp$ident == i, ]
+    temp_res = temp_res[order(temp_res$avg_logFC, decreasing = T), ]
+    temp_res = tmodCERNOtest(
+        temp_res$gene,
+        mset = msig,
+        qval=0.05
+    )
+
+    if (!is.null(temp_res) && nrow(temp_res) > 0) {
+        temp_res$ident = i
+        res_p12 = rbind(res_p12, temp_res)
+    }
+}
+
+res_p12 = res_p12[res_p12$N1 > 0, ]
+```
+
+
+### 从个人样本来看，所有基因是能够富集到信息的，现在在所有细胞中测试
+- q < 0.05
+- logFC > 0
+
+Perform test on all data
+```{r}
+files = list.files(path = "/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/", pattern = "annotation_results_by_stage.xlsx", recursive = T, full.names = T)
+
+sel <- msig$MODULES$Category %in% c("H", "C5", "C2")
+
+make_tmod_on_xlsx <- function(path, mode = "U") {
+    markers = read.xlsx(path, rowNames = T)
+
+    temp = markers # %>% filter(p_val_adj < 0.05) # %>% group_by(ident) %>% top_n(50, w = avg_logFC)
+
+    res = NULL
+    for (i in unique(temp$ident)) {
+        temp_res = temp[temp$ident == i, ]
+        temp_res = temp_res[order(temp_res$avg_logFC, decreasing = T), ]
+
+        if (mode == "U") {
+            temp_res = tmodUtest(
+                temp_res$gene,
+                mset = msig[sel],
+                qval=0.05
+            )
+        } else if (mode == "Z") {
+            temp_res = tmodZtest(
+                temp_res$gene,
+                mset = msig[sel],
+                qval=0.05
+            )
+        } else {
+            temp_res = tmodCERNOtest(
+                temp_res$gene,
+                mset = msig[sel],
+                qval=0.05
+            )
+        }
+
+        if (!is.null(temp_res) && nrow(temp_res) > 0) {
+            temp_res$ident = i
+            res = rbind(res, temp_res)
+        }
+    }
+
+    res = res[res$N1 > 0, ]
+    return(res)
+}
+
+registerDoMC(20)
+resZ = foreach(i = files, .combine=rbind) %dopar% {
+    print(i)
+    temp_res = make_tmod_on_xlsx(i, mode = "Z")
+
+    if (!is.null(temp_res) && nrow(temp_res) > 0) {
+        temp_res$cell = basename(dirname(i))
+    } else {
+        temp_res = NULL
+    }
+
+    temp_res
+}
+
+
+resU = foreach(i = files, .combine=rbind) %dopar% {
+    print(i)
+    temp_res = make_tmod_on_xlsx(i, mode = "U")
+
+    if (!is.null(temp_res) && nrow(temp_res) > 0) {
+        temp_res$cell = basename(dirname(i))
+    } else {
+        temp_res = NULL
+    }
+
+    temp_res
+}
+
+
+resCERNO = foreach(i = files, .combine=rbind) %dopar% {
+    print(i)
+    temp_res = make_tmod_on_xlsx(i, mode = "C")
+
+    if (!is.null(temp_res) && nrow(temp_res) > 0) {
+        temp_res$cell = basename(dirname(i))
+    } else {
+        temp_res = NULL
+    }
+
+    temp_res
+}
+
+
+
+wb = createWorkbook()
+addWorksheet(wb, "Utest")
+writeData(wb, 1, resU)
+
+addWorksheet(wb, "CERNOtest")
+writeData(wb, 2, resCERNO)
+
+addWorksheet(wb, "Ztest")
+writeData(wb, 3, resZ)
+
+saveWorkbook(wb, "/mnt/raid62/Lung_cancer_10x/tmod_stage/all_stage_specific_genes_different_tests.xlsx", overwrite=T)
+```
+
+
+
+
+Make tagcloud of Utest
+```{r}
+library(tagcloud)
+image_dir = "/mnt/raid62/Lung_cancer_10x/tmod_stage/all_stage_specific_genes/Utest"
+dir.create(image_dir, showWarnings = F, recursive = T)
+
+foreach(i = unique(resU$cell)) %dopar% {
+    temp_res = resU[resU$cell == i, ]
+
+    out_dir = paste(image_dir, i, sep = "/")
+    dir.create(out_dir, showWarnings = F)
+
+    for (j in unique(temp_res$ident)) {
+        temp = temp_res[temp_res$ident == j,]
+
+        if (nrow(temp) <=1 ) {
+            print(i)
+            print(temp$Title)
+            next
+        }
+
+        png(paste(out_dir, paste0(j, ".png"), sep = "_"), width = 8, height = 8, units = "in", res = 600)
+        w <- -log10(temp$P.Value)
+        c <- smoothPalette(temp$AUC, min=0.5)
+        tags <- strmultline(temp$Title)
+        tagcloud(tags, weights=w, col=c)
+        mtext(paste(i, j), side=3, outer=TRUE, line=-1)
+        dev.off()
+    }
+}
+```
+
+CERNOtest
+```{r}
+image_dir = "/mnt/raid62/Lung_cancer_10x/tmod_stage/all_stage_specific_genes/CERNOtest"
+dir.create(image_dir, showWarnings = F, recursive = T)
+
+foreach(i = unique(resCERNO$cell)) %dopar% {
+    temp_res = resCERNO[resCERNO$cell == i, ]
+
+    out_dir = paste(image_dir, i, sep = "/")
+    # dir.create(out_dir, showWarnings = F)
+
+    for (j in unique(temp_res$ident)) {
+        temp = temp_res[temp_res$ident == j,]
+
+        if (nrow(temp) <=1 ) {
+            print(i)
+            print(temp$Title)
+            next
+        }
+
+        png(paste(out_dir, paste0(j, ".png"), sep = "_"), width = 8, height = 8, units = "in", res = 600)
+        w <- -log10(temp$P.Value)
+        c <- smoothPalette(temp$AUC, min=0.5)
+        tags <- strmultline(temp$Title)
+        tagcloud(tags, weights=w, col=c)
+        mtext(paste(i, j), side=3, outer=TRUE, line=-1)
+        dev.off()
+    }
+}
+```
+
+
+Ztest
+```{r}
+image_dir = "/mnt/raid62/Lung_cancer_10x/tmod_stage/all_stage_specific_genes/Ztest"
+dir.create(image_dir, showWarnings = F, recursive = T)
+
+foreach(i = unique(resZ$cell)) %dopar% {
+    temp_res = resZ[resZ$cell == i, ]
+
+    out_dir = paste(image_dir, i, sep = "/")
+    # dir.create(out_dir, showWarnings = F)
+
+    for (j in unique(temp_res$ident)) {
+        temp = temp_res[temp_res$ident == j,]
+
+        if (nrow(temp) <=1 ) {
+            print(i)
+            print(temp$Title)
+            next
+        }
+
+        png(paste(out_dir, paste0(j, ".png"), sep = "_"), width = 8, height = 8, units = "in", res = 600)
+        w <- -log10(temp$P.Value)
+        c <- smoothPalette(temp$AUC, min=0.5)
+        tags <- strmultline(temp$Title)
+        tagcloud(tags, weights=w, col=c)
+        mtext(paste(i, j), side=3, outer=TRUE, line=-1)
+        dev.off()
+    }
+}
+```
+
+
+Try to make dotplot
+```{r fig.height=12, fig.width=12}
+image_dir = "/mnt/raid62/Lung_cancer_10x/tmod_stage/all_stage_specific_genes/dotplot"
+
+dir.create(image_dir, showWarnings = F, recursive = T)
+
+resU <- read.xlsx("/mnt/raid62/Lung_cancer_10x/tmod_stage/all_stage_specific_genes_different_tests.xlsx", sheet = 1)
+
+resCERNO <- read.xlsx("/mnt/raid62/Lung_cancer_10x/tmod_stage/all_stage_specific_genes_different_tests.xlsx", sheet = 2)
+
+resZ = read.xlsx("/mnt/raid62/Lung_cancer_10x/tmod_stage/all_stage_specific_genes_different_tests.xlsx", sheet = 3)
+
+make_dotplot <- function(resC, resU, resZ, cell, label=NULL, pval.thr = 0.01) {
+    tempC = resC[resC$cell == cell, ]
+    tempU = resU[resU$cell == cell, ]
+    tempZ = resZ[resZ$cell == cell, ]
+
+    if(!is.null(label)) {
+        tempC = tempC[str_detect(tempC$Title, label), ]
+        tempU = tempU[str_detect(tempU$Title, label), ]
+        tempZ = tempZ[str_detect(tempZ$Title, label), ]
+    }
+
+    stages = unique(c(tempC$ident, tempU$ident, tempZ$ident))
+
+    resAll = list()
+    for(i in sort(stages)) {
+        resAll[[paste("CERNO", cell, i, sep = " - ")]] = tempC[tempC$ident == i, ]
+        resAll[[paste("Utest", cell, i, sep = " - ")]] = tempU[tempU$ident == i, ]
+        resAll[[paste("Ztest", cell, i, sep = " - ")]] = tempZ[tempZ$ident == i, ]
+    }
+
+    # tempC$Title = paste(tempC$Title, tempC$cell, tempC$ident, sep = " - ")
+    # tempU$Title = paste(tempU$Title, tempU$cell, tempU$ident, sep = " - ")
+    # tempZ$Title = paste(tempZ$Title, tempZ$cell, tempZ$ident, sep = " - ")
+    # resAll <- list(paste(CERNO, cell, )=tempC, U=tempU, Z=tempZ)
+
+   return(resAll)
+}
+
+cells = unique(c(resCERNO$cell, resU$cell, resZ$cell))
+registerDoMC(20)
+foreach (cell = cells) %dopar% {
+
+# for (cell in intersect(intersect(resCERNO$cell, resU$cell), resZ$cell)) {
+    print(cell)
+
+    tryCatch({
+        resAll = make_dotplot(resC = resCERNO, resU = resU, resZ = resZ, cell = cell, label = "^Go", pval.thr = 0.01)
+        temp_summ = tmodSummary(resAll)
+
+        height = nrow(temp_summ) / 4
+        if (height < 8) {
+            height = 8
+        }
+
+        png(
+            paste(image_dir, paste0(cell, "_Go.png"), sep = "/"),
+            width = ncol(temp_summ) + max(sapply(temp_summ$Title, str_length)) / 20,
+            height = height,
+            units = "in",
+            res = 300
+        )
+        plot.new()
+        tmodPanelPlot(resAll, pval.thr = 0.01, pval.thr.lower = -Inf )
+        dev.off()
+    }, error = function(e){})
+
+
+    tryCatch({
+        resAll = make_dotplot(resC = resCERNO, resU = resU, resZ = resZ, cell = cell, label = "^[^(Go)]", pval.thr = 0.05)
+        temp_summ = tmodSummary(resAll)
+
+        height = nrow(temp_summ) / 4
+        if (height < 8) {
+            height = 8
+        }
+
+        png(
+            paste(image_dir, paste0(cell, "_Other.png"), sep = "/"),
+            width = ncol(temp_summ) + max(sapply(temp_summ$Title, str_length)) / 20,
+            height = height,
+            units = "in",
+            res = 300
+        )
+        plot.new()
+        tmodPanelPlot(resAll, pval.thr = 0.01, pval.thr.lower = -Inf )
+        dev.off()
+    }, error = function(e){})
+}
+```
+
+### get gene module from tmod tests, using the overlap of tmod and mfuzz
+```{r}
+temp = resU[resU$adj.P.Val < 0.05 & resU$AUC > 0.5, ]
+
+msig <- tmodImportMSigDB("/mnt/raid62/Lung_cancer_10x/00_data_ingest/00_raw_data/msigdb_v6.2.xml")
+
+head(temp)
+```
+
+```{r}
+
+msig_dataframe = NULL
+for (i in names(msig$MODULES2GENES)) {
+    temp = msig[i]$GENES
+    temp$MODULE = i
+
+    msig_dataframe = rbind(msig_dataframe, temp)
+}
+
+data.frame(test="1", test1 = "2")
+```
+
+
+```{R}
+markers <- read.xlsx("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II_ADC/annotation_results_by_stage.xlsx", rowNames = T)
+
+temp_markers = markers[markers$ident == "I", "gene"]
+
+length(intersect(temp_markers, msig["M11585"]$GENES$ID))
+```
+
+---
+
+### make radar plots
+```{R}
+library(openxlsx)
+library(stringr)
+library(fmsb)
+library(Seurat)
+library(reshape2)
+library("wesanderson")
+
+set.seed(1)
+
+module = read.xlsx("/mnt/raid62/Lung_cancer_10x/tmod_stage/tmod_mfuzz_overlap_AUC_0.5_merged.xlsx", sheet = 2)
+
+obj = readRDS("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II/Alveolar_II.rds")
+```
+
+```{r}
+
+format_radar_matrix <- function(object, meta) {
+    mat = MinMax(object@scale.data[meta$genes, , drop = FALSE], -2.5, 2.5)
+    mat = melt(as.matrix(mat))
+    colnames(mat) <- c("genes", "cell", "value")
+    
+    expr <- merge(meta, mat, by = "genes")
+    expr$PatientID = object@meta.data[expr$cell, "PatientID"]
+    
+    # print(head(expr))
+    
+    data = as.data.frame(
+        expr %>% 
+            dplyr::select(stage, PatientID, value) %>% 
+            dplyr::group_by(stage, PatientID) %>%
+            mutate(val=mean(value)) %>%
+            dplyr::select(stage, PatientID, val) %>%
+            unique()
+        )
+    
+    data = dcast(data, stage~PatientID, value.var = "val")
+    rownames(data) <- data$stage
+    data <- data[, colnames(data) != "stage"]
+    
+    return(as.data.frame(t(data)))
+}
+
+
+make_radar_plots <- function(object, meta, group.by = "Stage", output_prefix=NULL) {
+    
+    current_stages = sapply(meta$stage, function(x) {
+        return(str_split(x, "\\.")[[1]][2])
+    })
+    current_stages = intersect(object@meta.data[, group.by], current_stages)
+    
+    for(i in current_stages) {
+        temp_meta = object@meta.data[object@meta.data[, group.by] == i, ]
+        obj <- CreateSeuratObject(
+            object@raw.data[, rownames(temp_meta), drop = FALSE],
+            meta = temp_meta
+        )
+        
+        obj@scale.data = object@scale.data[, rownames(temp_meta), drop = FALSE]
+        
+        expr = format_radar_matrix(obj, meta)    
+        expr <- rbind(
+            rep(ceiling(max(expr)), ncol(expr)),
+            rep(floor(min(expr)), ncol(expr)),
+            expr
+        )
+    
+        # print(expr)
+        
+        if (!is.null(output_prefix)) {
+            png(paste(output_prefix, "_", i, ".png", sep = ""), width = 12, height = 6, res = 600, units = "in")
+        }
+        
+        par(
+            mfrow=c(1, 2), 
+            bty='n', 
+            oma = c(0.5,0.5,0,0) + 0.1,
+            mar = c(1,0,0,1) + 0.1
+        )
+    
+        legend_labels = rownames(expr)
+        legend_labels = legend_labels[3: length(legend_labels)]
+        colors_border = wes_palette("Zissou1", length(legend_labels), type = "continuous")
+    
+        radarchart(expr, axistype=1, 
+            #custom polygon
+            pcol=colors_border, # pfcol=colors_in, plwd=4 , plty=1, 
+            #custom the grid
+            cglcol="grey", cglty=1, axislabcol="grey", 
+            caxislabels=seq(expr[2, 1], expr[1, 1], (expr[1, 1] - expr[2, 1]) / 5), cglwd=0.8,
+            #custom labels
+            vlcex=0.8
+        )
+        plot(0, col="white", cex=0, axes=F, ann=FALSE)
+    
+        legend(
+            "left",
+            legend = legend_labels, 
+            bty = "n", pch=20 , 
+            col=colors_border , 
+            text.col = "grey", 
+            cex=1.2, 
+            pt.cex=3,
+            ncol = 2
+        )
+        
+        if (!is.null(output_prefix)) {
+            dev.off()
+        }
+        
+        break
+    }
+}
+
+
+
+
+for(i in unique(module$Cell_name)) {
+    print(i)
+    
+    temp_module = module[module$Cell_name == i, ]
+    
+    # format meta
+    meta = NULL
+    for(j in 1:nrow(temp_module)) {
+        stage = paste("M", temp_module[j, "Stage"], sep = ".")
+        genes = str_split(temp_module[j, "Genes"], "\\|")[[1]]
+        
+        meta = rbind(meta, data.frame(stage=stage, genes=genes))
+    }
+    
+    # two random select groups
+    for(i in 1:2) {
+        meta = rbind(meta, data.frame(
+            stage = paste("R", i, sep = ""), 
+            genes = sample(
+                rownames(obj@raw.data)[!rownames(obj@raw.data) %in% meta$genes],
+                min(100, sum(!rownames(obj@raw.data) %in% meta$genes))
+            )
+        ))
+    
+    }
+    
+    # format and plot
+    make_radar_plots(object = obj, meta = meta, group.by = "Stage", output_prefix = NULL)
+
+    # print(meta)
+    break
+}
+```
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

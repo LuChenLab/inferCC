@@ -1,0 +1,316 @@
+---
+title: "IM_RIGHT"
+author: "Zhang Yiming"
+date: "6/14/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(Seurat)
+library(dplyr)
+library(openxlsx)
+library(ComplexHeatmap)
+
+
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+### extract temp information
+stage_colors = c(
+    "Normal"="#73BDFF", 
+    "Benign"="#3E6596", 
+    "CPI"="#C5000B", 
+    "I"="#EC7A21", 
+    "II"="#D73F47", 
+    "III"="#65A9A3", 
+    "IV"="#4A933E",
+    "ADC" = "#063373", 
+    "LCC"="#FECC1B", 
+    "SCC"="#A0C807", 
+    "LELC"="#6A0019", 
+    "LBT"="#0084D1",
+    "Other"="#DA6906"
+    )
+disease_colors = c(
+    "ADC" = "#063373", 
+    "LCC"="#FECC1B", 
+    "Normal"="#73BDFF", 
+    "Other"="#DA6906", 
+    "SCC"="#A0C807", 
+    "LELC"="#6A0019", 
+    "CPI"="#C5000B", 
+    "LBT"="#0084D1"
+    )
+tissue_colors = c(
+    "Bronichi"="#FB290F", 
+    "Lymph node"="#488F17", 
+    "Tumor"="#FC8210"
+)
+patient_colors = gg_color_hue(50)
+
+```
+
+## R Markdown
+
+
+```{r cars}
+obj <- readRDS("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Basal/Basal.rds")
+
+genes <- read.xlsx("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Basal/annotation_results_by_stage.xlsx", rowNames = T)
+
+genes = genes %>% group_by(ident) %>% top_n(20, wt=avg_logFC)
+```
+
+```{r fig.height=12, fig.width=8}
+DoHeatmap(obj, group.by = "Stage", genes.use = unique(genes$gene), slim.col.label = T)
+```
+
+```{r fig.height=12, fig.width=8}
+make_complex_heatmap <- function(obj, genes.use, order.by = "Stage") {
+
+    # if (!is.null(module_id)) {
+    #     module = module[module$ident == module_id, ]
+    # }
+
+    # rownames(module) <- module$gene
+    # temp_module <- module[, 1, drop=FALSE]
+    # temp_module[,1] <- as.character(temp_module[, 1])
+
+    # print(colnames(obj@meta.data))
+    meta <- obj@meta.data[, c("Stage", "PatientID")]
+    colnames(meta) <- c("Stage", "Patient")
+    # print(head(meta))
+    # print(order.by)
+    meta <- meta[order(meta[, order.by]), ]
+    
+    mat = as.matrix(obj@scale.data)[genes.use, rownames(meta), drop=F]
+    # mat = MinMax(mat, -2.5, 2.5)
+
+    cols_stage = stage_colors[unique(meta$Stage)]
+    # print(cols_stage)
+
+    cols_patients = patient_colors[as.numeric(gsub("P", "",unique(meta$Patient)))]
+    names(cols_patients) <- unique(meta$Patient)
+    # print(cols_patients)
+
+    # cols_cluster = wes_palette("Darjeeling2", length(unique(meta$Cluster)), type = "continuous")
+    # names(cols_cluster) <- unique(meta$Cluster)
+    # print(cols_cluster)
+
+    ann_colors = list(
+        Stage = cols_stage,
+        Patient = cols_patients
+        # Cluster = cols_cluster
+    )
+
+    # print("???")
+    ha = HeatmapAnnotation(
+        df = meta,
+        col = ann_colors
+    )
+
+    # print("???")
+    ht = Heatmap(
+        mat,
+        name = "mat",
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        top_annotation = ha,
+        # column_title = module_id
+    )
+    draw(ht)
+}
+
+
+
+# function to make heatmaps
+# :param obj Seurat obj
+# :param cluster results from perform_mfuzz
+# :param output_prefix: the output file prefix
+make_heatmap <- function(obj, genes.use, output_prefix=NULL, group.by = "Stage") {
+
+    height = length(genes.use) / 6
+    
+    if (height > 45) {
+        height = 45
+    } else if (height < 5) {
+        height = 5
+    }
+    
+    if (is.null(output_prefix)) {
+        make_complex_heatmap(obj, genes.use, order.by = "Stage") # group.by = group.by)
+    } else {
+        # ggsave(
+        #     paste(output_prefix, i, ".png", sep = ""),
+        #     p,
+        #     width = 12,
+        #     height = height,
+        #     dpi = 300,
+        #     units = "in"
+        # )
+
+        png(output_prefix, width = 12, height = height, res = 600, units = "in")
+        make_complex_heatmap(obj, genes.use, order.by = "Stage") # , group.by = group.by)
+        dev.off()
+    }
+    
+}
+
+
+make_heatmap(obj, genes.use = unique(genes$gene))
+```
+
+---
+
+### gene drug
+```{r}
+full.path <- function(path) {
+    return(paste("/mnt/raid62/Lung_cancer_10x/tmod_stage/gene_drug", path, sep = "/"))
+}
+```
+
+#### 读取相关信息
+```{r}
+ap2 <- readRDS("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II_ADC/Alveolar_II.rds")
+
+basal <- readRDS("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Basal_SCC/Basal.rds")
+
+meta <- read.xlsx(full.path("肺癌基因药物关系.xlsx"), sheet = 3)
+```
+
+#### 读取两种细胞的亚群差异基因
+```{r}
+ap2_clt = read.xlsx("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II_ADC/annotation_results_by_cluster.xlsx", rowNames = T)
+
+basal_clt = read.xlsx("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Basal_SCC/annotation_results_by_cluster.xlsx", rowNames = T)
+```
+
+#### 读取TCGA的相关生存率信息
+```{R}
+luad = read.csv("/mnt/raid62/Lung_cancer_10x/TCGA/LUAD_survival.csv")
+lusc = read.csv("/mnt/raid62/Lung_cancer_10x/TCGA/LUSC_survival.csv")
+```
+
+
+```{r fig.height=8, fig.width=12}
+DotPlot(
+    ap2, 
+    genes.plot = intersect(rownames(ap2@raw.data), meta[, 1]),
+    group.by = "res.0.6"
+    )
+
+DotPlot(
+    basal, 
+    genes.plot = intersect(rownames(basal@raw.data), meta[, 1]),
+    group.by = "res.0.6"
+    )
+```
+
+
+#### 检查，这些基因是否为两种细胞的cluster特异基因
+```{r}
+ap2_clt[ap2_clt$avg_logFC > 0 & ap2_clt$p_val_adj < 0.05 & ap2_clt$gene %in% meta$基因名, ]
+```
+
+```{r}
+basal_clt[basal_clt$avg_logFC > 0 & basal_clt$p_val_adj < 0.05 & basal_clt$gene %in% meta$基因名, ]
+```
+
+
+### 主要盯着G6PD（靶向药物）
+- APII - 1和2
+- Basal - 10
+
+亚群的生存率比较
+```{r fig.height=4, fig.width=8}
+make_violin_compare <- function(tcga, cluster_marker, qval=0.05, logfc=0) {
+    res = NULL
+    cluster_marker = cluster_marker[cluster_marker$p_val_adj < qval & cluster_marker$avg_logFC > logfc, ]
+    
+    temp = merge(cluster_marker, tcga, by = "gene")
+    
+    data = temp[, c("ident", "high")]
+    colnames(data) <- c("ident", "value")
+    data$source = "Median survival days"
+    
+    temp = temp[, c("ident", "pvalue")]
+    colnames(temp) <- c("ident", "value")
+    temp$source = "PValue"
+    
+    data = rbind(data, temp)
+    data$ident = as.character(data$ident)
+    
+    ggplot(data = data, aes(x = ident, y = value, color = ident)) +
+        geom_violin() +
+        facet_grid(source~., scales = "free_y") +
+        labs(x="", y="")
+    
+}
+
+make_violin_compare(luad, ap2_clt)
+make_violin_compare(lusc, basal_clt)
+```
+
+### 含有一下基因的module的生存率分布情况
+```{r}
+modules <- read.xlsx("/mnt/raid62/Lung_cancer_10x/tmod_stage/tmod_mfuzz_overlap_AUC_0.5_merged.xlsx", sheet = 2)
+
+modules <- modules[modules$Cell_name %in% c("Basal_SCC", "Alveolar_II_ADC"), ]
+
+module_genes = NULL
+for(i in 1:nrow(modules)) {
+    row = modules[i, ]
+    
+    genes = str_split(row["Genes"], "\\|")[[1]]
+    temp = data.frame(
+        ID = paste(row["Cell_name"], row["Stage"], row["Mfuzz_ID"], sep = "_"),
+        genes = genes
+    )
+    temp$Drugable = FALSE
+    
+    if (length(intersect(genes, meta$基因名)) > 0) {
+        
+        temp$Drugable = TRUE
+    }
+    module_genes = rbind(module_genes, temp)
+}
+```
+
+看一下这些module的基因生存率p值和事件与随机抽选基因的对比
+```{r fig.height=8, fig.width=12}
+make_violin_compare_by_module <- function(tcga, module) {
+
+    temp = merge(module, tcga, by.x = "genes", by.y = "gene")
+    
+    data = temp[, c("ID", "high", "Drugable")]
+    colnames(data)[2] <- c("value")
+    data$source = "Median survival days"
+    
+    temp = temp[, c("ID", "pvalue", "Drugable")]
+    colnames(temp)[2] <- c("value")
+    temp$source = "PValue"
+    
+    data = rbind(data, temp)
+    print(data)
+    
+    ggplot(data = data, aes(x = ID, y = value, color = Drugable)) +
+        geom_violin() +
+        facet_grid(source~., scales = "free_y") +
+        labs(x="", y="") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 1))
+    
+}
+
+make_violin_compare_by_module(luad, module_genes[str_detect(module_genes[, 1], "Alveolar"), ])
+make_violin_compare_by_module(lusc, module_genes[!str_detect(module_genes[, 1], "Alveolar"), ])
+```
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

@@ -14,9 +14,14 @@ set.seed(1)
 format_radar_matrix <- function(object, meta) {
     meta$genes = as.character(meta$genes)
 
-    mat = MinMax(object@scale.data[as.character(meta$genes), , drop = FALSE], -2.5, 2.5)
+    # mat = MinMax(object@scale.data[as.character(meta$genes), , drop = FALSE], -2.5, 2.5)
+    mat = object@scale.data[as.character(meta$genes), , drop = FALSE]
     mat = melt(as.matrix(mat))
     colnames(mat) <- c("genes", "cell", "value")
+
+    # temp_mat = melt(as.matrix(object@raw.data[as.character(meta$genes), , drop = FALSE]))
+    
+    # mat <- mat[temp_mat[,3] != 0, ]
 
     # print(head(mat)) 
     # print(head(meta))
@@ -38,6 +43,8 @@ format_radar_matrix <- function(object, meta) {
     data = dcast(data, stage~PatientID, value.var = "val")
     rownames(data) <- data$stage
     data <- data[, colnames(data) != "stage"]
+
+    data[is.na(data)] <- floor(min(data[!is.na(data)])) - 1
     
     return(as.data.frame(t(data)))
 }
@@ -66,7 +73,9 @@ make_radar_plots <- function(object, meta, group.by = "Stage", output_prefix=NUL
             rep(floor(min(expr)), ncol(expr)),
             expr
         )
-    
+
+        expr = expr[, sort(colnames(expr))]
+
         # print(expr)
         if (!is.null(output_prefix)) {
             png(paste(output_prefix, "_", i, "_radar.png", sep = ""), width = 12, height = 6, res = 600, units = "in")
@@ -117,33 +126,58 @@ args = commandArgs(trailingOnly = T)
 module = read.xlsx(args[1], sheet = 2)
 obj = readRDS(args[2])
 
+cell_name = args[4]
 
-temp_module = module[module$Cell_name == args[4], ]
+
+# select cells from specific disease
+disease = str_split(cell_name, "_")[[1]]
+disease = disease[length(disease)]
+# patients = obj@meta.data[obj@meta.data$Disease == disease, ]
+# patients = unique(patients$PatientID)
+cells = rownames(obj@meta.data[obj@meta.data$Disease == disease, ])
+
+temp_obj <- CreateSeuratObject(
+    obj@raw.data[, cells, drop = F],
+    meta = obj@meta.data[cells, , drop = F]
+)
+
+temp_obj@scale.data = obj@scale.data[, cells, drop = F]
+
+temp_module = module[module$Cell_name == cell_name, , drop=F]
 
 # print(head(temp_module))
 
 # format meta
 meta = NULL
 for(j in 1:nrow(temp_module)) {
-    stage = paste("M", temp_module[j, "Stage"], sep = ".")
+    stage = paste("M", temp_module[j, "Stage"], temp_module[j, "Mfuzz_ID"], sep = ".")
+    # print(temp_module[j, "Genes"])
     genes = str_split(temp_module[j, "Genes"], "\\|")[[1]]
     
     meta = rbind(meta, data.frame(stage=stage, genes=genes))
+
+    # print(head(meta))
 }
 
 # print(meta)
 
 # two random select groups
-for(i in 1:2) {
-    meta = rbind(meta, data.frame(
-        stage = paste("R", i, sep = ""), 
-        genes = sample(
-            rownames(obj@raw.data)[!rownames(obj@raw.data) %in% meta$genes],
-            min(100, sum(!rownames(obj@raw.data) %in% meta$genes))
-        )
-    ))
 
+if(length(unique(meta$stage)) < 3) {
+    for(i in 1:2) {
+
+        temp = data.frame(
+            stage = paste("R", i, sep = ""), 
+            genes = sample(
+                rownames(obj@raw.data)[!rownames(obj@raw.data) %in% meta$genes],
+                min(100, sum(!rownames(obj@raw.data) %in% meta$genes))
+            )
+        )
+
+        # print(head(temp))
+        meta = rbind(meta, temp)
+    }
 }
 
 # format and plot
-make_radar_plots(object = obj, meta = meta, group.by = "Stage", output_prefix = args[3])
+make_radar_plots(object = temp_obj, meta = meta, group.by = "Stage", output_prefix = args[3])

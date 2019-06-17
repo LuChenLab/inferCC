@@ -18,19 +18,19 @@ gg_color_hue <- function(n) {
 
 ### extract temp information
 stage_colors = c(
+    "Normal"="#73BDFF", 
     "Benign"="#3E6596", 
+    "CPI"="#C5000B", 
     "I"="#EC7A21", 
     "II"="#D73F47", 
     "III"="#65A9A3", 
     "IV"="#4A933E",
     "ADC" = "#063373", 
     "LCC"="#FECC1B", 
-    "Normal"="#73BDFF", 
-    "Other"="#DA6906", 
     "SCC"="#A0C807", 
     "LELC"="#6A0019", 
-    "CPI"="#C5000B", 
-    "LBT"="#0084D1"
+    "LBT"="#0084D1",
+    "Other"="#DA6906"
     )
 disease_colors = c(
     "ADC" = "#063373", 
@@ -67,8 +67,8 @@ make_complex_heatmap <- function(obj, genes.use, order.by = "Stage") {
     # print(order.by)
     meta <- meta[order(meta[, order.by]), ]
     
-    mat = as.matrix(obj@data)[genes.use, rownames(meta), drop=F]
-    mat = MinMax(mat, -2.5, 2.5)
+    mat = as.matrix(obj@scale.data)[genes.use, rownames(meta), drop=F]
+    # mat = MinMax(mat, -2.5, 2.5)
 
     cols_stage = stage_colors[unique(meta$Stage)]
     # print(cols_stage)
@@ -193,9 +193,16 @@ make_dotplot <- function(obj, genes.use, output_prefix=NULL, group.by="Stage", t
 # :param genes.use is a vector of gene symbol
 # :param group.by: which column in object@meta.data
 format_data <- function(object, genes.use, group.by) {
-    expr = MinMax(as.matrix(obj@scale.data)[genes.use, , drop=FALSE], -2.5, 2.5)
+    # expr = MinMax(as.matrix(obj@scale.data)[genes.use, , drop=FALSE], -2.5, 2.5)
+    expr = as.matrix(obj@scale.data)[genes.use, , drop=FALSE]
     expr = melt(as.matrix(expr))
     colnames(expr) <- c("gene", "cell", "value")
+
+    # temp_mat = melt(as.matrix(object@raw.data[genes.use, , drop = FALSE]))
+
+    # print(head(temp_mat))
+
+    # expr = expr[temp_mat[, 3] != 0, ]
     
     meta = object@meta.data[, group.by, drop = FALSE]
     meta$cell = rownames(meta)
@@ -218,7 +225,7 @@ format_data <- function(object, genes.use, group.by) {
 # :param object: Seurat obj
 # :param genes.use which genes to use
 # :param group.by: column of object@meta.data
-make_line_plot <- function(object, genes.use, group.by = "Stage", title=NULL, output=NULL) {
+make_line_plot_single_module <- function(object, genes.use, stage, group.by = "Stage", title=NULL, output=NULL) {
     expr = format_data(object, genes.use)
     
     p <- ggplot(data = expr, aes(x=cell, y=mean, group = 1)) +
@@ -244,33 +251,129 @@ make_line_plot <- function(object, genes.use, group.by = "Stage", title=NULL, ou
     colnames(expr)[colnames(expr) == "mean"] = "mean_val"
     temp = expr %>% group_by(Stage) %>% mutate(mean_by_stage=mean(mean_val)) %>% dplyr::select(Stage, mean_by_stage) %>% unique()
 
-    max_stage = temp[temp$mean_by_stage == max(temp$mean_by_stage), "Stage"]
+    # max_stage = temp[temp$mean_by_stage == max(temp$mean_by_stage), "Stage"]
 
     # print(temp)
     # print(max_stage)
-    my_compare = list()
+    # my_compare = list()
 
-    for (i in temp$Stage) {
-        if (i != max_stage) {
-            my_compare[[length(my_compare) + 1]] = c(as.character(i), as.character(max_stage))
-        }
+    # for (i in temp$Stage) {
+    #     if (i != stage) {
+    #         my_compare[[length(my_compare) + 1]] = c(as.character(i), stage)
+    #     }
+    # }
+    # print(my_compare)
+    expr$Stage = factor(expr$Stage, levels = names(stage_colors))
+
+    p <- ggviolin(expr, x = "Stage", y = "mean_val", fill = "Stage",
+        palette = stage_colors,
+        add = "boxplot", add.params = list(fill = "white"),
+        outline=FALSE
+    )
+        # stat_compare_means(comparisons = my_compare) + # Add significance levels
+        # stat_compare_means(label.y = 6 * max(expr$mean_val))
+
+    return(p)
+}
+
+
+# function to make module line plots
+# :param object: Seurat obj
+# :param genes.use which genes to use
+# :param group.by: column of object@meta.data
+make_line_plot_multi_module <- function(object, module, stage, group.by = "Stage", title=NULL, output=NULL) {
+
+    expr = NULL
+    for(i in unique(module$module_id)) {
+        temp = format_data(object, module[module$module_id == i, "gene"])
+        temp$module_id = i
+        expr = rbind(expr, temp)
     }
+
+    # expr = format_data(object, genes.use)
+    
+    p <- ggplot(data = expr, aes(x=cell, y=mean, group = 1)) +
+        geom_line() +
+        facet_grid(module_id~Stage, scales = "free_x", space = "free") + 
+        theme(axis.text.x = element_blank(), legend.position = "none")
+
+    if (!is.null(title)) {
+        p = p + labs(title = title)
+    }
+
+    if(is.null(output)) {
+        print(p)
+    } else {
+        ggsave(
+            output, plot = p,
+            width = 12, height = 6 * length(unique(module$module_id)),
+            dpi = 600, units = "in"
+        )
+    }
+
+    # make violin plots to compare
+    colnames(expr)[colnames(expr) == "mean"] = "mean_val"
+    temp = expr %>% group_by(Stage, module_id) %>% mutate(mean_by_stage=mean(mean_val)) %>% dplyr::select(Stage, mean_by_stage, module_id) %>% unique()
+
+    # max_stage = temp[temp$mean_by_stage == max(temp$mean_by_stage), "Stage"]
+
+    # print(temp)
+    # print(max_stage)
+    # my_compare = list()
+
+    # for (i in temp$Stage) {
+    #     if (i != stage) {
+    #         my_compare[[length(my_compare) + 1]] = c(as.character(i), stage)
+    #     }
+    # }
+
+    expr$Stage = factor(expr$Stage, levels = names(stage_colors))
+
     # print(my_compare)
     p <- ggviolin(expr, x = "Stage", y = "mean_val", fill = "Stage",
         palette = stage_colors,
         add = "boxplot", add.params = list(fill = "white"))+
-        stat_compare_means(comparisons = my_compare) + # Add significance levels
-        stat_compare_means(label.y = 2 * max(expr$mean_val))
+        # stat_compare_means(comparisons = my_compare) + # Add significance levels
+        # stat_compare_means(label.y = 6 * max(expr$mean_val)) +
+        facet_grid(module_id~., scales="free_y", space="free_y")
 
     return(p)
 }
 
 
 
-make_radar_plot <- function(object, genes.use, output, module) {
-    expr = MinMax(as.matrix(object@scale.data[genes.use, , drop=FALSE]), -2.5, 2.5)
-    # print(expr[1:5, 1:5])
+# uniform api for makt line plot
+# :param object: Seurat obj
+# :param genes.use which genes to use
+# :param group.by: column of object@meta.data
+make_line_plot <- function(object, stage, module=NULL, group.by = "Stage", title=NULL, output=NULL) {
+    if (length(unique(module$module_id)) == 1) {
+        return (make_line_plot_single_module(
+            object=object,
+            stage=stage,
+            genes.use = module$gene,
+            group.by = group.by,
+            title = title,
+            output = output
+        ))
+    } else if (!is.null(module)) {
+        return (make_line_plot_multi_module(
+            object=object,
+            stage=stage,
+            module = module,
+            group.by = group.by,
+            title = title,
+            output = output
+        ))
+    }
+}
 
+
+
+make_radar_plot <- function(object, genes.use, output, module) {
+    # expr = MinMax(as.matrix(object@scale.data[genes.use, , drop=FALSE]), -2.5, 2.5)
+    # print(expr[1:5, 1:5])
+    expr = as.matrix(object@scale.data[genes.use, , drop=FALSE])
     expr = melt(as.matrix(expr))
     colnames(expr) <- c("gene", "cell", "value")
 
@@ -318,6 +421,7 @@ make_radar_plot <- function(object, genes.use, output, module) {
         pcol=colors_border, # pfcol=colors_in, plwd=4 , plty=1, 
         #custom the grid
         cglcol="grey", cglty=1, axislabcol="grey", cglwd=0.8,
+        caxislabels=seq(expr[2, 1], expr[1, 1], (expr[1, 1] - expr[2, 1]) / 5), 
         #custom labels
         vlcex=0.8 
     )
@@ -354,21 +458,54 @@ obj <- readRDS(rds)
 results = results[results$Cell_name == cell_name, ]
 
 
-run <- function() {
+format_genes <- function(results) {
+    res = NULL
     for(i in 1:nrow(results)) {
-
-        # print(i)
-
         genes = str_split(results[i, "Genes"], "\\|")[[1]]
+        module_id = paste(cell_name_short, results[i, "Stage"], results[i, "Mfuzz_ID"], sep = "_")
+
+        res = rbind(res, data.frame(gene = genes, module_id = module_id))
+    }
+
+    return(res)
+}
+
+
+run <- function() {
+
+    disease = str_split(cell_name, "_")[[1]]
+    disease = disease[length(disease)]
+
+    patients = obj@meta.data[obj@meta.data$Disease == disease, ]
+    patients = unique(patients$PatientID)
+
+    cells = rownames(obj@meta.data[obj@meta.data$PatientID %in% patients, ])
+
+    temp_obj <- CreateSeuratObject(
+        obj@raw.data[, cells, drop = F],
+        meta = obj@meta.data[cells, , drop = F]
+    )
+
+    temp_obj@scale.data = obj@scale.data[, cells, drop = F]
+
+    print(head(temp_obj@meta.data))
+
+    for(i in unique(results$Stage)) {
+
+        print(i)
+
+        temp_results = results[results$Stage == i, , drop=F]
+
+        # print(dim(temp_results))
 
         # if(length(genes) < 3) {
         #     next
         # }
 
-        module_id = paste(cell_name_short, results[i, "Stage"], sep = "_") 
+        module_id = paste(cell_name_short, i, sep = "_") 
         print(module_id)
 
-        module = data.frame(gene = genes, module_id = module_id)
+        module = format_genes(temp_results)
 
         # print(head(module))
 
@@ -379,7 +516,7 @@ run <- function() {
 
         print("heatmap")
         # make_heatmap(
-        #     obj, 
+        #     temp_obj, 
         #     genes.use = genes, 
         #     output_prefix = paste(
         #         output_dir, 
@@ -389,24 +526,25 @@ run <- function() {
         #     group.by="Stage"
         # )
 
-        p <- DoHeatmap(obj, genes.use = genes, group.by = "Stage", do.plot = F)
+        # p <- DoHeatmap(obj, genes.use = genes, group.by = "Stage", do.plot = F)
 
-        print("dotplot")
-        make_dotplot(
-            obj, 
-            genes.use = genes, 
-            output_prefix = paste(
-                output_dir, 
-                paste(module_id, "dotplot.png", sep = "_"), 
-                sep = "/"
-            ),
-            group.by="Stage"
-        ) 
+        # print("dotplot")
+        # make_dotplot(
+        #     temp_obj, 
+        #     genes.use = genes, 
+        #     output_prefix = paste(
+        #         output_dir, 
+        #         paste(module_id, "dotplot.png", sep = "_"), 
+        #         sep = "/"
+        #     ),
+        #     group.by="Stage"
+        # ) 
 
         print("line")
         p <- make_line_plot(
-            obj, 
-            genes.use=genes, 
+            temp_obj, 
+            module=module, 
+            stage=i,
             group.by = "Stage", 
             title=NULL, 
             output=paste(
@@ -423,26 +561,26 @@ run <- function() {
                 paste(module_id, "violin.png", sep = "_"), 
                 sep = "/"
             ),
-            width = 6, height = 6,
+            width = 6, height = 6 * length(unique(module$module_id)),
             dpi = 600, units = "in"
         ) 
 
-        print("radar")
+        # print("radar")
         # stages = unique(obj@meta.data$Stage)
 
         # for (stage in stages) {
-        #     temp_patients = unique(obj@meta.data[obj@meta.data$Stage == stage, "PatientID"]) 
+        #     temp_patients = unique(temp_obj@meta.data[temp_obj@meta.data$Stage == stage, "PatientID"]) 
 
-        #     temp_meta = unique(obj@meta.data[obj@meta.data$PatientID %in% temp_patients, ])
+        #     temp_meta = unique(temp_obj@meta.data[temp_obj@meta.data$PatientID %in% temp_patients, ])
 
-        #     temp_obj = CreateSeuratObject(
-        #         obj@data[, rownames(temp_meta), drop=F],
+        #     temp_obj1 = CreateSeuratObject(
+        #         temp_obj@data[, rownames(temp_meta), drop=F],
         #         meta = temp_meta
         #     )
-        #     temp_obj@scale.data = obj@scale.data[, rownames(temp_meta), drop=F]
+        #     temp_obj1@scale.data = temp_obj@scale.data[, rownames(temp_meta), drop=F]
 
         #     make_radar_plot(
-        #         temp_obj, 
+        #         temp_obj1, 
         #         genes.use=genes, 
         #         output=paste(
         #             output_dir, 
@@ -452,16 +590,16 @@ run <- function() {
         #         module=module
         #     )
         # }
-        make_radar_plot(
-            obj, 
-            genes.use=genes, 
-            output=paste(
-                output_dir, 
-                paste(module_id, "_radar.png", sep = ""), 
-                sep = "/"
-            ), 
-            module=module
-        ) 
+        # make_radar_plot(
+        #     temp_obj, 
+        #     genes.use=genes, 
+        #     output=paste(
+        #         output_dir, 
+        #         paste(module_id, "_radar.png", sep = ""), 
+        #         sep = "/"
+        #     ), 
+        #     module=module
+        # ) 
     }
 
 }
