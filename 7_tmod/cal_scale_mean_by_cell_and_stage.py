@@ -25,7 +25,7 @@ def call(args):
     
     obj <- readRDS("{0}")
     
-    genes = read.table("/mnt/raid62/Lung_cancer_10x/tmod_stage/SYSU/gene.txt")
+    genes = read.table("/mnt/raid62/Lung_cancer_10x/05_tmod_stage/SYSU/gene.txt")
 
     data = melt(as.matrix(obj@scale.data[genes[,1],]))
     
@@ -33,9 +33,10 @@ def call(args):
     colnames(data) <- c("gene", "Cells", "value")
     
     data$Stage = obj@meta.data[data$Cells, "Stage"]
+    data$Patient = obj@meta.data[data$Cells, "PatientID"]
     # data$Cells = "{1}"
     
-    res = as.data.frame(data %>% group_by(gene, Stage) %>% mutate(m = mean(value)) %>% select(gene, Stage, m) %>% add_tally() %>% unique())
+    res = as.data.frame(data %>% group_by(gene, Stage, Patient) %>% mutate(total = sum(value)) %>% add_tally() %>% select(gene, Stage, Patient,  total, n) %>% unique())
     
     res$Cells = "{1}"
     
@@ -87,7 +88,10 @@ def main():
     
     data.to_csv(os.path.join(output, "mean_scale_data.csv"), index=False)
     
-    
+    for i in tasks:
+        os.remove(i[2]) 
+        
+        
 if __name__ == '__main__':
     main()
         
