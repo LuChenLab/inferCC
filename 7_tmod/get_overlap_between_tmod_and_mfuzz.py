@@ -80,14 +80,17 @@ def read_tmod(path: str, auc=0.5, p_val=0.05):
     return res
 
 
-def read_specific(path: str, top_n=50):
+def read_specific(args):
     u"""
     read speciic genes and only taks top n of each group
+    :param args; path to input file, and top n
     """
+    path, top_n = args
+    
     res = {}
     
     data = pd.read_excel(path, index_col=0)
-    data = data.groupby("ident")["avg_logFC"].nlargest(top_n)
+    data = data.groupby("ident").apply(lambda grp: grp.nlargest(top_n, "avg_logFC"))
     
     for _, row in data.iterrows():
         temp = res.get(row["ident"], set())
@@ -242,7 +245,7 @@ def mergeSecondRound(module_list):
     return sorted(list(res.values()))
     
 
-def main(input_dir, msig, tmod, output, auc=0.5, p_val=0.05, n_jobs=10):
+def main(input_dir, msig, tmod, output, auc=0.5, p_val=0.05, n_jobs=10, top_n=50):
     u"""
 
     :param input_dir:
@@ -265,7 +268,7 @@ def main(input_dir, msig, tmod, output, auc=0.5, p_val=0.05, n_jobs=10):
     for i in temp:
         mfuzz.update(i)
         
-    files = glob(os.path.join(input_dir, "*/annotation_results_by_stage.xlsx"))
+    files = [[x, top_n] for x in glob(os.path.join(input_dir, "*/annotation_results_by_stage.xlsx"))]
     degs = {}
     
     with Pool(n_jobs) as p:

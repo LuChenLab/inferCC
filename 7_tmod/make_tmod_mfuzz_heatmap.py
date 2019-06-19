@@ -69,7 +69,7 @@ def main(path, overlap_file, output, n_jobs = 10):
     
     tasks = []
     for cell in cells:
-        clean_cell = re.sub("_(ADC|SCC)(_bak)?$", "", cell)
+        clean_cell = re.sub("_(ADC|SCC)$", "", cell)
         for rds in glob(os.path.join(path, clean_cell, "*.rds")):
             if "monocle" not in rds and "slingshot" not in rds and "wgcna" not in rds.lower():
                 tasks.append(
@@ -83,15 +83,15 @@ def main(path, overlap_file, output, n_jobs = 10):
                     )
                 )
                 
-                # tasks.append(
-                #     "Rscript {0} {1} {2} {3} {4}".format(
-                #         os.path.join(__dir__, "make_radar_plots.R"), 
-                #         os.path.abspath(overlap_file), 
-                #         os.path.abspath(rds),
-                #         os.path.join(os.path.abspath(output), cell, CELLS_NAME[clean_cell]),
-                #         cell
-                #     )
-                # )
+                tasks.append(
+                    "Rscript {0} {1} {2} {3} {4}".format(
+                        os.path.join(__dir__, "make_radar_plots.R"), 
+                        os.path.abspath(overlap_file), 
+                        os.path.abspath(rds),
+                        os.path.join(os.path.abspath(output), cell, CELLS_NAME[clean_cell]),
+                        cell
+                    )
+                )
     
     with Pool(n_jobs) as p:
         p.map(call, tasks)

@@ -651,7 +651,6 @@ APII 2
 ```{R fig.height=12, fig.width=12}
 p <- make_tmod_cp_style_dotplot(resC_ap2, resU = resU_ap2, resZ = resZ_ap2, ident = 2)
 p
-ggsave(
     "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug/APII_tmod_2.png",
     plot = p,
     width = 12,
