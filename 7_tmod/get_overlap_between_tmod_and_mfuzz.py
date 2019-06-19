@@ -80,6 +80,22 @@ def read_tmod(path: str, auc=0.5, p_val=0.05):
     return res
 
 
+def read_specific(path: str, top_n=50):
+    u"""
+    read speciic genes and only taks top n of each group
+    """
+    res = {}
+    
+    data = pd.read_excel(path, index_col=0)
+    data = data.groupby("ident")["avg_logFC"].nlargest(top_n)
+    
+    for _, row in data.iterrows():
+        temp = res.get(row["ident"], set())
+        temp.add(row["gene"])
+        res[row["ident"]] = temp
+    return {os.path.basename(os.path.dirname(path)): res}
+
+
 class GeneModule(object):
     u"""
     Class to record gene module and prepare for further merge
@@ -248,13 +264,24 @@ def main(input_dir, msig, tmod, output, auc=0.5, p_val=0.05, n_jobs=10):
     
     for i in temp:
         mfuzz.update(i)
+        
+    files = glob(os.path.join(input_dir, "*/annotation_results_by_stage.xlsx"))
+    degs = {}
+    
+    with Pool(n_jobs) as p:
+        temp = p.map(read_specific, files)
+    p.close()
+    p.join()
+    
+    for i in temp:
+        degs.update(i)
     
     print("Read {0}".format(tmod))
     tmod = read_tmod(path=tmod, auc=auc, p_val=p_val)
 
     print("Read {0}".format(msig))
     msig = read_msig(msig)
-
+    
 
     print("Start to combine")
     res = []
@@ -267,7 +294,7 @@ def main(input_dir, msig, tmod, output, auc=0.5, p_val=0.05, n_jobs=10):
                 mfuzz_data = mfuzz.get(cell, {})
 
                 for mfuzz_id, mfuzz_gene in mfuzz_data.items():
-                    temp_genes = set(module_genes) & set(mfuzz_gene)
+                    temp_genes = set(module_genes) & set(mfuzz_gene) & degs[cell][stage]
 
                     if len(temp_genes) > 0:
                         res.append(GeneModule(
