@@ -9,7 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 
 full.path <- function(path) {
-    return(paste("/mnt/raid62/Lung_cancer_10x/05_tmod_stage/scale_mean_for_radar", path, sep = "/"))
+    return(paste("/mnt/raid62/Lung_cancer_10x/05_tmod_stage/scale_mean_for_radar_top_50", path, sep = "/"))
 }
 ```
 
@@ -280,7 +280,7 @@ for(i in c("I", "II", "III", "IV")) {
 
 ```{r fig.height=12, fig.width=12}
 
-scc_expr = gene_expr[str_detect(gene_expr$Cells, "SCC$"), ]
+# scc_expr = gene_expr[str_detect(gene_expr$Cells, "SCC$"), ]
 scc_modules = format_module(modules[str_detect(modules$Cell_name, "SCC$"), ], mfuzz=T)
 scc_modules$ident = paste(scc_modules$Cells, scc_modules$gene)
 
@@ -540,8 +540,6 @@ library(edgeR)
 ADC
 edgeR 做差异表达
 ```{r eval=FALSE, include=FALSE}
-head(nc_expr_adc)
-
 make_edger <- function(expr) {
     stages <- sapply(colnames(expr), function(x) {return(str_split(x, "_")[[1]][4])})
     
@@ -681,7 +679,6 @@ scc_gene_list[["SingleCell"]] <- unique(scc_modules$gene)
 upset(fromList(scc_gene_list))
 ```
 
-
 ---
 ### edgeR等需要counts做差异表达，现在换limma测试下
 
@@ -718,6 +715,261 @@ make_limma <- function(expr) {
 adc_limma <- make_limma(nc_expr_adc)
 ```
 
+
+--- 
+### 做EBSeq试下
+
+```{R}
+library(EBSeq)
+```
+
+ADC
+```{r}
+Sizes=MedianNorm(nc_expr_adc)
+EB_adc=EBMultiTest(
+    Data=as.matrix(nc_expr_adc), 
+    Conditions=as.factor(sapply(colnames(nc_expr_adc), function(x) {return(str_split(x, "_")[[1]][4])})),
+    sizeFactors=Sizes,
+    maxround=5
+)
+
+EBDEADC=GetMultiPP(EB_adc)
+
+
+saveRDS(EB_adc, "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/SYSU/ADC_EBSeq.rds")
+```
+
+SCC
+```{R}
+Sizes=MedianNorm(nc_expr_scc)
+Conditions = as.factor(sapply(colnames(nc_expr_scc), function(x) {return(str_split(x, "_")[[1]][4])}))
+PosParti=GetPatterns(Conditions)
+
+PosParti=PosParti[c("Pattern2", "Pattern3", "Pattern5", "Pattern8", "Pattern15"), ]
+
+EB_scc=EBMultiTest(
+    Data=as.matrix(nc_expr_scc), 
+    Conditions=Conditions,
+    AllParti = PosParti,
+    sizeFactors=Sizes,
+    maxround=5
+)
+
+EBDESCC=GetMultiPP(EB_scc, FDR=0.05)
+```
+
+
+---
+
+```{R}
+stage_and_pattern = c(
+    "I"="Pattern8",
+    "II"="Pattern5",
+    "III"="Pattern3",
+    "IV"="Pattern2"
+)
+
+
+
+# get genes based on required pattern
+extract_genes_by_pattern <- function(ebobj, stage, p.val = 0.05, logfc = 0) {
+    
+    pattern = stage_and_pattern[[stage]]
+    
+    logfc_mat = GetMultiFC(ebobj)$Log2FCMat
+    
+    times = rep(TRUE, nrow(logfc_mat))
+    for(i in colnames(logfc_mat)) {
+        temp = str_split(i, "Over")[[1]]
+        
+        if(temp[1] == i) {
+            times = times & logfc_mat[, i] > logfc
+        } else if (temp[2] == i) {
+            times = times & logfc_mat[, i] * -1 > logfc
+        }
+    }
+
+    # temp = rownames(ebobj$PP)[ebobj$PP[, pattern] < p.val]
+    
+    # print(length(temp))
+    # 
+    # temp = intersect(temp, rownames(logfc_mat[times, ]))
+    
+    return(rownames(logfc_mat[times, ]))
+    
+    # return (names(ebobj$MAP[ebobj$MAP == pattern]))
+}
+```
+
+同时期不同细胞的gene module与ebseq同时期高表达的基因overlap
+```{r}
+library(UpSetR)
+# make upset plot, to check to overlap of ebseq and all single cell genes from different cells at same stage
+upset_between_ebseq_single_cell <- function(ebobj, modules) {
+    modules$Stage = sapply(modules$module_id, function(x) {return(str_split(x, "\\.")[[1]][2])})
+    
+    data_list = list()
+    
+    for(i in unique(modules$Stage)) {
+        gene_models = unique(modules$gene[modules$Stage == i])
+        module_id = paste("module", i, sep = "_")
+        data_list[[module_id]] = length(gene_models)
+        
+        gene_ebseq = unique(extract_genes_by_pattern(ebobj, stage=i))
+        ebseq_id = paste("EBSeq", i, sep = "_")
+        data_list[[ebseq_id]] = length(gene_ebseq)
+        
+        data_list[[paste(module_id, ebseq_id, sep = "&")]] = length(intersect(gene_models, gene_ebseq))
+    }
+    print(names(data_list))
+    upset(fromExpression(data_list), nsets = length(data_list))
+}
+
+
+upset_between_ebseq_single_cell(EB_adc, adc_modules)
+```
+
+```{r}
+# get overlap genes from ebseq and module
+get_overlap_genes <- function(ebobj, modules) {
+    modules$Stage = sapply(modules$module_id, function(x) {return(str_split(x, "\\.")[[1]][2])})
+    
+    new_module = NULL
+    
+    for(i in unique(modules$Stage)) {
+        genes = unique(extract_genes_by_pattern(ebobj, i))
+        
+        new_module <- rbind(new_module, modules[modules$Stage == i & modules$gene %in% genes, ])
+    }
+    
+    return(new_module)
+}
+
+
+adc_modules_ebseq <- get_overlap_genes(EB_adc, adc_modules)
+```
+
+```{r}
+
+make_big_radar <- function(expr_mat, modules) {
+    expr = NULL
+    for(i in c("I", "II", "III", "IV")) {
+        print(i)
+        
+        # get expression value of specific stage
+        temp_expr <- expr_mat[, str_detect(colnames(expr_mat), paste("_", i, "_", sep = "")), drop=FALSE]
+        
+        print(colnames(temp_expr))
+        
+        # log2 transform
+        temp_expr <- log2(temp_expr + 1)
+        
+        # format expression value
+        temp_expr <- melt(as.matrix(temp_expr))
+        colnames(temp_expr) <- c("gene", "Patient", "m")
+        
+        # merge with modules
+        temp = merge(temp_expr, modules, by = "gene")
+        
+        # calculate mean value by specific module and patient
+        temp <- temp %>% group_by(module_id) %>% mutate(value = mean(m)) %>% dplyr::select(module_id, value) %>% unique()
+        temp$Stage = i
+        
+        # format data into matrix
+        temp = dcast(temp, Stage~module_id)
+        expr = rbind(expr, temp)
+    }
+    
+    rownames(expr) <- expr$Stage
+    expr <- expr[, -1]
+    
+    max_ = max(expr[!is.na(expr)])
+    min_ = min(expr[!is.na(expr)])
+    
+    # add min, max and sort matrix by stage
+    expr <- rbind(
+        rep(ceiling(max_), ncol(expr)),
+        rep(floor(min_), ncol(expr)),
+        expr
+    )
+    expr = expr[, sort_by_stage(colnames(expr))]
+    
+    par(
+        mfrow=c(1, 2),
+        bty='n',
+        oma = c(0.5,0.5,0,0) + 0.1,
+        mar = c(1,0,0,1) + 0.1
+    )
+    
+    legend_labels = rownames(expr)
+    legend_labels = legend_labels[3: length(legend_labels)]
+    colors_border = wes_palette("Zissou1", length(legend_labels), type = "continuous")
+    
+    radarchart(expr, axistype=1, 
+               #custom polygon
+               pcol=colors_border, # pfcol=colors_in, plwd=4 , plty=1, 
+               #custom the grid
+               cglcol="grey", cglty=1, axislabcol="grey", 
+               caxislabels=seq(expr[2, 1], expr[1, 1], (expr[1, 1] - expr[2, 1]) / 5), cglwd=0.8,
+               #custom labels
+               vlcex=0.8 
+    )
+    plot(0, col="white", cex=0, axes=F, ann=FALSE)
+    
+    legend(
+        "left",
+        legend = legend_labels,
+        bty = "n", pch=20 ,
+        col=colors_border ,
+        text.col = "grey",
+        cex=1.2,
+        pt.cex=3,
+        ncol = 2
+    )
+}
+```
+
+
+```{r fig.height=8, fig.width=12}
+make_big_radar(expr_mat = nc_expr_adc, modules = adc_modules_ebseq)
+```
+
+
+```{r fig.height=10, fig.width=12}
+new_adc_modules_ebseq = adc_modules
+new_adc_modules_ebseq$Stage = sapply(new_adc_modules_ebseq$module_id, function(x) {return(str_split(x, "\\.")[[1]][2])})
+
+new_adc_modules_ebseq$module_id = paste("M", new_adc_modules_ebseq$Stage, sep = ".")
+
+make_big_radar(expr_mat = nc_expr_adc, modules = new_adc_modules_ebseq[table(new_adc_modules_ebseq$gene) > 0, ])
+```
+
+检查下同时期不同细胞的基因的overlap
+
+```{r fig.height=8, fig.width=8}
+
+make_upset_between_different_cells_same_stage <- function(modules) {
+    modules$Stage = sapply(modules$module_id, function(x) {return(str_split(x, "\\.")[[1]][2])})
+    
+    for(i in unique(modules$Stage)) {
+        data_list = list()
+        
+        temp = modules[modules$Stage == i, ]
+        
+        for (j in unique(temp$module_id)) {
+            data_list[[j]] = temp[temp$module_id == j, "gene"]
+        }
+        
+        upset(fromList(data_list), nsets = length(data_list))
+    }
+}
+
+make_upset_between_different_cells_same_stage(adc_modules)
+
+```
+
+
+
 ---
 ### Check the overlap between edgeR DEGs and modules
 ```{r}
@@ -749,39 +1001,6 @@ adc_overlap <- get_overlap_between_edger_modules(et_adc, adc_modules)
 scc_overlap <- get_overlap_between_edger_modules(et_scc, scc_modules)
 ```
 
----
 
-##### Peroform tmod on these DEGs
-
-ADC
-```{r}
-library(tmod)
-library(Mfuzz)
-
-msig <- tmodImportMSigDB("/mnt/raid62/Lung_cancer_10x/05_tmod_stage/msigdb_v6.2.xml")
-sel <- msig$MODULES$Category %in% c("H","C5","C2")
-```
-
-
-```{R}
-res = NULL
-for(i in unique(et_adc_de$ident)) {
-    temp = et_adc_de[et_adc_de$ident == i, ]
-    
-    temp = tmodUtest(rownames(temp[order(temp$logFC), ]), mset=msig[sel], qval = Inf)
-    
-    res = rbind(res, temp)
-}
-
-res <- res[res$AUC > 0.5 & res$adj.P.Val < 0.05, ]
-```
-
-```{R}
-
-mat = ExpressionSet(as.matrix(np_expr_scc))
-mat = standardise(mat)
-
-cl <- mfuzz(mat, c=16, m=mestimate(mat))
-```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
