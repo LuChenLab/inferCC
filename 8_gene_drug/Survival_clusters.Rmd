@@ -1,0 +1,502 @@
+---
+title: "Survival of different clusters"
+author: "Zhang Yiming"
+date: "2019/6/20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(openxlsx)
+library(ggplot2)
+library(cowplot)
+library(reshape2)
+library(stringr)
+library(clusterProfiler)
+library(DOSE)
+library(tmod)
+library(org.Hs.eg.db)
+library(dplyr)
+library(wesanderson)
+
+
+stage_colors = c("Benign"="#3E6596", "I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E")
+disease_colors = c("ADC" = "#063373", "LCC"="#FECC1B", "Normal"="#73BDFF", "Other"="#DA6906", "SCC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B", "LBT"="#0084D1")
+tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+```
+
+
+construct full path of output
+```{r}
+full.path <- function(path) {
+    return(paste("/mnt/raid62/Lung_cancer_10x/06_tcga_survival_cluster", path, sep = "/"))
+}
+```
+
+read clsuter modules 
+```{R}
+read.modules <- function(path) {
+    path = paste(path, "cluster_gene_module/results.xlsx", sep = "/")
+    
+    if(!file.exists(path)) {
+        return(NULL)
+    }
+    
+    temp = read.xlsx(path)
+    return(temp)
+}
+```
+
+
+## Load TCGA pre-calculated results
+```{r}
+LUAD_TCGA <- read.csv("/mnt/raid62/Lung_cancer_10x/TCGA/LUAD_survival.csv", row.names = 1)
+LUSC_TCGA <- read.csv("/mnt/raid62/Lung_cancer_10x/TCGA/LUSC_survival.csv", row.names = 1)
+```
+
+## Locate all the cluster modules
+```{r}
+luad_cells = list.files(path = "/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/", pattern = "*_ADC$", full.names = T)
+lusc_cells = list.files(path = "/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/", pattern = "*_SCC$", full.names = T)
+```
+
+
+## Make violin plots of p values and median survival days
+```{r}
+make_violin_plot <- function(tcga, path) {
+    temp <- read.modules(path)
+    
+    if(is.null(temp)) {
+        return(NULL)
+    }
+    
+    temp = merge(temp, tcga, by = "gene")
+    
+    temp$ident = as.factor(temp$ident)
+    temp = temp[, c("ident", "high", "pvalue")]
+    temp$pvalue = -log10(temp$pvalue)
+    temp = na.omit(temp)
+    
+    
+    temp = melt(temp)
+    temp$variable = as.character(temp$variable)
+    temp$variable[temp$variable == "high"] = "Median survival day"
+    temp$variable[temp$variable == "pvalue"] = "-log10(Pvalue)"
+    colnames(temp)[1] = "cluster"
+    
+    p <- ggplot(data = temp, aes(x = reorder(cluster, -value), y = value, fill = cluster)) + 
+        geom_violin() +
+        geom_boxplot(width = 0.1, fill = "white") +
+        facet_grid(variable~., scales = "free_y") +
+        labs(x = "", y = "", title = str_replace_all(basename(path), "_", " "))
+    
+    return(p)
+}
+```
+
+```{R}
+registerDoMC(10)
+
+# foreach(i = luad_cells) %dopar% {
+for(i in luad_cells) {
+    print(i)
+    p <- make_violin_plot(LUAD_TCGA, i)
+    
+    if (!is.null(p)) {
+        ggsave(
+            filename = full.path(paste0(basename(i), ".png")),
+            plot = p,
+            width = 12,
+            height = 12,
+            dpi = 600,
+            units = "in"
+        )
+    }
+}
+```
+
+```{R}
+registerDoMC(10)
+
+# foreach(i = lusc_cells) %dopar% {
+for(i in luad_cells) {
+    print(i)
+    p <- make_violin_plot(LUSC_TCGA, i)
+    
+    if (!is.null(p)) {
+        ggsave(
+            filename = full.path(paste0(basename(i), ".png")),
+            plot = p,
+            width = 12,
+            height = 12,
+            dpi = 600,
+            units = "in"
+        )
+    }
+}
+```
+
+
+---
+
+## Basal， differential expressed genes between ADC and SCC
+```{r}
+obj <- readRDS("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Basal/Basal.rds")
+```
+
+
+```{r}
+unique(obj@meta.data$Disease)
+```
+
+#### Find variable genes between ADC and SCC
+```{R}
+markers <- FindMarkers(
+    obj, 
+    ident.1 = rownames(obj@meta.data[obj@meta.data$Disease == "SCC", ]), 
+    ident.2 = rownames(obj@meta.data[obj@meta.data$Disease == "ADC", ])
+)
+markers$gene = rownames(markers)
+
+markers_de <- markers[markers$p_val_adj < 0.05, ]
+```
+
+```{r}
+write.xlsx(markers, "Basal_DEGs_ADC_SCC.xlsx")
+```
+
+```{r}
+ggplot(markers, aes(x=avg_logFC)) + geom_density()
+```
+
+#### KEGG
+```{r}
+eg <- bitr(markers_de$gene, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+
+kk <- enrichKEGG(
+    eg$ENTREZID,
+    organism = "hsa", 
+    keyType = "kegg",
+    pvalueCutoff = 0.05, 
+    pAdjustMethod = "BH", 
+    minGSSize = 10, 
+    maxGSSize = 500, 
+    qvalueCutoff = 0.2,
+    use_internal_data = FALSE
+)
+
+kk = as.data.frame(kk)
+```
+
+#### DO
+```{R}
+do <- enrichDO(gene         = eg$ENTREZID,
+              ont           = "DO",
+              pvalueCutoff  = 0.05,
+              pAdjustMethod = "BH",
+              minGSSize     = 5,
+              maxGSSize     = 500,
+              qvalueCutoff  = 0.05,
+              readable      = FALSE)
+
+do <- as.data.frame(do)
+```
+
+
+#### GO
+```{r}
+ego <- enrichGO(gene          = eg$ENTREZID,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "All",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+        readable      = TRUE)
+
+ego <- as.data.frame(ego)
+```
+
+
+### tmod
+```{R}
+msig <- tmodImportMSigDB("/mnt/raid62/Lung_cancer_10x/00_data_ingest/00_raw_data/msigdb_v6.2.xml")
+sel <- msig$MODULES$Category %in% c("H", "C5", "C2")
+```
+
+```{R}
+resU = tmodUtest(
+    markers$gene[order(abs(markers$avg_logFC), decreasing = T)],
+    mset = msig[sel],
+    qval=0.05
+)
+
+resZ = tmodZtest(
+    markers$gene[order(abs(markers$avg_logFC), decreasing = T)],
+    mset = msig[sel],
+    qval=0.05
+)
+
+resC = tmodCERNOtest(
+    markers$gene[order(abs(markers$avg_logFC), decreasing = T)],
+    mset = msig[sel],
+    qval=0.05
+)
+```
+
+
+```{R}
+wb = createWorkbook()
+addWorksheet(wb, "KEGG")
+writeData(wb, 1, kk)
+
+addWorksheet(wb, "DO")
+writeData(wb, 2, do)
+
+addWorksheet(wb, "GO")
+writeData(wb, 3, ego)
+
+addWorksheet(wb, "Utest")
+writeData(wb, 4, resU)
+
+addWorksheet(wb, "Ztest")
+writeData(wb, 5, resZ)
+
+addWorksheet(wb, "CERNO")
+writeData(wb, 6, resC)
+
+saveWorkbook(wb, "/mnt/raid62/Lung_cancer_10x/06_tcga_survival_cluster/annotation.xlsx")
+```
+
+
+### make annotation plots, only taks top n by pvalues
+
+tmod results -> GO
+```{r}
+make_tmod_cp_style_dotplot <- function(resC, resU, resZ, topn=10, auc = 0.5, ident = NULL) {
+    data = NULL
+
+    if (!is.null(ident)) {
+        resC = resC[resC$ident == ident, ]
+        resU = resU[resU$ident == ident, ]
+        resZ = resZ[resZ$ident == ident, ]
+    }
+    
+    resC = resC[resC$AUC > auc, ]
+    resU = resU[resU$AUC > auc, ]
+    resZ = resZ[resZ$AUC > auc, ]
+    
+#     print(resC %>% top_n(10, wt=P.Value))
+    # temp = as.data.frame(resC %>% arrange(P.Value) %>% select(Title, N1, AUC, P.Value) %>% head(topn))
+    temp = as.data.frame(resC %>% top_n(-topn, P.Value) %>% dplyr::select(Title, N1, AUC, P.Value))
+    
+    if(nrow(temp) > 0) {
+         # print(temp)
+         temp$ident = "CERNO"
+         data = rbind(data, temp)
+    
+    }
+    
+    temp = NULL
+    # temp = as.data.frame(resU %>% arrange(P.Value) %>% select(Title, N1, AUC, P.Value) %>% head(topn))
+    temp = as.data.frame(resU %>% top_n(-topn, P.Value) %>% dplyr::select(Title, N1, AUC, P.Value))
+    # print(temp)
+    if(!is.null(temp) && nrow(temp) > 0) {
+         # print(temp)
+         temp$ident = "Utest"
+         data = rbind(data, temp)
+    
+    }
+    
+    temp = NULL
+    # temp = as.data.frame(resZ %>% arrange(P.Value) %>% select(Title, N1, AUC, P.Value) %>% head(topn))
+    temp = as.data.frame(resZ %>% top_n(-topn, P.Value) %>% dplyr::select(Title, N1, AUC, P.Value))
+    # print(temp)
+    if(!is.null(temp) && nrow(temp) > 0) {
+         # print(temp)
+         temp$ident = "Ztest"
+         data = rbind(data, temp)
+    
+    }
+    data = na.omit(data)
+    
+    p <- ggplot(
+        data = data,
+        aes(x = AUC, y=reorder(Title, AUC), color = P.Value, size = N1)) +
+        geom_point() +
+        facet_grid(.~ident, scales = "free") +
+        scale_color_gradientn(colors=rev(wes_palette("Zissou1", 100, type = "continuous"))) +
+        labs(y="")
+    return(p)
+}
+```
+
+```{r fig.height=12, fig.width=12}
+p <- make_tmod_cp_style_dotplot(resC = resC, resZ = resZ, resU = resU, topn = 20)
+
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/06_tcga_survival_cluster/tmod.png",
+    plot = p,
+    width = 12,
+    height = 12,
+    dpi = 600,
+    units = "in"
+)
+```
+
+
+#### clusterProfiler plot
+```{R fig.height=12, fig.width=12}
+make_clusterprofiler_plot <- function(data, group.by = NULL, topn = 20, p.val = 0.05, title = NULL) {
+    data = data[data$p.adjust < 0.05, ]
+    
+    if (!is.null(group.by)) {
+        res = NULL
+        for (i in unique(data[, group.by])) {
+            temp = data[data[, group.by] == i, ]
+            temp = as.data.frame(temp %>% top_n(-topn, p.adjust))
+            
+            res = rbind(res, temp)
+        }
+    } else {
+        res = as.data.frame(data %>% top_n(-topn, p.adjust))
+    }
+    
+    res$GeneRatio <- sapply(res$GeneRatio, function(x) {
+        temp = str_split(x, "/")[[1]]
+        return(as.numeric(temp[1]) / as.numeric(temp[2]))
+    })
+    
+    p <- ggplot(data = res, aes(x=GeneRatio, y = reorder(Description, -p.adjust), color = p.adjust, size = Count)) + geom_point()
+    
+    if (!is.null(group.by)) {
+        p <- eval(
+            parse(
+                text = paste0("p + facet_grid(.~", group.by, ", scales = \"free_y\")")
+            )
+        )
+    }
+    
+    p = p + 
+        scale_color_gradientn(colors=rev(wes_palette("Zissou1", 100, type = "continuous"))) +
+        labs(title = title, y = "")
+    return(p)
+}
+```
+
+
+```{R}
+p <- make_clusterprofiler_plot(ego, group.by = "ONTOLOGY", title = "GO")
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/06_tcga_survival_cluster/go.png",
+    plot = p,
+    width = 16,
+    height = 12,
+    dpi = 600,
+    units = "in"
+)
+
+
+p <- make_clusterprofiler_plot(kk, topn = 37, title = "KEGG")
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/06_tcga_survival_cluster/kegg.png",
+    plot = p,
+    width = 12,
+    height = 12,
+    dpi = 600,
+    units = "in"
+)
+
+
+p <- make_clusterprofiler_plot(do, topn = 40, title = "DO")
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/06_tcga_survival_cluster/do.png",
+    plot = p,
+    width = 12,
+    height = 12,
+    dpi = 600,
+    units = "in"
+)
+
+```
+
+---
+
+### compare the gene expression between different disease
+```{r fig.height=6, fig.width=6}
+make_compare_dotplot_between_disease <- function(object, genes.label, scale=FALSE, disease.1 = "ADC", disease.2 = "SCC") {
+    meta = object@meta.data[object@meta.data$Disease %in% c(disease.1, disease.2), ]
+    
+    if(scale) {
+        data = as.matrix(object@scale.data[ ,rownames(meta)])
+    } else {
+        data = as.matrix(object@raw.data[, rownames(meta)])
+    }
+
+    temp = as.data.frame(matrix(NA, nrow = nrow(data), ncol = 3))
+    
+    colnames(temp) <- c("gene", disease.1, disease.2)
+    
+    temp[, 1] = rownames(data)
+    temp[, disease.1] = apply(data[, rownames(meta[meta$Disease == disease.1,])], 1, function(x) {
+        return(mean(as.numeric(x)))
+    })
+    temp[, disease.2] = apply(data[, rownames(meta[meta$Disease == disease.2,])], 1, function(x) {
+        return(mean(as.numeric(x)))
+    })
+    
+    temp[,2] = log2(temp[, 2] + 1)
+    temp[,3] = log2(temp[, 3] + 1)
+    
+    max_ = ceiling(max(temp[, 2:3]))
+    min_ = floor(min(temp[, 2:3]))
+    
+    p <- eval(
+        parse(text = paste("ggplot(data = temp, aes(x =", disease.1, ", y =", disease.2, "))"))   
+    )
+      
+    p = p + 
+        geom_point() +
+        xlim(min_, max_) + 
+        ylim(min_, max_) +
+        geom_abline(
+            color="red", 
+            linetype="dashed"
+        ) +
+        geom_text(
+            aes(label=ifelse(gene %in% genes.label, as.character(gene),''), color = "red"),
+            hjust=-0.2,
+            vjust=0.5,
+            angle = 0
+        ) +
+        theme(legend.position = "none") +
+        labs(
+            x = paste0("-log2(", disease.1, ")"),
+            y = paste0("-log2(", disease.2, ")")
+        )
+    return(p)
+    
+}
+
+
+genes.label = c()
+markers_de <- markers_de[order(markers_de$avg_logFC, decreasing = T), ]
+genes.label = c(markers_de$gene[1:10])
+
+markers_de <- markers_de[order(markers_de$avg_logFC, decreasing = F), ]
+genes.label = c(genes.label, markers_de$gene[1:10])
+
+
+p <- make_compare_dotplot_between_disease(object = obj, scale = F, genes.label = genes.label)
+
+ggsave(filename = "Basal_most_DEGs_scatter.png", plot = p, width = 6, height = 6, units = "in", dpi = 600)
+
+getwd()
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
