@@ -22,6 +22,7 @@ library(tmod)
 library(org.Hs.eg.db)
 library(dplyr)
 library(wesanderson)
+library(ggrepel)
 
 
 stage_colors = c("Benign"="#3E6596", "I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E")
@@ -428,26 +429,37 @@ ggsave(
 
 ### compare the gene expression between different disease
 ```{r fig.height=6, fig.width=6}
-make_compare_dotplot_between_disease <- function(object, genes.label, scale=FALSE, disease.1 = "ADC", disease.2 = "SCC") {
-    meta = object@meta.data[object@meta.data$Disease %in% c(disease.1, disease.2), ]
+make_compare_dotplot_between_disease <- function(object, genes.label, scale=FALSE, group.by = "Disease", disease.1 = "ADC", disease.2 = "SCC") {
+    meta = object@meta.data
     
     if(scale) {
         data = as.matrix(object@scale.data[ ,rownames(meta)])
     } else {
         data = as.matrix(object@raw.data[, rownames(meta)])
     }
-
+    
+    if (is.null(disease.2)) {
+        disease.2 = "Rest"
+    }
+    
     temp = as.data.frame(matrix(NA, nrow = nrow(data), ncol = 3))
     
-    colnames(temp) <- c("gene", disease.1, disease.2)
+    colnames(temp) <- c("gene", as.character(disease.1), disease.2)
     
     temp[, 1] = rownames(data)
-    temp[, disease.1] = apply(data[, rownames(meta[meta$Disease == disease.1,])], 1, function(x) {
+    temp[, as.character(disease.1)] = apply(data[, rownames(meta[meta[, group.by] == disease.1,])], 1, function(x) {
         return(mean(as.numeric(x)))
     })
-    temp[, disease.2] = apply(data[, rownames(meta[meta$Disease == disease.2,])], 1, function(x) {
-        return(mean(as.numeric(x)))
-    })
+    
+    if(disease.2 != "Rest") {
+        temp[, disease.2] = apply(data[, rownames(meta[meta[, group.by] == disease.2,])], 1, function(x) {
+            return(mean(as.numeric(x)))
+        })
+    } else {
+        temp[, disease.2] = apply(data[, rownames(meta[meta[, group.by] != disease.1,])], 1, function(x) {
+            return(mean(as.numeric(x)))
+        })
+    }
     
     temp[,2] = log2(temp[, 2] + 1)
     temp[,3] = log2(temp[, 3] + 1)
@@ -492,10 +504,118 @@ genes.label = c(genes.label, markers_de$gene[1:10])
 
 
 p <- make_compare_dotplot_between_disease(object = obj, scale = F, genes.label = genes.label)
+p
+```
 
-ggsave(filename = "Basal_most_DEGs_scatter.png", plot = p, width = 6, height = 6, units = "in", dpi = 600)
 
-getwd()
+---
+
+### further more let check if basal can compare at same stage
+
+Only stage III have ADC and SCC at same time, give up
+
+```{R}
+temp = obj@meta.data %>% group_by(Stage, Disease) %>% add_tally() %>% select(Stage, Disease, n) %>% unique()
+
+
+ggplot(data = temp, aes(x=Stage, y = log10(n), fill = Disease)) + geom_bar(stat = "identity", position = position_dodge())
+```
+
+---
+### try to make scatter plots of different clusters
+
+
+```{r}
+make_compare_dotplot_between_cluster <- function(object, genes.label, scale=FALSE, group.by = "res.0.6", cluster = 1) {
+    meta = object@meta.data
+    
+    if(scale) {
+        data = as.matrix(object@scale.data[ ,rownames(meta)])
+    } else {
+        data = as.matrix(object@raw.data[, rownames(meta)])
+    }
+    
+    temp = as.data.frame(matrix(NA, nrow = nrow(data), ncol = 3))
+    
+    colnames(temp) <- c("gene", paste0("Cluster", cluster), "Rest")
+    
+    temp[, 1] = rownames(data)
+    temp[, paste0("Cluster", cluster)] = apply(data[, rownames(meta[meta[, group.by] == cluster,])], 1, function(x) {
+        return(mean(as.numeric(x)))
+    })
+    
+    temp[, "Rest"] = apply(data[, rownames(meta[meta[, group.by] != cluster,])], 1, function(x) {
+        return(mean(as.numeric(x)))
+    })
+    
+    
+    temp[,2] = log2(temp[, 2] + 1)
+    temp[,3] = log2(temp[, 3] + 1)
+    
+    max_ = ceiling(max(temp[, 2:3])) + 1
+    min_ = floor(min(temp[, 2:3]))
+    
+    temp$gene[!temp$gene %in% genes.label] = ""
+    
+    p <- eval(
+        parse(text = paste("ggplot(data = temp, aes(x =", paste0("Cluster", cluster), ", y = Rest, label = gene))"))   
+    )
+      
+    p = p + 
+        geom_point(color=ifelse(temp$gene %in% genes.label, "red", 'grey50')) +
+        xlim(min_, max_) +
+        ylim(min_, max_) +
+        geom_abline(
+            color="red", 
+            linetype="dashed"
+        ) +
+        # geom_text(
+        #     aes(label=ifelse(gene %in% genes.label, as.character(gene),''), color = "red"),
+        #     hjust=-0.2,
+        #     vjust=0.5,
+        #     angle = 0
+        # ) +
+        geom_text_repel() +
+        theme(legend.position = "none") +
+        labs(
+            x = paste0("-log2(", paste0("Cluster", cluster), ")"),
+            y = paste0("-log2(Rest)")
+        )
+    return(p)
+    
+}
+```
+
+```{r}
+clt = read.xlsx("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Basal/annotation_results_by_cluster.xlsx")
+
+
+extract_gene_from_cluster <- function(markers, topn = 10, ident = 1, two.sides = TRUE, pval = 0.05) {
+    markers = markers[markers$p_val_adj < pval & markers$ident == ident, ]
+    
+    markers = markers[order(markers$avg_logFC, decreasing = T), ]
+    res = markers$gene[1:topn]
+    
+    if(two.sides) {
+        markers = markers[order(markers$avg_logFC, decreasing = F), ]
+        res = c(res, markers$gene[1:topn])
+    }
+
+    return(res)
+}
+```
+
+```{r fig.height=6, fig.width=6}
+
+for(i in unique(obj@meta.data$res.0.6)) {
+    p <- make_compare_dotplot_between_cluster(
+        obj, 
+        genes.label = extract_gene_from_cluster(clt, ident = i, two.sides = F), 
+        group.by = "res.0.6", 
+        cluster = i
+    )
+    print(p)
+}
 ```
 
 

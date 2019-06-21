@@ -10,6 +10,7 @@ library(org.Hs.eg.db)
 library(dplyr)
 library(wesanderson)
 library(Seurat)
+library(ggrepel)
 
 
 stage_colors = c("Benign"="#3E6596", "I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E")
@@ -138,27 +139,30 @@ make_compare_dotplot_between_disease <- function(object, genes.label, scale=FALS
     temp[,2] = log2(temp[, 2] + 1)
     temp[,3] = log2(temp[, 3] + 1)
     
-    max_ = ceiling(max(temp[, 2:3]))
+    max_ = ceiling(max(temp[, 2:3])) + 1
     min_ = floor(min(temp[, 2:3]))
     
+    temp$gene[!temp$gene %in% genes.label] = ""
+    
     p <- eval(
-        parse(text = paste("ggplot(data = temp, aes(x =", disease.1, ", y =", disease.2, "))"))   
+        parse(text = paste("ggplot(data = temp, aes(x =", disease.1, ", y =", disease.2, ", label=gene))"))   
     )
     
     p = p + 
-        geom_point() +
+        geom_point(color=ifelse(temp$gene %in% genes.label, "red", 'grey50')) +
         xlim(min_, max_) + 
         ylim(min_, max_) +
         geom_abline(
             color="red", 
             linetype="dashed"
         ) +
-        geom_text(
-            aes(label=ifelse(gene %in% genes.label, as.character(gene),''), color = "red"),
-            hjust=-0.2,
-            vjust=0.5,
-            angle = 0
-        ) +
+        # geom_text(
+        #     aes(label=ifelse(gene %in% genes.label, as.character(gene),''), color = "red"),
+        #     hjust=-0.2,
+        #     vjust=0.5,
+        #     angle = 0
+        # ) +
+        geom_text_repel() +
         theme(legend.position = "none") +
         labs(
             x = paste0("-log2(", disease.1, ")"),
@@ -292,7 +296,7 @@ writeData(wb, 5, resZ)
 addWorksheet(wb, "CERNO")
 writeData(wb, 6, resC)
 
-saveWorkbook(wb, paste(output, "annotation.xlsx", sep = "/"))
+saveWorkbook(wb, paste(output, "annotation.xlsx", sep = "/"), overwrite = T)
 
 
 
