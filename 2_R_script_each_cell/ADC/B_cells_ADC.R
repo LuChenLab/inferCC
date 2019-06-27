@@ -71,7 +71,7 @@ ggsave("stats_SMOTE.png", plot = p, width = 12, height = 6, dpi=dpi, units = "in
 
 #### 1. vlnplot
 mito.genes <- grep(pattern = "^MT-", x = rownames(x = selected_obj@raw.data), value = TRUE)
-percent.mito <- Matrix::colSums(selected_obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+percent.mito <- Matrix::colSums(selected_obj@raw.data[mito.genes, ])/Matrix::colSums(selected_obj@raw.data)
 
 # AddMetaData adds columns to object@meta.data, and is a great place to
 # stash QC stats
