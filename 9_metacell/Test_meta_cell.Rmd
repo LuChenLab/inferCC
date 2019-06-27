@@ -1,0 +1,574 @@
+---
+title: "Test_metacell"
+author: "Zhang Yiming"
+date: "6/27/2019"
+output: html_document
+---
+
+This is used to extract data from meta cell
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(ggplot2)
+library(metacell)
+library(ComplexHeatmap)
+library(circlize)
+library(zoo)
+library(openxlsx)
+library(ggfortify)
+library(cowplot)
+library(Rtsne)
+library(stringr)
+library(Seurat)
+library(reshape2)
+```
+
+## Extract gene expression
+
+```{R}
+features = read.table("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/figs/immu_all_mc_f.cells_heat_marks_gene_names.txt")
+features
+```
+
+
+```{r}
+load("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/mc2d.immu_all_2dproj.Rda")
+graph = object
+
+load("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/mc.immu_all_mc_f.Rda")
+lfp = object
+
+load("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/mat.immu_all.Rda")
+raw = object
+```
+
+###### Useful functions
+
+Calculate the scale data, used by feature heatmaps
+```{r}
+calculate_scale_data <- function(base_dir, smoo=FALSE, genes.use = NULL) {
+    # read data
+    # file_path = list.files(base_dir, pattern = "mc2d.*.Rda", full.names = T)
+    # load(file_path)
+    # graph = object
+    # 
+    # file_path = list.files(base_dir, pattern = "mc.*mc_f.Rda", full.names = T)
+    # load(file_path)
+    # lfp = object
+    # 
+    # file_path = list.files(base_dir, pattern = "mat.*.Rda", full.names = T)
+    # load(file_path)
+    # raw = object
+    
+    if (is.null(genes.use)) {
+        genes.use = rownames(mat)
+    }
+
+    # start calculation
+    mc_ord = 1:ncol(lfp@mc_fp)
+    cell_ord = names(lfp@mc)[order(order(mc_ord)[lfp@mc])]
+    
+    mcp_heatmap_ideal_umi = quantile(colSums(as.matrix(raw@mat)), 0.25)
+    
+    raw_mat = as.matrix(raw@mat[genes.use, cell_ord])
+    
+    totu = colSums(as.matrix(raw@mat)[, cell_ord])
+    raw_mat = t(t(raw_mat)/totu)*mcp_heatmap_ideal_umi
+    lus_1 = log2(1+7*raw_mat)
+    lus = apply(lus_1 - apply(lus_1, 1, median),2, function(x) pmax(x,0))
+    
+    if (smoo ) {
+        smooth_n = max(2,ceiling(2 * length(cell_ord) / max(min(3000,length(cell_ord)+200),800)))
+        lus_smoo = t(apply(lus, 1, function(x) rollmean(x,smooth_n, fill=0)))
+        return(lus_smoo)
+    } else {
+        return (lus)
+    }
+}
+```
+
+
+
+
+### Try feature heatmap
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/figs/immu_all_mc_f.cells_heat_marks.png")
+```
+
+```{r fig.height=12, fig.width=24}
+# mc_ord = 1:ncol(lfp@mc_fp)
+# cell_ord = names(lfp@mc)[order(order(mc_ord)[lfp@mc])]
+# 
+# mcp_heatmap_ideal_umi = quantile(colSums(as.matrix(raw@mat)), 0.25)
+# 
+# raw_mat = as.matrix(raw@mat[rev(features$x), cell_ord])
+# 
+# totu = colSums(as.matrix(raw@mat)[, cell_ord])
+# raw_mat = t(t(raw_mat)/totu)*mcp_heatmap_ideal_umi
+# lus_1 = log2(1+7*raw_mat)
+# lus = apply(lus_1 - apply(lus_1, 1, median),2, function(x) pmax(x,0))
+# 
+# smooth_n = max(2,ceiling(2 * length(cell_ord) / max(min(3000,length(cell_ord)+200),800)))
+# lus_smoo = t(apply(lus, 1, function(x) rollmean(x,smooth_n, fill=0)))
+
+lus = calculate_scale_data("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/", genes.use = rev(features$x))
+Heatmap(
+    lus, 
+    cluster_rows = F, 
+    cluster_columns = F, 
+    show_column_names = F,
+    col = colorRamp2(c(0, 3, 6), c("white", "yellow", "red"))
+)
+```
+
+
+```{r fig.height=12, fig.width=24}
+lus_smoo <- calculate_scale_data("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/", smoo = T, genes.use = rev(features$x))
+Heatmap(
+    lus_smoo, 
+    cluster_rows = F, 
+    cluster_columns = F, 
+    show_column_names = F,
+    col = colorRamp2(c(0, 3, 6), c("white", "yellow", "red"))
+)
+```
+
+
+## find out the batch infomation
+```{R fig.height=36, fig.width=18}
+va = HeatmapAnnotation(
+    Batch = sapply(colnames(lus_smoo), function(x) {
+        if(str_detect(x, "^2018")) {
+            return("First")
+        } else {
+            return("Second")
+        }
+    })
+)
+
+Heatmap(
+    lus_smoo, 
+    cluster_rows = F, 
+    cluster_columns = F, 
+    show_column_names = F,
+    col = colorRamp2(c(0, 3, 6), c("white", "yellow", "red")),
+    bottom_annotation = va
+)
+```
+
+
+### Try Dots
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/figs/immu_all_2dproj.2d_graph_proj.png")
+```
+
+
+```{r fig.height=12, fig.width=12}
+temp = data.frame(
+    x=graph@mc_x,
+    y=graph@mc_y,
+    l=1:length(graph@mc_x)
+)
+
+
+
+p <- ggplot(data = temp, aes(x=x, y=y, label=l)) + geom_point() +
+    geom_label(aes(fill = l, boxstyle='circle'), colour = "white")
+
+# for(i in )
+p
+
+```
+
+
+#### Do tSNE
+```{R}
+lungcancer <- read.xlsx("/mnt/raid62/Lung_cancer_10x/MetaCell/20190627_lfp.xlsx", sheet = 3)
+guo2018 <- read.xlsx("/mnt/raid62/Lung_cancer_10x/MetaCell/20190627_lfp.xlsx", sheet = 4)
+```
+
+format data
+```{r}
+colnames(lungcancer) <- paste0("L", colnames(lungcancer))
+colnames(guo2018) <- paste0("G", colnames(guo2018))
+```
+
+```{r}
+data <- merge(lungcancer, guo2018, by.x = "Lmc_id", "Gmc_id")
+rownames(data) <- data$Lmc_id
+data <- data[, !colnames(data) %in% c("Lmc_id")]
+```
+
+
+PCA
+```{R fig.height=12, fig.width=20}
+pca = prcomp(t(data))
+
+pca_col = data.frame(
+    mc_id=c(colnames(lungcancer)[2:ncol(lungcancer)], colnames(guo2018)[2:ncol(guo2018)]),
+    source=c(rep("L", (ncol(lungcancer) - 1)), rep("G", (ncol(guo2018)) - 1))
+)
+rownames(pca_col) <- pca_col$mc_id
+
+plist = list()
+for(i in 1:(min(ncol(pca$x), 10) - 1)) {
+    plist[[i]] <- autoplot(pca, data=pca_col, colour = "source", x=i, y=i + 1)
+}
+plot_grid(plotlist = plist, ncol = 4)
+```
+
+
+Select pca
+```{r fig.height=6, fig.width=24}
+temp = as.data.frame(apply(pca$x, 2, sd))
+temp$x = rownames(temp)
+colnames(temp) <- c("y", "x")
+
+temp$x = factor(temp$x, levels = temp$x)
+
+ggplot(data = temp[1:100,], aes(x=x, y=y)) + 
+    geom_point() + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+    labs(x = "", y = "")
+```
+
+```{r fig.height=6, fig.width=8}
+tsne = Rtsne(X=pca$x[, 1:10], dims = 2)
+
+tsne_coord = as.data.frame(tsne$Y)
+tsne_coord$x = rownames(pca$x)
+tsne_coord$source = sapply(tsne_coord$x, function(x) {
+   str_replace(as.character(x), "\\d+", "")
+})
+colnames(tsne_coord) <- c("tSNE_1", "tSNE_2", "mc_id", "source")
+
+
+ggplot(
+    tsne_coord, 
+    aes(x=tSNE_1, y=tSNE_2, color = source)
+) + 
+    geom_point()
+```
+
+
+#### make feature plot
+
+```{R}
+known_markers <- read.xlsx("/mnt/raid62/Lung_cancer_10x/MetaCell/20190628_gene_markers.xlsx", sheet = 1)
+
+known_markers <- known_markers[known_markers$gene %in% features$x, ]
+```
+
+```{R eval=FALSE, fig.height=6, fig.width=8, include=FALSE}
+make_feature_plot <- function(data, graph, genes.use) {
+    temp = data.frame(
+        sc_x=graph@sc_x,
+        sc_y=graph@sc_y
+    )
+    
+    data = data[intersect(rownames(data), genes.use), ]
+    data = as.data.frame(t(data))
+    
+    temp = cbind(temp, data)
+    
+    return(temp)
+}
+
+
+temp <- make_feature_plot(lus, graph, known_markers$gene)
+
+plots = list()
+for(i in colnames(temp)[3:ncol(temp)]) {
+    data_for_plot = temp[, c("sc_x", "sc_y", i)]
+    
+    data_for_plot$cell = i
+    colnames(data_for_plot)[3] = "value"
+    
+    data_for_plot = data_for_plot[order(data_for_plot$value), ]
+    p <- ggplot(data = data_for_plot, aes(x=sc_x, y=sc_y, color=value)) + 
+        geom_point() +
+        scale_color_gradient(low = "grey", high = "blue") +
+        labs(title = i, x = "", y = "") +
+        theme_bw()
+    
+    plots[[length(plots) + 1]] 
+}
+
+plot_grid(plotlist = plots, ncol = 4)
+```
+
+
+---
+### Why just using Seurat
+```{R}
+obj <- CreateSeuratObject(
+    data, 
+    meta.data = data.frame(
+        source = sapply(colnames(data), function(x) {
+            str_replace(as.character(x), "\\d+", "")
+        }),
+        cell_id = colnames(data)
+    )
+)
+```
+
+```{R fig.height=4, fig.width=12}
+### 1. vlnplot
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@raw.data), value = TRUE)
+percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+
+# AddMetaData adds columns to object@meta.data, and is a great place to
+# stash QC stats
+obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+
+VlnPlot(object = obj, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
+```
+
+```{r fig.height=6, fig.width=12}
+par(mfrow = c(1, 2))
+GenePlot(object = obj, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = obj, gene1 = "nUMI", gene2 = "nGene")
+```
+
+The expression value already scaled, using raw.data as scale.data
+```{r}
+# obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+# obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+obj@scale.data = obj@raw.data
+
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = 100)
+```
+select PCs
+```{r fig.height=4, fig.width=12}
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+Run tSNE
+```{R}
+n.pcs = 10
+
+obj <- RunTSNE(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "pca", reduction.name = "tsne")
+obj <- FindClusters(object = obj, reduction.type = "pca", dims.use = 1:n.pcs, resolution = 0.6, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+```
+
+
+Check the clusters
+```{r fig.height=6, fig.width=12}
+p1 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "res.0.6", 
+    no.legend = TRUE, 
+    do.label = TRUE, 
+    label.size = 8, 
+    do.return = TRUE
+)
+
+p2 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "source", 
+    no.legend = TRUE, 
+    do.label = TRUE, 
+    label.size = 8, 
+    do.return = TRUE
+)
+
+plot_grid(p1, p2, nrow = 1)
+```
+
+
+```{R fig.height=16, fig.width=16}
+FeaturePlot(
+    obj, features.plot = intersect(known_markers$gene, rownames(obj@raw.data)),
+    cols.use = c("grey", "blue")
+)
+```
+
+
+```{r}
+known_markers[known_markers$gene %in% rownames(obj@raw.data), ]
+```
+
+Identify cell types
+```{R}
+cell_types = c(
+    "0"="Monocytes",
+    "1"="CD4",
+    "2"="CD8",
+    "3"="CD8",
+    "4"="CD4",
+    "5"="B cells",
+    "6"="Unknown"
+)
+
+obj@meta.data$cell = sapply(obj@meta.data$res.0.6, function(x) {
+    cell_types[[x]]
+})
+```
+
+
+Load meta of Guo2018
+```{R}
+guo2018_meta = read.xlsx("/mnt/raid62/Lung_cancer_10x/MetaCell/20190627_lfp.xlsx", sheet = 5, colNames = F)
+colnames(guo2018_meta) = sapply(guo2018_meta[3,], function(x) {
+    paste0("G", x)
+})
+
+guo2018_meta = as.data.frame(t(guo2018_meta))
+colnames(guo2018_meta) <- guo2018_meta[1, ]
+guo2018_meta = guo2018_meta[2:nrow(guo2018_meta), ]
+
+guo2018_meta$cell = apply(guo2018_meta, 1, function(row) {
+    if(as.numeric(row[2]) == 0) {
+        return("CD8")
+    } else if(as.numeric(row[1]) == 0) {
+        return("CD4")
+    } else {
+        return("Mix")
+    }
+})
+
+obj@meta.data$guo = guo2018_meta[obj@meta.data$cell_id, "cell"]
+```
+
+Check if CD4 and CD8 consistent with Guo2018
+```{R fig.height=6, fig.width=13.2}
+
+p1 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "cell", 
+    no.legend = TRUE, 
+    do.label = TRUE, 
+    label.size = 8, 
+    do.return = TRUE
+)
+
+
+p2 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "guo", 
+    no.legend = FALSE, 
+    do.label = FALSE, 
+    label.size = 8, 
+    do.return = TRUE
+)
+
+plot_grid(p1, p2, nrow = 1, rel_widths = c(1, 1.2))
+
+
+# temp = as.data.frame(obj@dr$tsne@cell.embeddings)
+# temp$source = obj@meta.data[rownames(temp), "guo"]
+# temp$source[is.na(temp$source)] = ""
+# 
+# temp$cell = obj@meta.data[rownames(temp), "cell"]
+# p2 <- ggplot(data = temp, aes(x=tSNE_1, y=tSNE_2, color=cell, shape = source)) + 
+#     geom_point() + 
+#     theme_bw() 
+```
+
+Using  all markers genes to plots
+```{r fig.height=12, fig.width=12}
+all_markers = read.xlsx("/mnt/raid62/Lung_cancer_10x/MetaCell/20190628_gene_markers.xlsx", sheet = 1)
+all_markers = all_markers[all_markers$gene %in% rownames(obj@raw.data), ]
+
+for(i in unique(all_markers$group)) {
+    FeaturePlot(obj, features.plot=all_markers$gene[all_markers$group == i], cols.use = c("grey", "blue"))
+}
+```
+Using FindMarkers to find highly expressed genes in cluster6
+```{R}
+
+find_markers <- function(object, group.by = "Stage", ...) {
+    
+    temp <- sort(unique(object@meta.data[, group.by]))
+    res = NULL
+    for(i in temp)  {
+        groups = rownames(object@meta.data[object@meta.data[, group.by] == i, ])
+        
+        if(length(groups) >= 3) {
+            temp <- FindMarkers(
+                object = object, 
+                ident.1 = groups,
+                ...
+            )
+            
+            temp$ident = i
+            temp$gene = rownames(temp)
+            res = rbind(res, temp)
+        }
+    }
+    
+    return(res)
+}
+
+markers = find_markers(obj, group.by = "res.0.6", test.use = "t")
+
+temp = markers[markers$ident == 6, ]
+temp[order(temp$avg_logFC, decreasing = T), ]
+```
+
+```{r eval=FALSE, include=FALSE}
+write.csv(markers, "/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/MetaCell_markers.csv")
+```
+
+#### using the scatter plot to check CD4 or CD8
+```{r fig.height=6, fig.width=12}
+make_dotplot <- function(object, genes, cells.use = NULL) {
+    if (is.null(cells.use)) {
+        cells.use = colnames(object@scale.data)
+    }
+    
+    data = object@scale.data[genes, cells.use]
+    data = as.data.frame(t(data))
+    # data = melt(as.matrix(data))
+    
+    p <- eval(
+        parse(text = paste0(
+            "ggplot(data = data, aes(x=", genes[1], ", y=", genes[2], "))"
+        ))
+    )
+    
+    p = p + geom_point() + geom_abline(color="red", linetype = "dashed")
+    
+    p
+}
+
+
+for (i in 1:4) {
+    p1 <- make_dotplot(obj, genes=c("CD8A", "CD4"), cells.use = rownames(obj@meta.data)[obj@meta.data$res.0.6 == i])
+    p2 <- make_dotplot(obj, genes=c("CD8B", "CD4"), cells.use = rownames(obj@meta.data)[obj@meta.data$res.0.6 == i])
+    
+    p <- plot_grid(p1, p2, nrow = 1)
+    
+    title = ggdraw() + draw_label(paste0("cluster ", i))
+    
+    p <- plot_grid(title, p, ncol = 1, rel_heights = c(0.1, 1))
+    
+    print(p)
+}
+```
+
+通过基因染色可认为
+- 1为CD4
+- 2为CD8
+- 3为CD8
+- 4为CD4
+
+而上方散点图可见
+- 3基本为CD8
+- 4基本为CD4
+- 而1和2为混合细胞
+    - 其中2偏向CD8
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
