@@ -13,27 +13,27 @@ setwd("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II_ADC/")
 
 obj <- readRDS("Alveolar_II.rds")
 
-de = read.xlsx("annotation_results_by_stage.xlsx")
-de = de[de$p_val_adj < 0.05, ]
+# de = read.xlsx("annotation_results_by_stage.xlsx")
+# de = de[de$p_val_adj < 0.05, ]
 
 
-network = list()
-label = c()
-for(i in unique(de$ident)) {
-    tryCatch(
-        {
-            network[[length(network) + 1]] = compute.network(expr.data = obj@raw.data, gene.names = de[de$ident == i, "gene"], clustering = 'direct')
-            label = c(label, i)
-        }, error=function(err) {
+# network = list()
+# label = c()
+# for(i in unique(de$ident)) {
+#     tryCatch(
+#         {
+#             network[[length(network) + 1]] = compute.network(expr.data = obj@raw.data, gene.names = de[de$ident == i, "gene"], clustering = 'direct')
+#             label = c(label, i)
+#         }, error=function(err) {
 
-        }
-    )
-}
+#         }
+#     )
+# }
 
-network.centrality = list()
-for(i in network) {
-    network.centrality[[length(network.centrality) + 1]] = i$centrality
-}
+# network.centrality = list()
+# for(i in network) {
+#     network.centrality[[length(network.centrality) + 1]] = i$centrality
+# }
 
 
 res = compute.network(expr.data = obj@raw.data, gene.names = rownames(obj@raw.data), clustering = 'direct')
@@ -41,6 +41,24 @@ res = compute.network(expr.data = obj@raw.data, gene.names = rownames(obj@raw.da
 png(filename = "bigscale_corr_heatmap.png", type="cairo", width = 36, height = 36, units = "in", res = 300)
 pheatmap(as.matrix(res$correlations@Data), show_rownames = F)
 dev.off()
+
+
+png(filename = "newtwork.png", type="cairo", width = 8, height = 8, units = "in", res = 300)
+plot(res$graph)
+dev.off()
+
+
+for(i in 1:length(res$graph)) {
+    output = names(res$graph[[i]])
+
+    print(output)
+
+    png(filename = paste0(output, ".png"), type="cairo", width = 8, height = 8, units = "in", res = 300)
+    rglplot(res$graph[[i]][[output]])
+    dev.off() 
+}
+
+
 
 comparison = compare.centrality(network.centrality, label)
 

@@ -63,7 +63,7 @@ patient_colors = gg_color_hue(50)
 ### gene drug
 ```{r}
 full.path <- function(path) {
-    return(paste("/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug", path, sep = "/"))
+    return(paste("/mnt/raid62/Lung_cancer_10x/07_gene_drug", path, sep = "/"))
 }
 ```
 
@@ -74,6 +74,8 @@ ap2 <- readRDS("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II_ADC
 basal <- readRDS("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Basal_SCC/Basal.rds")
 
 meta <- read.xlsx(full.path("肺癌基因药物关系.xlsx"), sheet = 3)
+
+meta2 <- read.xlsx(full.path("gene_drug.xlsx"))
 ```
 
 #### 读取两种细胞的亚群差异基因
@@ -90,28 +92,30 @@ lusc = read.csv("/mnt/raid62/Lung_cancer_10x/TCGA/LUSC_survival.csv")
 ```
 
 
-```{r fig.height=8, fig.width=12}
+```{r fig.height=6, fig.width=12}
 DotPlot(
     ap2, 
-    genes.plot = intersect(rownames(ap2@raw.data), meta[, 1]),
-    group.by = "res.0.6"
-    )
+    genes.plot = intersect(rownames(ap2@raw.data), sort(c("G6PD", "SERPINB9", meta2$Symbol))),
+    group.by = "res.0.6",
+    x.lab.rot = T
+)
 
 DotPlot(
     basal, 
-    genes.plot = intersect(rownames(basal@raw.data), meta[, 1]),
-    group.by = "res.0.6"
-    )
+    genes.plot = intersect(rownames(basal@raw.data), sort(c("G6PD", "SERPINB9", meta2$Symbol))),
+    group.by = "res.0.6",
+    x.lab.rot = T
+)
 ```
 
 #### Feature plots，检查基因在不同亚群间的分布情况
 
 APII
-```{r fig.height=12, fig.width=16}
+```{r fig.height=16, fig.width=16}
 p = FeaturePlot(
     ap2, 
-    features.plot = intersect(rownames(ap2@raw.data), meta$基因名),
-    cols.use = c("grey", "blue"),
+    features.plot = intersect(rownames(ap2@raw.data), sort(c("G6PD", "SERPINB9", meta2$Symbol))),
+    cols.use = c("lightgrey", "blue"),
     do.return = T
 )
 
@@ -121,10 +125,10 @@ cowplot::plot_grid(plotlist = p, ncol = 4)
 ```
 
 Basal
-```{r fig.height=12, fig.width=16}
+```{r fig.height=16, fig.width=16}
 p = FeaturePlot(
     basal, 
-    features.plot = intersect(rownames(basal@raw.data), meta$基因名),
+    features.plot = intersect(rownames(basal@raw.data), sort(c("G6PD", "SERPINB9", meta2$Symbol))),
     cols.use = c("grey", "blue"),
     do.return = T
 )
@@ -136,11 +140,11 @@ cowplot::plot_grid(plotlist = p, ncol = 4)
 
 #### 检查，这些基因是否为两种细胞的cluster特异基因
 ```{r}
-ap2_clt[ap2_clt$avg_logFC > 0 & ap2_clt$p_val_adj < 0.05 & ap2_clt$gene %in% meta$基因名, ]
+ap2_clt[ap2_clt$avg_logFC > 0 & ap2_clt$p_val_adj < 0.05 & ap2_clt$gene %in% sort(c("G6PD", "SERPINB9", meta2$Symbol)), ]
 ```
 
 ```{r}
-basal_clt[basal_clt$avg_logFC > 0 & basal_clt$p_val_adj < 0.05 & basal_clt$gene %in% meta$基因名, ]
+basal_clt[basal_clt$avg_logFC > 0 & basal_clt$p_val_adj < 0.05 & basal_clt$gene %in% sort(c("G6PD", "SERPINB9", meta2$Symbol)), ]
 ```
 
 
@@ -287,7 +291,7 @@ make_scatter_compare <- function(gene, object) {
 
 ###### APII
 ```{R fig.height=6, fig.width=12}
-for(i in meta$基因名) {
+for(i in sort(c("G6PD", "SERPINB9", meta2$Symbol))) {
     p <- make_scatter_compare(i, ap2)
     print(p)
 }
@@ -296,7 +300,7 @@ for(i in meta$基因名) {
 
 ###### Basal
 ```{R fig.height=6, fig.width=12}
-for(i in meta$基因名) {
+for(i in sort(c("G6PD", "SERPINB9", meta2$Symbol))) {
     p <- make_scatter_compare(i, basal)
     print(p)
 }
@@ -307,11 +311,11 @@ for(i in meta$基因名) {
 
 ### 做一下vlnplot，检查药物相关基因的表达量分布情况
 ```{r fig.height=12, fig.width=18}
-VlnPlot(ap2, features.plot = intersect(rownames(ap2@raw.data), meta$基因名), group.by = "res.0.6")
+VlnPlot(ap2, features.plot = intersect(rownames(ap2@raw.data), sort(c("G6PD", "SERPINB9", meta2$Symbol))), group.by = "res.0.6")
 ```
 
 ```{r fig.height=12, fig.width=18}
-VlnPlot(basal, features.plot = intersect(rownames(basal@raw.data), meta$基因名), group.by = "res.0.6")
+VlnPlot(basal, features.plot = intersect(rownames(basal@raw.data), sort(c("G6PD", "SERPINB9", meta2$Symbol))), group.by = "res.0.6")
 ```
 
 ---
@@ -320,7 +324,7 @@ VlnPlot(basal, features.plot = intersect(rownames(basal@raw.data), meta$基因�
 ```{r}
 library(tmod)
 
-msig <- tmodImportMSigDB("/mnt/raid62/Lung_cancer_10x/05_tmod_stage/msigdb_v6.2.xml")
+msig <- tmodImportMSigDB("/mnt/raid62/Lung_cancer_10x/07_msigdb_v6.2.xml")
 sel <- msig$MODULES$Category %in% c("H","C5","C2")
 
 ap2_marker <- read.xlsx("/mnt/raid62/Lung_cancer_10x/02_figures_each_cell/Alveolar_II_ADC/annotation_results_by_cluster.xlsx", rowNames = T)
@@ -467,7 +471,7 @@ writeData(wb, 2, resU_ap2)
 addWorksheet(wb, "Ztest")
 writeData(wb, 3, resZ_ap2)
 
-saveWorkbook(wb, "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug/APII_tmod.xlsx", overwrite = T)
+saveWorkbook(wb, "/mnt/raid62/Lung_cancer_10x/07_gene_drug/APII_tmod.xlsx", overwrite = T)
 ```
 
 
@@ -482,7 +486,7 @@ writeData(wb, 2, resU_basal)
 addWorksheet(wb, "Ztest")
 writeData(wb, 3, resZ_basal)
 
-saveWorkbook(wb, "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug/Basal_tmod.xlsx", overwrite = T)
+saveWorkbook(wb, "/mnt/raid62/Lung_cancer_10x/07_gene_drug/Basal_tmod.xlsx", overwrite = T)
 ```
 
 
@@ -519,7 +523,7 @@ p[[length(p) + 1]] <- DimPlot(
 p <- cowplot::plot_grid(plotlist = p, ncol = 3)
 
 ggsave(
-    "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug/APII_G6PD.png",
+    "/mnt/raid62/Lung_cancer_10x/07_gene_drug/APII_G6PD.png",
     plot = p,
     width = 18,
     height = 6,
@@ -559,7 +563,7 @@ p[[length(p) + 1]] <- DimPlot(
 p <- cowplot::plot_grid(plotlist = p, ncol = 3)
 
 ggsave(
-    "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug/Basal_G6PD.png",
+    "/mnt/raid62/Lung_cancer_10x/07_gene_drug/Basal_G6PD.png",
     plot = p,
     width = 18,
     height = 6,
@@ -638,7 +642,7 @@ APII 2
 p <- make_tmod_cp_style_dotplot(resC_ap2, resU = resU_ap2, resZ = resZ_ap2, ident = 1)
 p
 ggsave(
-    "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug/APII_tmod_1.png",
+    "/mnt/raid62/Lung_cancer_10x/07_gene_drug/APII_tmod_1.png",
     plot = p,
     width = 12, height = 8,
     dpi = 600,
@@ -650,8 +654,8 @@ ggsave(
 APII 2
 ```{R fig.height=12, fig.width=12}
 p <- make_tmod_cp_style_dotplot(resC_ap2, resU = resU_ap2, resZ = resZ_ap2, ident = 2)
-p
-    "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug/APII_tmod_2.png",
+ggsave(
+    "/mnt/raid62/Lung_cancer_10x/07_gene_drug/APII_tmod_2.png",
     plot = p,
     width = 12,
     height = 8,
@@ -666,12 +670,21 @@ Basal 10
 p <- make_tmod_cp_style_dotplot(resC_basal, resU = resU_basal, resZ = resZ_basal, ident = 10)
 
 ggsave(
-    "/mnt/raid62/Lung_cancer_10x/05_tmod_stage/gene_drug/Basal_tmod_10.png",
+    "/mnt/raid62/Lung_cancer_10x/07_gene_drug/Basal_tmod_10.png",
     plot = p,
     width = 12, height = 8,
     dpi = 600,
     units = "in"
 )
 ```
+
+
+---
+Try to make huge gene expression plots
+```{r}
+
+```
+
+
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

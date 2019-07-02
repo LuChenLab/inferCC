@@ -6,6 +6,7 @@ u"""
 Just used to call r scripts
 """
 import os
+import re
 from glob import glob
 
 from subprocess import check_call, CalledProcessError
@@ -37,21 +38,22 @@ CELLS = {
     "Treg": "Treg"
 }
 
+
 def __call__(cmd):
     u"""
     Call R
     :param cmd
     """
-    # print(cmd)
+    print(cmd)
     with open(os.devnull, "w+") as w:
         try:
-            check_call(cmd, shell=True, stdout=w, stderr=w)
+            check_call(cmd, shell=True, stderr=w, stdout=w)
         except CalledProcessError as err:
             print(err)
 
 
 
-def runr(input_dir, output_dir, n_jobs = 20):
+def runr(input_dir, output_dir, n_jobs = 30):
     u"""
     main function
     :param input_dir
@@ -62,20 +64,20 @@ def runr(input_dir, output_dir, n_jobs = 20):
     output_dir = os.path.abspath(output_dir)
     
     tasks = []
-    for i in CELLS.values():
-        temp_dir = os.path.join(input_dir, i)
-        for j in glob(os.path.join(temp_dir, "*.rds")):
-            if "monocle" not in j and "slingshot" not in j and "wgcna" not in j.lower():
-                tasks.append(
-                    "Rscript {0} {1} {2}".format(
-                        os.path.join(__dir__, "normal_cancer.R"),
-                        j,
-                        os.path.join(output_dir, i)
-                    )
+    for i in glob(os.path.join(input_dir, "*/*.rds")):
+        if "monocle" not in i and "slingshot" not in i and "wgcna" not in i.lower():
+            cell_name = os.path.basename(os.path.dirname(i))
+            
+            tasks.append(
+                "Rscript {0} {1} {2}".format(
+                    os.path.join(__dir__, "cluster.R"),
+                    i,
+                    os.path.join(output_dir, cell_name)
                 )
+            )
 
     with Pool(n_jobs) as p:
-        p.map(__call__, tasks)
+        p.map(__call__, sorted(tasks))
 
 
 
@@ -88,41 +90,36 @@ def __convert__(args):
     if not os.listdir(path):
         return
     
-    disease = ["ADC", "SCC"]
-    pngs = {
-        "Top10 variable genes": "gene.png",
-        "Volcano": "voca.png",
-        "KEGG": "kegg.png",
-        "GO": "go.png",
-        "DO": "do.png"
-    }
+    pngs = []
+    for i in glob(os.path.join(path, "*.png")):
+        if re.search(r"\d+_\w+.png", os.path.basename(i)):
+            pngs.append(int(os.path.basename(i).split("_")[0]))
+    pngs = set(pngs)
 
     temp_md = os.path.join(path, "temp.md")
-    
-    exists = False
+        
     with open(temp_md, "w+") as w:
-        for i in disease:
-            w.write("# {0}\n\n".format(i))
-            
-            for title, j in pngs.items():
+        w.write("# {0}\n\n".format(os.path.basename(path)))
+        
+        for i in sorted(pngs):
+            w.write("### {}\n\n".format(i))
+            for j in ["gene.png", "volca.png"]:
                 file = os.path.join(path, "{0}_{1}".format(i, j))
-
                 if os.path.exists(file):
-                    exists = True
-                    w.write("### {}\n\n".format(title))
                     w.write("![]({})\n\n".format(file))
+                    
     
-    if exists:
-        check_call(
-            "python {0} -md {1} -pdf {2}".format(
-                os.path.join(os.path.dirname(__dir__), "mdconverter/converter.py"),
-                temp_md,
-                os.path.join(output_dir, os.path.basename(path) + ".pdf")
-            ),
-            shell=True
-        )
+    check_call(
+        "python {0} -md {1} -pdf {2}".format(
+            os.path.join(os.path.dirname(__dir__), "mdconverter/converter.py"),
+            temp_md,
+            os.path.join(output_dir, os.path.basename(path) + ".pdf")
+        ),
+        shell=True
+    )
     
     os.remove(temp_md)
+
 
 
 def pdf(input_dir, output_dir, n_jobs = 20):
@@ -141,11 +138,8 @@ def pdf(input_dir, output_dir, n_jobs = 20):
     
     with Pool(n_jobs) as p:
         p.map(__convert__, tasks)
-        
+
 
 if __name__ == "__main__":
     from fire import Fire
     Fire()
-
-
-        

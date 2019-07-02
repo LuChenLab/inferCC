@@ -111,7 +111,5 @@ if (file.exists(xlsx) && length(unique(obj@meta.data$res.0.6 > 1))) {
             dpi = 600
         )
     }
-    
-    
 }
 

@@ -44,10 +44,10 @@ def read_data(args):
 
         columns += value            
             
-    return data[columns], cells
+    return data[columns], cells, meta
 
 
-def main(input_dir, output_dir, bulk, n_jobs = 20, random_state=0, num_cells=50):
+def main(input_dir, output_dir, bulk, n_jobs = 20, random_state=0, num_cells=None):
     u"""
     :param input_dir
     :param output_dir
@@ -62,7 +62,7 @@ def main(input_dir, output_dir, bulk, n_jobs = 20, random_state=0, num_cells=50)
     print(bulk.shape)
     
             
-    files = glob(os.path.join(input_dir, "*_SCC/paga/"))
+    files = glob(os.path.join(input_dir, "*_ADC/paga/"))
     tasks = [[x, random_state, num_cells] for x in files]
     
     with Pool(n_jobs) as p:
@@ -70,13 +70,17 @@ def main(input_dir, output_dir, bulk, n_jobs = 20, random_state=0, num_cells=50)
     
     expr = []
     cells = []
+    meta = []
     for i in data:
         expr.append(i[0])
         cells += i[1]
+        meta.append(i[2])
     
     print("concat")
     expr = pd.concat(expr, axis=1)
     print(expr.shape)
+    
+    meta = pd.concat(meta).to_csv(os.path.join(output_dir, "meta.csv"))
     
     print("common genes")
     genes = set(expr.index) & set(bulk.index)
@@ -93,20 +97,20 @@ def main(input_dir, output_dir, bulk, n_jobs = 20, random_state=0, num_cells=50)
         for i in bulk.index:
             w.write("{}\n".format(i))
     
-    print("dump single cell")
-    expr.transpose().to_csv(os.path.join(output_dir, "single_cell_expr.csv"), header = False, index=False)
+    # print("dump single cell")
+    # expr.transpose().to_csv(os.path.join(output_dir, "single_cell_expr.csv"), header = False, index=False)
 
-    with open(os.path.join(output_dir, "single_cell_expr_cells.txt"), "w+") as w:
-        w.write("\n".join(expr.columns))
+    # with open(os.path.join(output_dir, "single_cell_expr_cells.txt"), "w+") as w:
+    #     w.write("\n".join(expr.columns))
         
-    with open(os.path.join(output_dir, "single_cell_expr_genes.txt"), "w+") as w:
-        w.write("\n".join(expr.index))
+    # with open(os.path.join(output_dir, "single_cell_expr_genes.txt"), "w+") as w:
+    #     w.write("\n".join(expr.index))
         
-    uniq_cells = sorted(set(cells))
+    # uniq_cells = sorted(set(cells))
     
-    with open(os.path.join(output_dir, "single_cell_expr_cells_type.csv"), "w+") as w:
-        for i in cells:
-            w.write("{}\n".format(uniq_cells.index(i)))
+    # with open(os.path.join(output_dir, "single_cell_expr_cells_type.csv"), "w+") as w:
+    #     for i in cells:
+    #         w.write("{}\n".format(uniq_cells.index(i)))
     
 
 if __name__ == '__main__':
