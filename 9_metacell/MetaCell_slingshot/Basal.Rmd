@@ -1,0 +1,232 @@
+---
+title: "Basal"
+author: "Zhang Yiming"
+date: "7/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(slingshot)
+library(Seurat)
+library(SingleCellExperiment)
+library(cowplot)
+library(gridGraphics)
+library(ComplexHeatmap)
+library(dplyr)
+library(reshape2)
+```
+
+
+```{R}
+data = read.csv("/mnt/raid62/Lung_cancer_10x/MetaCell/lfp/By_cells/Basal_mc_f.log2_mc_fp.txt", row.names = 1)
+
+
+meta <- read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190506_meta.csv", row.names = 1)
+load("/mnt/raid62/Lung_cancer_10x/MetaCell/By_cells/Basal/mc.Basal_mc_f.Rda")
+mc = object
+```
+
+```{r}
+obj <- CreateSeuratObject(data)
+obj@scale.data = obj@raw.data
+```
+
+```{R}
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = 10)
+```
+
+```{r fig.height=6, fig.width=12}
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+```{R}
+n.pcs = 7
+obj <- RunTSNE(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.name = "tsne", perplexity=7)
+obj <- RunUMAP(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, n_neighbors = 3)
+obj <- FindClusters(object = obj, reduction.type = "pca", dims.use = 1:n.pcs, resolution = 0.6, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+```
+
+
+```{R fig.height=6, fig.width=12}
+p1 <- DimPlot(
+    obj, group.by = "res.0.6",
+    no.legend = T,
+    do.label = T,
+    do.return = T
+)
+
+p2 <- DimPlot(
+    obj, group.by = "res.0.6",
+    no.legend = T,
+    do.label = T,
+    do.return = T,
+    reduction.use = "umap"
+)
+
+plot_grid(p1, p2, nrow = 1)
+```
+
+
+### MetaCell component of different stages
+
+```{r fig.height=6, fig.width=6}
+make_slingshot_umap_by_stage <- function(mc, meta, obj, group.by = "Stage", output=NULL) {
+    
+    # do slingshot
+    sling = as.SingleCellExperiment(obj)
+    
+    reducedDims(sling)$UMAP <- obj@dr$umap@cell.embeddings
+    sce <- slingshot(sling, reducedDim = 'UMAP')
+    
+    # calculate stage percentage
+    clt = as.data.frame(mc@mc)
+    colnames(clt) = "M"
+    
+    clt$Stage = meta[rownames(clt), group.by]
+    
+    
+    temp = clt %>% 
+        select(M, Stage) %>% 
+        unique() %>%
+        group_by(M, Stage) %>% 
+        add_tally() %>% 
+        group_by(M) %>% 
+        mutate(perc = n / sum(n)) %>%
+        select(M, Stage, perc) %>% 
+        unique()
+    
+    temp = dcast(temp, M~Stage, value.var = "perc")
+    
+    temp$M <- paste0("M", temp$M)
+    
+    rownames(temp) <- temp$M
+    
+    temp = temp[, colnames(temp) != "M"]
+    
+    
+    # 
+    umap = obj@dr$umap@cell.embeddings
+    row.names(umap) <- paste0("M", 1:nrow(umap))
+    umap = as.data.frame(umap)
+    
+    
+    # set stage label
+    umap$Group <- apply(temp, 1, function(x) {
+        temp = names(x)[x == max(x[!is.na(x)])]
+        
+        temp = temp[!is.na(temp)]
+        
+        res = NULL
+        for (i in temp) {
+            if (is.null(res)) {
+                res = i
+            } else {
+                res = paste(res, i, sep = ",")
+            }
+        }
+        res
+    })
+    
+    # set point size
+    umap$Perc <- apply(temp, 1, function(x) {
+        max(x[!is.na(x)])
+    })
+    
+    curves = SlingshotDataSet(sce)
+    
+    umap$x = curves@curves$curve1$s[, 1]
+    umap$y = curves@curves$curve1$s[, 2]
+    
+    
+    ## set shape for different points
+    colors = c(
+        "Benign"="#3E6596", "I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E",
+        "ADC" = "#063373", "LCC"="#FECC1B", "Normal"="#73BDFF", "Other"="#DA6906", "SCC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B", "LBT"="#0084D1"
+    )
+    
+    shapes = c()
+    shape = -1
+    for (x in unique(umap$Group)) {
+        if (x %in% names(colors)) {
+            shapes[x] = 19
+        } else {
+            shape = shape + 1
+            if(shape == 19) {
+                shape = shape + 1
+            }
+            shapes[x] = shape
+        }
+    }
+    
+    
+    ## add more colors
+    for (i in unique(umap$Group)) {
+        if(!i %in% names(colors)) {
+            colors[[i]] = "grey50"
+        }
+    }
+    
+    
+    p <- ggplot() + 
+        geom_point(data = umap, aes(x = UMAP2, y = UMAP1, color = Group, shape=Group, size = Perc)) + 
+        geom_line(data = umap, aes(y=x, x=y)) + 
+        coord_flip() +
+        theme_bw() +
+        scale_color_manual(values = colors) +
+        scale_shape_manual(values = shapes)
+    
+    if(is.null(output)) {
+        return(p)
+    } else {
+        ggsave(
+            filename = output,
+            plot = p,
+            width = 7,
+            height = 6,
+            units = "in",
+            dpi = 600
+        )
+    }
+}
+```
+
+
+```{r fig.height=6, fig.width=14}
+p1 <- make_slingshot_umap_by_stage(mc=mc, meta=meta, obj=obj)
+p2 <- make_slingshot_umap_by_stage(mc=mc, meta=meta, obj=obj, group.by = "Disease")
+
+plot_grid(p1, p2, nrow = 1)
+```
+
+```{R}
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/MetaCell/By_cells_heatmaps/Basal/metacell_slingshot.png",
+    plot = p1,
+    width = 7,
+    height = 6,
+    units = "in",
+    dpi = 600
+)
+
+
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/MetaCell/By_cells_heatmaps/Basal/metacell_slingshot_disease.png",
+    plot = p2,
+    width = 7,
+    height = 6,
+    units = "in",
+    dpi = 600
+)
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
