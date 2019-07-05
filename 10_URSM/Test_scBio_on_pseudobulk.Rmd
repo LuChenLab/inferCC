@@ -1,0 +1,181 @@
+---
+title: "Test_scBio_on_pseudobulk"
+author: "Zhang Yiming"
+date: "2019/7/4"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(scBio)
+library(Rtsne)
+library(ComplexHeatmap)
+library(ggplot2)
+```
+
+
+```{r}
+expr_adc <- readRDS("/mnt/raid62/Lung_cancer_10x/URSM/ADC_random/expr.rds") 
+expr_adc <- t(expr_adc)
+
+tsne_adc <- readRDS("/mnt/raid62/Lung_cancer_10x/URSM/ADC_random/tsne_coord.rds")
+rownames(tsne_adc) <- tsne_adc$cell_id
+tsne_adc <- tsne_adc[, !colnames(tsne_adc) %in% c("cell_id")]
+
+meta <- read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190506_meta.csv", row.names = 1)
+```
+
+
+
+
+## Get Pseudobulk cells by mean
+```{r}
+
+mat = matrix(0, nrow = nrow(expr_adc), ncol=50)
+cell_types = c()
+
+for (i in 1:ncol(mat)) {
+    set.seed(i)
+    
+    mat[, i] <- rowMeans(expr_adc[, sample(1:ncol(expr_adc), 150)])
+    cell_types <- c(cell_types, colnames(expr_adc)[sample(1:ncol(expr_adc), 150)])
+}
+cell_types = table(cell_types)
+
+rownames(mat) <- rownames(expr_adc)
+colnames(mat) <- paste0("M", 1:ncol(mat))
+```
+
+
+```{r}
+run_cpm <- function(sc, tsne, bulk, meta, no_cores = 6) {
+    sc_mat = t(sc)
+    
+    genes = intersect(rownames(sc_mat), rownames(bulk))
+    
+    
+    sc_mat = sc_mat[genes, ]
+    bulk_mat = bulk[genes, ]
+    
+    min_neighbors = min(table(as.character(meta[colnames(sc_mat), "cell_name"]))) - 1
+    
+    if(ncol(sc_mat) > 50) {
+        modelSize = 50
+    } else {
+        modelSize = floor(ncol(sc_mat) / 2)
+    }
+    
+    
+    print(min_neighbors)
+    
+    res = CPM(
+        SCData = sc_mat, 
+        SCLabels = as.character(meta[colnames(sc_mat), "cell_name"]), 
+        BulkData = bulk_mat, 
+        cellSpace = as.matrix(tsne), 
+        quantifyTypes = T, 
+        typeTransformation = T, 
+        no_cores = no_cores,
+        neighborhoodSize = min_neighbors,
+        modelSize = modelSize
+    ) 
+    return(res)
+}
+```
+
+```{R}
+res = run_cpm(t(expr_adc), tsne_adc, mat, meta)
+```
+
+### scBio预测的cell abundance 与用来做mean的细胞比例不一致
+```{r fig.height=12, fig.width=24}
+Heatmap(
+    res$predicted[, names(cell_types)], 
+    cluster_rows = F,
+    cluster_columns = F, 
+    show_row_names = F,
+    show_column_names = F,
+    top_annotation = HeatmapAnnotation(
+        Counts = anno_lines(cell_types)
+    ),
+    name = "mat"
+)
+```
+
+
+## Get Pseudobulk cells by sum
+```{r}
+mat = matrix(0, nrow = nrow(expr_adc), ncol=50)
+cell_types = c()
+
+for (i in 1:ncol(mat)) {
+    set.seed(i)
+    
+    mat[, i] <- rowSums(expr_adc[, sample(1:ncol(expr_adc), 150)])
+    cell_types <- c(cell_types, colnames(expr_adc)[sample(1:ncol(expr_adc), 150)])
+}
+cell_types = table(cell_types)
+
+rownames(mat) <- rownames(expr_adc)
+colnames(mat) <- paste0("S", 1:ncol(mat))
+```
+
+
+```{R}
+res = run_cpm(t(expr_adc), tsne_adc, mat, meta)
+```
+
+### scBio预测的cell abundance 与用来做sum的细胞比例不一致
+```{r fig.height=12, fig.width=24}
+Heatmap(
+    res$predicted[, names(cell_types)], 
+    cluster_rows = F,
+    cluster_columns = F, 
+    show_row_names = F,
+    show_column_names = F,
+    top_annotation = HeatmapAnnotation(
+        Counts = anno_lines(cell_types)
+    ),
+    name = "mat"
+)
+```
+
+
+### Test on rowSums
+```{r}
+fake_bulk = matrix(0, nrow=nrow(expr_adc), ncol=4)
+for(i in 1:ncol(fake_bulk)) {
+    fake_bulk[, i] = rowSums(expr_adc)
+}
+colnames(fake_bulk) <- paste0("F", 1:ncol(fake_bulk))
+rownames(fake_bulk) <- rownames(expr_adc)
+
+write.table(t(fake_bulk), "/mnt/raid62/Lung_cancer_10x/URSM/ADC_random/fake_bulk.csv", row.names = F, col.names = F, sep = ",")
+```
+
+
+```{r}
+res_fake = run_cpm(t(expr_adc), tsne_adc, t(t(fake_bulk)), meta)
+```
+
+根据rowSums来拆分，反应的是该是每个细胞的表达量，在总体中所占的比例。仅按照每个细胞的表达量的分布情况来看，总体趋势是符合预期的
+```{r fig.height=6, fig.width=24}
+Heatmap(
+    res_fake$predicted,
+    cluster_rows = F,
+    cluster_columns = F,
+    show_row_names = T,
+    show_column_names = F,
+    top_annotation = HeatmapAnnotation(
+        Counts = anno_lines(colSums(expr_adc))
+    ),
+    name = "mat"
+)
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

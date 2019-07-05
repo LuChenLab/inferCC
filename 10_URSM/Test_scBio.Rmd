@@ -1,0 +1,733 @@
+---
+title: "Test_scBio"
+author: "Zhang Yiming"
+date: "7/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(scBio)
+library(ggfortify)
+library(openxlsx)
+library(ComplexHeatmap)
+library(stringr)
+library(SingleCellExperiment)
+library(wesanderson)
+```
+
+
+
+> Cell type predition is only a side result in this algorithm but it can be done as well. 
+In order to get a proper cell-type predictions, it is crutial to set the cell space to be as homogeneous as possible. 
+**One option is to create the cell space based on genes which have the lowest variance across the cells (but small amount of zeros). **
+**Otherwise, CPM will detect trajectories inside the cell types and the cell-type prediction will be the average across these trajectories.** 
+Seperation between cell-types uppon the cell space is not important since CPM divide the cell space into small fragments, corresponding to the different cell types.
+
+
+```{r eval=FALSE, include=FALSE}
+bulk_luad <- read.csv("/mnt/raid62/Lung_cancer_10x/05_tmod_stage/SYSU/ADC.csv", row.names = 1)
+bulk_lusc <- read.csv("/mnt/raid62/Lung_cancer_10x/05_tmod_stage/SYSU/SCC.csv", row.names = 1)
+```
+
+```{r eval=FALSE, include=FALSE}
+meta <- read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190506_meta.csv", row.names = 1)
+```
+
+---
+## ADC
+```{r eval=FALSE, include=FALSE}
+expr_adc <- readRDS("/mnt/raid62/Lung_cancer_10x/URSM/ADC_random/expr.rds") 
+
+tsne_adc <- readRDS("/mnt/raid62/Lung_cancer_10x/URSM/ADC_random/tsne_coord.rds")
+rownames(tsne_adc) <- tsne_adc$cell_id
+tsne_adc <- tsne_adc[, !colnames(tsne_adc) %in% c("cell_id")]
+```
+
+## SCC
+```{r eval=FALSE, include=FALSE}
+expr_scc <- readRDS("/mnt/raid62/Lung_cancer_10x/URSM/SCC_random/expr.rds") 
+
+tsne_scc <- readRDS("/mnt/raid62/Lung_cancer_10x/URSM/SCC_random/tsne_coord.rds")
+rownames(tsne_scc) <- tsne_scc$cell_id
+tsne_scc <- tsne_scc[, !colnames(tsne_scc) %in% c("cell_id")]
+```
+
+
+```{R}
+
+run_cpm <- function(sc, tsne, bulk, meta, no_cores = 6) {
+    sc_mat = t(sc)
+    
+    genes = intersect(rownames(sc_mat), rownames(bulk))
+    
+    
+    sc_mat = sc_mat[genes, ]
+    bulk_mat = bulk[genes, ]
+    
+    min_neighbors = min(table(as.character(meta[colnames(sc_mat), "cell_name"]))) - 1
+    
+    if(ncol(sc_mat) > 50) {
+        modelSize = 50
+    } else {
+        modelSize = floor(ncol(sc_mat) / 2)
+    }
+    
+    
+    print(min_neighbors)
+    
+    res = CPM(
+        SCData = sc_mat, 
+        SCLabels = as.character(meta[colnames(sc_mat), "cell_name"]), 
+        BulkData = bulk_mat, 
+        cellSpace = as.matrix(tsne), 
+        quantifyTypes = T, 
+        typeTransformation = T, 
+        no_cores = no_cores,
+        neighborhoodSize = min_neighbors,
+        modelSize = modelSize
+    ) 
+    return(res)
+}
+```
+
+
+```{R eval=FALSE, include=FALSE}
+res_luad = run_cpm(expr_adc, tsne_adc, bulk_luad, meta)
+
+res_lusc = run_cpm(expr_scc, tsne_scc, bulk_lusc, meta)
+```
+
+### Check results of scBio
+
+Heatmap
+
+1. columns: bulk samples with stage annotation
+2. rows: single cells with cell type annotation and stage annotation
+
+```{r fig.height=12, fig.width=12}
+make_heatmap <- function(scBio_res, meta, bulk_meta=NULL, cells = NULL, cluster_rows = FALSE, cluster_cols = FALSE) {
+    
+    stage_colors = c("Benign"="#3E6596", "I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E", "Unknown"="grey50")
+    
+    mat = scBio_res$predicted
+
+    # sort bulk sample by stage
+    mat = t(mat)
+    
+    if (!is.null(cells)) {
+        mat = mat[intersect(rownames(mat), cells), ]
+        meta = meta[cells, ]
+    }
+    
+    if(is.null(bulk_meta)) {
+        stages = sapply(colnames(mat), function(x) {
+            str_split(x, "_")[[1]][4]
+        })
+    } else {
+        stages = as.character(bulk_meta[colnames(mat), "Stage"])
+    }
+    
+    mat = mat[, order(stages)]
+
+    ha = HeatmapAnnotation(
+        `Bulk Stage` = sort(stages),
+        col = list(
+            `Bulk Stage` = stage_colors
+        )
+    )
+    
+    meta = meta[rownames(mat), c("Stage", "cell_name")]
+    meta = meta[order(meta$Stage), ]
+    
+    cell_colors = as.character(wes_palette("FantasticFox1", length(unique(meta$cell_name)), type = "continuous"))
+    cell_colors = setNames(cell_colors, sort(unique(meta$cell_name)))
+    
+    ra = rowAnnotation(
+        Stage=meta$Stage,
+        Cell=meta$cell_name,
+        col = list(
+            Stage = stage_colors,
+            Cell=cell_colors
+        )
+    )
+    
+    Heatmap(
+        mat,
+        cluster_rows = cluster_rows,
+        cluster_columns = cluster_cols,
+        show_row_names = F,
+        show_column_names = F,
+        bottom_annotation = ha,
+        left_annotation = ra,
+        name="mat"
+    )
+}
+```
+
+
+All cells have too much noise
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUSC_wo_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_lusc, meta)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUSC_wo_clt.png")
+```
+
+
+Using clustering check the expression pattern
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUSC_wi_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_lusc, meta, cluster_rows = T, cluster_cols = T)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUSC_wi_clt.png")
+```
+
+Only using Basal
+```{r eval=FALSE, fig.height=6, fig.width=8, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUSC_basal.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_lusc, meta, cells = rownames(meta)[as.character(meta$Disease) == "SCC" & as.character(meta$cell_name) == "Basal"])
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUSC_basal.png")
+```
+
+
+---
+
+All cells have too much noise
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_wo_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_luad, meta)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_wo_clt.png")
+```
+
+Using clustering check the expression pattern
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_wi_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_luad, meta, cluster_rows = T, cluster_cols = T)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_wi_clt.png")
+```
+
+Only using Basal
+```{r eval=FALSE, fig.height=6, fig.width=8, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_apii.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_luad, meta, cells = rownames(meta)[as.character(meta$Disease) == "ADC" & as.character(meta$cell_name) == "Alveolar II"])
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_apii.png")
+```
+
+---
+
+Check the absolute
+
+All cells have too much noise
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_abs_wo_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(test_res_luad, meta)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_abs_wo_clt.png")
+```
+
+
+Using clustering check the expression pattern
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_abs_wi_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(test_res_luad, meta, cluster_rows = T, cluster_cols = T)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_abs_wi_clt.png")
+```
+
+```{R eval=FALSE, include=FALSE}
+saveRDS(res_luad, "/mnt/raid62/Lung_cancer_10x/URSM/nc_luad.rds")
+saveRDS(res_lusc, "/mnt/raid62/Lung_cancer_10x/URSM/nc_luad.rds")
+saveRDS(test_res_luad, "/mnt/raid62/Lung_cancer_10x/URSM/nc_luad_abs.rds")
+```
+
+---
+
+Test scBio on TCGA
+
+```{r eval=FALSE, include=FALSE}
+tcga_luad_meta <- readRDS("/mnt/raid62/Lung_cancer_10x/TCGA/LUAD.rds")
+tcga_luad <- assay(tcga_luad_meta, "raw_count")
+rownames(tcga_luad) <- sapply(rownames(tcga_luad), function(x) {str_split(x, "\\|")[[1]][1]})
+tcga_luad_meta <- colData(tcga_luad_meta)@listData
+
+
+tcga_lusc_meta <- readRDS("/mnt/raid62/Lung_cancer_10x/TCGA/LUSC.rds")
+tcga_lusc <- assay(tcga_lusc_meta, "raw_count")
+rownames(tcga_lusc) <- sapply(rownames(tcga_lusc), function(x) {str_split(x, "\\|")[[1]][1]})
+tcga_lusc_meta <- colData(tcga_lusc_meta)@listData
+```
+
+
+```{r eval=FALSE, include=FALSE}
+res_tcga_ad = run_cpm(expr_adc, tsne_adc, tcga_luad, meta)
+
+res_tcga_sc = run_cpm(expr_scc, tsne_scc, tcga_lusc, meta)
+```
+
+
+TCGA LUAD
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+temp = data.frame(
+    sample=tcga_luad_meta$barcode, 
+    Stage = sapply(tcga_luad_meta$tumor_stage, function(x) {
+        if(x == "not reported") {
+            return("Unknown")
+        } else if(x %in% c("stage i", "stage ia", "stage ib")) {
+            return("I")
+        } else if(x %in% c("stage ii", "stage iib", "stage iia")) {
+            return("II")
+        } else if(x %in% c("stage iii", "stage iiia", "stage iiib")) {
+            return("III")
+        } else if (x %in% c("stage iv")) {
+            return("IV")
+        } else {
+            return(x)
+        }
+    })
+)
+
+rownames(temp) <- temp$sample
+```
+
+
+```{R eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_wo_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_tcga_ad, meta, bulk_meta = temp, cluster_rows = F, cluster_cols = F)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_wo_clt.png")
+```
+
+
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_wi_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_tcga_ad, meta, bulk_meta = temp, cluster_rows = T, cluster_cols = T)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_wi_clt.png")
+```
+
+1. APII
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_Alveolar_II.png", width = 8, height = 8, units = "in", res = 600)
+make_heatmap(
+    res_tcga_ad, 
+    meta, 
+    bulk_meta = temp, 
+    cells = rownames(meta)[as.character(meta$Disease) == "ADC" & as.character(meta$cell_name) == "Alveolar II"],
+    cluster_rows = T,
+    cluster_cols = T
+)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_Alveolar_II.png")
+```
+
+2. CD4
+
+
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_CD4.png", width = 8, height = 8, units = "in", res = 600)
+make_heatmap(
+    res_tcga_ad, 
+    meta, 
+    bulk_meta = temp, 
+    cells = rownames(meta)[as.character(meta$Disease) == "ADC" & as.character(meta$cell_name) == "CD4+"], 
+    cluster_rows = T, 
+    cluster_cols = T
+)
+dev.off()
+```
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_CD4.png")
+```
+
+
+
+
+3. Monocytes
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_Monocytes.png", width = 8, height = 8, units = "in", res = 600)
+make_heatmap(
+    res_tcga_ad, 
+    meta, 
+    bulk_meta = temp, 
+    cells = rownames(meta)[as.character(meta$Disease) == "ADC" & as.character(meta$cell_name) == "Monocytes"], 
+    cluster_rows = T, 
+    cluster_cols = T
+)
+dev.off()
+```
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_Monocytes.png")
+```
+
+
+4. NK
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_NK.png", width = 8, height = 8, units = "in", res = 600)
+make_heatmap(
+    res_tcga_ad, 
+    meta, 
+    bulk_meta = temp, 
+    cells = rownames(meta)[as.character(meta$Disease) == "ADC" & as.character(meta$cell_name) == "NK"], 
+    cluster_rows = T, 
+    cluster_cols = T
+)
+dev.off()
+```
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_NK.png")
+```
+
+5. Goblet
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_goblet.png", width = 8, height = 8, units = "in", res = 600)
+make_heatmap(
+    res_tcga_ad, 
+    meta, 
+    bulk_meta = temp, 
+    cells = rownames(meta)[as.character(meta$Disease) == "ADC" & as.character(meta$cell_name) == "Airway goblet"], 
+    cluster_rows = T, 
+    cluster_cols = T
+)
+dev.off()
+```
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_goblet.png")
+```
+
+```{R eval=FALSE, include=FALSE}
+for(i in unique(meta$cell_name)) {
+    print(i)
+    png(filename = paste0("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_", str_replace(i, " ", "_"), ".png"), width = 8, height = 8, units = "in", res = 600)
+    print(make_heatmap(
+        res_tcga_ad, 
+        meta, 
+        bulk_meta = temp, 
+        cells = rownames(meta)[as.character(meta$Disease) == "ADC" & as.character(meta$cell_name) == i], 
+        cluster_rows = T, 
+        cluster_cols = T
+    ))
+    dev.off()
+}
+```
+
+
+TCGA LUSC
+
+
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+temp = data.frame(
+    sample=tcga_lusc_meta$barcode, 
+    Stage = sapply(tcga_lusc_meta$tumor_stage, function(x) {
+        if(x == "not reported") {
+            return("Unknown")
+        } else if(x %in% c("stage i", "stage ia", "stage ib")) {
+            return("I")
+        } else if(x %in% c("stage ii", "stage iib", "stage iia")) {
+            return("II")
+        } else if(x %in% c("stage iii", "stage iiia", "stage iiib")) {
+            return("III")
+        } else if (x %in% c("stage iv")) {
+            return("IV")
+        } else {
+            return(x)
+        }
+    })
+)
+
+rownames(temp) <- temp$sample
+```
+
+
+```{R eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_wo_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_tcga_sc, meta, bulk_meta = temp, cluster_rows = F, cluster_cols = F)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_wo_clt.png")
+```
+
+
+```{r eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_wi_clt.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_tcga_sc, meta, bulk_meta = temp, cluster_rows = T, cluster_cols = T)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_wi_clt.png")
+```
+
+
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_basal.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(
+    res_tcga_sc, 
+    meta, 
+    bulk_meta = temp, 
+    cells = rownames(meta)[as.character(meta$Disease) == "SCC" & as.character(meta$cell_name) == "Basal"], 
+    cluster_rows = T, 
+    cluster_cols = T
+)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_basal.png")
+```
+
+
+```{r eval=FALSE, fig.height=8, fig.width=8, include=FALSE}
+for(i in unique(meta$cell_name)) {
+    print(i)
+    png(filename = paste0("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_", str_replace(i, " ", "_"), ".png"), width = 8, height = 8, units = "in", res = 600)
+    print(make_heatmap(
+        res_tcga_sc, 
+        meta, 
+        bulk_meta = temp, 
+        cells = rownames(meta)[as.character(meta$Disease) == "SCC" & as.character(meta$cell_name) == i], 
+        cluster_rows = T, 
+        cluster_cols = T
+    ))
+    dev.off()
+}
+```
+
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_CD4+.png")
+```
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Monocytes.png")
+```
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_NK.png")
+```
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Mast.png")
+```
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Granulocyte.png")
+```
+
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Dendritic.png")
+```
+
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Exhaust_T.png")
+```
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Treg.png")
+```
+
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Exhaust_T.png")
+```
+
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Fibroblasts.png")
+```
+
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_Airway_goblet.png")
+```
+
+
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_B_cells.png")
+```
+
+
+```{r eval=FALSE, include=FALSE}
+saveRDS(res_tcga_ad, "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD.rds")
+
+saveRDS(res_tcga_sc, "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC.rds")
+```
+
+
+---
+### Test on smaller clusters
+```{R eval=FALSE, include=FALSE}
+new_meta = meta[rownames(expr_adc), ]
+new_meta$cell_name = paste(new_meta$cell_name, new_meta$Stage, sep = "_")
+
+kept = names(table(new_meta$cell_name))[table(new_meta$cell_name) >= 10]
+new_meta = new_meta[new_meta$cell_name %in% kept,]
+
+res_luad = run_cpm(
+    expr_adc[rownames(expr_adc) %in% rownames(new_meta), ], 
+    tsne_adc, 
+    bulk_luad, 
+    new_meta
+)
+
+new_meta = meta[rownames(expr_scc), ]
+new_meta$cell_name = paste(new_meta$cell_name, new_meta$Stage, sep = "_")
+
+kept = names(table(new_meta$cell_name))[table(new_meta$cell_name) >= 10]
+new_meta = new_meta[new_meta$cell_name %in% kept,]
+
+res_lusc = run_cpm(
+    expr_scc[rownames(expr_scc) %in% rownames(new_meta), ], 
+    tsne_scc, 
+    bulk_lusc, 
+    new_meta
+)
+```
+
+
+```{R eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUSC_more.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_lusc, meta, cluster_cols = T, cluster_rows = T)
+dev.off()
+```
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUSC_more.png")
+```
+
+
+```{R eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_more.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_luad, meta, cluster_cols = T, cluster_rows = T)
+dev.off()
+```
+```{r}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/NC_LUAD_more.png")
+```
+
+
+
+### Test on smaller clusters TCGA
+```{R eval=FALSE, include=FALSE}
+new_meta = meta[rownames(expr_adc), ]
+new_meta$cell_name = paste(new_meta$cell_name, new_meta$Stage, sep = "_")
+
+kept = names(table(new_meta$cell_name))[table(new_meta$cell_name) >= 10]
+new_meta = new_meta[new_meta$cell_name %in% kept,]
+
+res_luad = run_cpm(
+    expr_adc[rownames(expr_adc) %in% rownames(new_meta), ], 
+    tsne_adc, 
+    tcga_luad, 
+    new_meta
+)
+
+new_meta = meta[rownames(expr_scc), ]
+new_meta$cell_name = paste(new_meta$cell_name, new_meta$Stage, sep = "_")
+
+kept = names(table(new_meta$cell_name))[table(new_meta$cell_name) >= 10]
+new_meta = new_meta[new_meta$cell_name %in% kept,]
+
+res_lusc = run_cpm(
+    expr_scc[rownames(expr_scc) %in% rownames(new_meta), ], 
+    tsne_scc, 
+    tcga_lusc, 
+    new_meta
+)
+```
+
+
+```{R eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+
+temp = data.frame(
+    sample=tcga_luad_meta$barcode, 
+    Stage = sapply(tcga_luad_meta$tumor_stage, function(x) {
+        if(x == "not reported") {
+            return("Unknown")
+        } else if(x %in% c("stage i", "stage ia", "stage ib")) {
+            return("I")
+        } else if(x %in% c("stage ii", "stage iib", "stage iia")) {
+            return("II")
+        } else if(x %in% c("stage iii", "stage iiia", "stage iiib")) {
+            return("III")
+        } else if (x %in% c("stage iv")) {
+            return("IV")
+        } else {
+            return(x)
+        }
+    })
+)
+
+rownames(temp) <- temp$sample
+
+
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_more.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_luad, meta, bulk_meta = temp, cluster_rows = T, cluster_cols = T)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUAD_more.png")
+```
+
+
+
+```{R eval=FALSE, fig.height=12, fig.width=12, include=FALSE}
+temp = data.frame(
+    sample=tcga_lusc_meta$barcode, 
+    Stage = sapply(tcga_lusc_meta$tumor_stage, function(x) {
+        if(x == "not reported") {
+            return("Unknown")
+        } else if(x %in% c("stage i", "stage ia", "stage ib")) {
+            return("I")
+        } else if(x %in% c("stage ii", "stage iib", "stage iia")) {
+            return("II")
+        } else if(x %in% c("stage iii", "stage iiia", "stage iiib")) {
+            return("III")
+        } else if (x %in% c("stage iv")) {
+            return("IV")
+        } else {
+            return(x)
+        }
+    })
+)
+
+rownames(temp) <- temp$sample
+
+png(filename = "/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_more.png", width = 12, height = 12, units = "in", res = 600)
+make_heatmap(res_lusc, meta, bulk_meta = temp, cluster_rows = T, cluster_cols = T)
+dev.off()
+```
+```{R}
+knitr::include_graphics("/mnt/raid62/Lung_cancer_10x/URSM/TCGA_LUSC_more.png")
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
