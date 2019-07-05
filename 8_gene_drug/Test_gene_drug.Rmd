@@ -310,12 +310,12 @@ for(i in sort(c("G6PD", "SERPINB9", meta2$Symbol))) {
 ---
 
 ### 做一下vlnplot，检查药物相关基因的表达量分布情况
-```{r fig.height=12, fig.width=18}
-VlnPlot(ap2, features.plot = intersect(rownames(ap2@raw.data), sort(c("G6PD", "SERPINB9", meta2$Symbol))), group.by = "res.0.6")
+```{r fig.height=16, fig.width=16}
+VlnPlot(ap2, features.plot = intersect(rownames(ap2@raw.data), c("G6PD", "SERPINB9", meta2$Symbol)[1:20]), group.by = "res.0.6", do.sort = T)
 ```
 
-```{r fig.height=12, fig.width=18}
-VlnPlot(basal, features.plot = intersect(rownames(basal@raw.data), sort(c("G6PD", "SERPINB9", meta2$Symbol))), group.by = "res.0.6")
+```{r fig.height=16, fig.width=16}
+VlnPlot(basal, features.plot = intersect(rownames(basal@raw.data), c("G6PD", "SERPINB9", meta2$Symbol)[1:20]), group.by = "res.0.6", do.sort = T)
 ```
 
 ---
@@ -682,7 +682,8 @@ ggsave(
 ---
 Try to make huge gene expression plots
 ```{r}
-
+scale_data <- read.csv("/mnt/raid62/Lung_cancer_10x/figures/VlnPlot_gene_drug/scale.csv", row.names = 1)
+meta_data <- read.csv("/mnt/raid62/Lung_cancer_10x/figures/VlnPlot_gene_drug/meta.csv", row.names = 1)
 ```
 
 

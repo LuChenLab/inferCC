@@ -24,6 +24,7 @@ library(Rtsne)
 library(stringr)
 library(Seurat)
 library(reshape2)
+library(dplyr)
 ```
 
 ## Extract gene expression
@@ -254,53 +255,11 @@ ggplot(
     geom_point()
 ```
 
-
-#### make feature plot
-
 ```{R}
-known_markers <- read.xlsx("/mnt/raid62/Lung_cancer_10x/MetaCell/20190628_gene_markers.xlsx", sheet = 1)
+markers <- read.xlsx("/mnt/raid62/Lung_cancer_10x/MetaCell/20190628_gene_markers.xlsx", sheet = 1)
 
-known_markers <- known_markers[known_markers$gene %in% features$x, ]
+known_markers <- markers[markers$gene %in% features$x, ]
 ```
-
-```{R eval=FALSE, fig.height=6, fig.width=8, include=FALSE}
-make_feature_plot <- function(data, graph, genes.use) {
-    temp = data.frame(
-        sc_x=graph@sc_x,
-        sc_y=graph@sc_y
-    )
-    
-    data = data[intersect(rownames(data), genes.use), ]
-    data = as.data.frame(t(data))
-    
-    temp = cbind(temp, data)
-    
-    return(temp)
-}
-
-
-temp <- make_feature_plot(lus, graph, known_markers$gene)
-
-plots = list()
-for(i in colnames(temp)[3:ncol(temp)]) {
-    data_for_plot = temp[, c("sc_x", "sc_y", i)]
-    
-    data_for_plot$cell = i
-    colnames(data_for_plot)[3] = "value"
-    
-    data_for_plot = data_for_plot[order(data_for_plot$value), ]
-    p <- ggplot(data = data_for_plot, aes(x=sc_x, y=sc_y, color=value)) + 
-        geom_point() +
-        scale_color_gradient(low = "grey", high = "blue") +
-        labs(title = i, x = "", y = "") +
-        theme_bw()
-    
-    plots[[length(plots) + 1]] 
-}
-
-plot_grid(plotlist = plots, ncol = 4)
-```
-
 
 ---
 ### Why just using Seurat
@@ -478,7 +437,6 @@ plot_grid(p1, p2, nrow = 1, rel_widths = c(1, 1.2))
 
 Using  all markers genes to plots
 ```{r fig.height=12, fig.width=12}
-all_markers = read.xlsx("/mnt/raid62/Lung_cancer_10x/MetaCell/20190628_gene_markers.xlsx", sheet = 1)
 all_markers = all_markers[all_markers$gene %in% rownames(obj@raw.data), ]
 
 for(i in unique(all_markers$group)) {
@@ -571,4 +529,41 @@ for (i in 1:4) {
     - 其中2偏向CD8
 
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+---
+
+### 
+```{R}
+obj <- readRDS("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/seurat_obj.rds")
+
+load("/mnt/raid62/Lung_cancer_10x/MetaCell/immu_all/mc.immu_all_mc_f.Rda")
+
+meta <- read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190506_meta.csv", row.names = 1)
+```
+
+Counts the percentage of CD4 and CD8 in different of MetaCells
+```{R}
+temp = as.data.frame(object@mc)
+
+colnames(temp) <- "M"
+
+temp$cell_name = meta[rownames(temp), "cell_name"]
+temp$cell_name <- sapply(temp$cell_name, function(x) {
+    if (x %in% c("CD4+", "CD8+")) {
+        return(1)
+    } else {
+        return(0)
+    }
+})
+
+temp <- as.data.frame(temp %>% group_by(M) %>% mutate(perc = sum(cell_name) / n()) %>% select(M, perc) %>% unique())
+rownames(temp) <- paste0("L", temp$M)
+
+tsne_coord <- as.data.frame(obj@dr$tsne@cell.embeddings)
+tsne_coord$perc <- as.numeric(temp[rownames(tsne_coord), "perc"])
+tsne_coord$source <- obj@meta.data[rownames(tsne_coord), "source"]
+```
+
+```{R fig.height=6, fig.width=8}
+ggplot(tsne_coord[tsne_coord$perc > 0,], aes(x=tSNE_1, y=tSNE_2, color = source, size = perc)) + geom_point() + theme_bw()
+
+```

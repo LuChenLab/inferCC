@@ -21,6 +21,7 @@ nc_luad = nc_luad[nc_luad$X %in% names(table(nc_luad$X)[table(nc_luad$X) == 1]),
 rownames(nc_luad) <- nc_luad$X
 
 nc_luad <- nc_luad[, colnames(nc_luad) != "X"]
+colnames(nc_luad) <- paste0("LUAD", 1:ncol(nc_luad))
 
 output_dir = "/mnt/raid62/Lung_cancer_10x/MetaCell/bulk"
 setwd(output_dir)
