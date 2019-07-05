@@ -264,9 +264,9 @@ plot_grid(p1, p2, nrow = 1)</code></pre>
     
     temp = clt %&gt;% 
         select(M, Stage) %&gt;% 
-        unique() %&gt;%
         group_by(M, Stage) %&gt;% 
         add_tally() %&gt;% 
+        unique() %&gt;%
         group_by(M) %&gt;% 
         mutate(perc = n / sum(n)) %&gt;%
         select(M, Stage, perc) %&gt;% 
@@ -279,7 +279,7 @@ plot_grid(p1, p2, nrow = 1)</code></pre>
     rownames(temp) &lt;- temp$M
     
     temp = temp[, colnames(temp) != &quot;M&quot;]
-    
+    temp[is.na(temp)] = 0
     
     # 
     umap = obj@dr$umap@cell.embeddings
@@ -304,54 +304,34 @@ plot_grid(p1, p2, nrow = 1)</code></pre>
         res
     })
     
-    # set point size
-    umap$Perc &lt;- apply(temp, 1, function(x) {
-        max(x[!is.na(x)])
-    })
-    
+
     curves = SlingshotDataSet(sce)
     
     umap$x = curves@curves$curve1$s[, 1]
     umap$y = curves@curves$curve1$s[, 2]
-    
+    umap = cbind(umap, temp)
+
     
     ## set shape for different points
     colors = c(
         &quot;Benign&quot;=&quot;#3E6596&quot;, &quot;I&quot;=&quot;#EC7A21&quot;, &quot;II&quot;=&quot;#D73F47&quot;, &quot;III&quot;=&quot;#65A9A3&quot;, &quot;IV&quot;=&quot;#4A933E&quot;,
         &quot;ADC&quot; = &quot;#063373&quot;, &quot;LCC&quot;=&quot;#FECC1B&quot;, &quot;Normal&quot;=&quot;#73BDFF&quot;, &quot;Other&quot;=&quot;#DA6906&quot;, &quot;SCC&quot;=&quot;#A0C807&quot;, &quot;LELC&quot;=&quot;#6A0019&quot;, &quot;CPI&quot;=&quot;#C5000B&quot;, &quot;LBT&quot;=&quot;#0084D1&quot;
     )
+
     
-    shapes = c()
-    shape = -1
-    for (x in unique(umap$Group)) {
-        if (x %in% names(colors)) {
-            shapes[x] = 19
-        } else {
-            shape = shape + 1
-            if(shape == 19) {
-                shape = shape + 1
-            }
-            shapes[x] = shape
-        }
-    }
-    
-    
-    ## add more colors
-    for (i in unique(umap$Group)) {
-        if(!i %in% names(colors)) {
-            colors[[i]] = &quot;grey50&quot;
-        }
-    }
-    
-    
-    p &lt;- ggplot() + 
-        geom_point(data = umap, aes(x = UMAP2, y = UMAP1, color = Group, shape=Group, size = Perc)) + 
-        geom_line(data = umap, aes(y=x, x=y)) + 
+    p &lt;- ggplot() +
+        geom_scatterpie(
+            aes(x = UMAP2, y = UMAP1), 
+            data=umap,
+            cols=colnames(temp)
+        ) + 
+        coord_equal() +
+        geom_line(data = umap, aes(y=x, x=y)) +
         coord_flip() +
         theme_bw() +
-        scale_color_manual(values = colors) +
-        scale_shape_manual(values = shapes)
-    
+        scale_fill_manual(values = colors) +
+        labs(x=&quot;UMAP2&quot;, y=&quot;UMAP1&quot;, fill = &quot;Stage&quot;)
+
     if(is.null(output)) {
         return(p)
     } else {
@@ -375,6 +355,7 @@ plot_grid(p1, p2, nrow = 1)</code></pre>
 ## Warning in smooth.spline(lambda, xj, w = w, ..., df = df, tol = tol,
 ## keep.data = FALSE): not using invalid df; must have 1 &lt; df &lt;= n := #{unique
 ## x} = 4</code></pre>
+<pre><code>## Coordinate system already present. Adding new coordinate system, which will replace the existing one.</code></pre>
 <pre class="r"><code>ggsave(
     filename = &quot;/mnt/raid62/Lung_cancer_10x/MetaCell/By_cells_heatmaps/Fibroblasts_ADC/metacell_slingshot.png&quot;,
     plot = p1,
