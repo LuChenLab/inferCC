@@ -8,18 +8,19 @@ BiocManager::install(c("DT", "plotly", "NMF", "d3heatmap", "shiny", "rbokeh"))
 library(AUCell)
 library(Seurat)
 library(ggrastr)
+library(openxlsx)
 
-# obj <- readRDS("/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/seurat_obj.rds")
 
-# expr <- read.csv("/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/hx_expr.csv.gz", row.names = 1)
-expr = readRDS("/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/all_cell_expr.rds")
+expr = readRDS("02_rds/all_cell_expr.rds")
 
 cells_rankings <- AUCell_buildRankings(as.matrix(expr))
 
 
-saveRDS(cells_rankings, "/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/02_aucell/cells_rankings.rds")
+saveRDS(cells_rankings, "02_rds/02_aucell/cells_rankings.rds")
 
-markers = read.xlsx("/mnt/raid62/Lung_cancer_10x/final_plots/20190701_gene_markers.xlsx", sheet = 3)
+cells_rankings <- readRDS("02_rds/02_aucell/cells_rankings.rds")
+
+markers = read.xlsx("20190701_gene_markers.xlsx", sheet = 3)
 markers <- na.omit(markers[, 1:2])
 
 geneSets = list()
@@ -34,9 +35,9 @@ for(i in unique(markers[, 2])) {
 cells_AUC <- AUCell_calcAUC(geneSets, cells_rankings, aucMaxRank=nrow(cells_rankings)*0.05)
 
 pdf(
-    "/mnt/raid62/Lung_cancer_10x/final_plots/01_first_plots/aucell/geneSets_threshold.pdf", 
+    "01_first_plots/aucell/geneSets_threshold.pdf", 
     width = 18, 
-    height = 6 * ceiling(length(geneSets) / 3),
+    height = 6 * ceiling(length(geneSets) / 3)
 )
 par(mfrow=c(ceiling(length(geneSets) / 3), 3))
 set.seed(123)
@@ -44,8 +45,8 @@ cells_assignment <- AUCell_exploreThresholds(cells_AUC, plotHist=TRUE, nCores=1,
 dev.off()
 
 
-saveRDS(cells_AUC, "/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/02_aucell/cells_AUC.rds")
-saveRDS(cells_assignment, "/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/02_aucell/cells_assignment.rds")
+saveRDS(cells_AUC, "02_rds/02_aucell/cells_AUC.rds")
+saveRDS(cells_assignment, "02_rds/02_aucell/cells_assignment.rds")
 
 selectedThresholds <- getThresholdSelected(cells_assignment)
 
@@ -55,14 +56,17 @@ selectedThresholds <- getThresholdSelected(cells_assignment)
 
 for(i in names(selectedThresholds)) {
     
-    pdf(
+    tiff(
         paste(
-            "/mnt/raid62/Lung_cancer_10x/final_plots/01_first_plots/aucell", 
-            paste0(str_replace(i, "\\s", "_"), "_aucell.pdf"), 
+            "01_first_plots/aucell", 
+            paste0(str_replace(i, "\\s", "_"), "_aucell.tiff"), 
             sep = "/"
         ), 
         width = 18, 
-        height = 6
+        height = 6,
+        units = "in",
+        res = 600,
+        compression = "lzw"
     )
     par(mfrow=c(1,3))
     AUCell_plotTSNE(
@@ -75,16 +79,19 @@ for(i in names(selectedThresholds)) {
 }
 
 
-cells_AUC <- readRDS("/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/02_aucell/cells_AUC.rds")
-cells_assignment <- readRDS("/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/02_aucell/cells_assignment.rds")
+cells_AUC <- readRDS("02_rds/02_aucell/cells_AUC.rds")
+cells_assignment <- readRDS("02_rds/02_aucell/cells_assignment.rds")
 
 selectedThresholds <- getThresholdSelected(cells_assignment)
 
-tsne = read.csv("/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/02_aucell/tsne.csv") 
+tsne = read.csv("02_rds/tsne.csv", row.names = 1) 
+
+
+auc_data = getAUC(cells_AUC)
 
 for(i in names(selectedThresholds)) {
     print(i)
-    auc <- as.data.frame(getAUC(cells_AUC)[i, ])
+    auc <- as.data.frame(auc_data[i, ])
     colnames(auc) <- "AUC"
     
     data = as.data.frame(tsne)
@@ -100,16 +107,16 @@ for(i in names(selectedThresholds)) {
     ) + geom_point_rast(size = 0.1) +
         theme_bw() +
         theme(
-            plot.title = element_text(hjust = 0.5, face="bold", size = 20), 
+            plot.title = element_text(hjust = 0.5, face="bold", size = 20),
             legend.position = "none",
             axis.text = element_text(size = 12),
             axis.title = element_text(size = 15)
         ) +
         scale_color_gradient(low = "lightgrey", high = "blue") +
-        labs(title = paste0(i, "(AUC > ", round(selectedThresholds[i], 2), ")"))
+        labs(title = paste0(i, " (AUC > ", round(selectedThresholds[i], 2), ")"))
     
     ggsave(
-        filename = paste0("/mnt/raid62/Lung_cancer_10x/final_plots/01_first_plots/aucell/", i, "_tsne.pdf"),
+        filename = paste0("01_first_plots/aucell/", i, "_tsne.pdf"),
         plot = p,
         width = 6,
         height = 6,

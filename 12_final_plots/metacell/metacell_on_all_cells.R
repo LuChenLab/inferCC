@@ -5,17 +5,19 @@ library(metacell)
 library(openxlsx)
 library(Seurat)
 library(tgconfig)
+library(SingleCellExperiment)
 
 
 args = commandArgs(trailingOnly = T)
 rds = args[1]
 output_dir = args[2]
 
-if (length(args) > 2) {
-    cores = as.numeric(args[3])
-    set_param("mc_cores", cores, "metacell")
-}
-
+# if (length(args) > 2) {
+#     cores = as.numeric(args[3])
+#     set_param("mc_cores", cores, "metacell")
+# }
+set_param("mc_cores", 20, "metacell")
+ 
 base_dir = "metacell" 
 
 dir.create(output_dir, showWarnings = F, recursive = T)
@@ -26,23 +28,20 @@ setwd(dirname(output_dir))
 scdb_init(basename(output_dir), force_reinit=T)
 if(!file.exists(paste(output_dir, paste0("mat.", base_dir, ".Rda"),sep = "/"))) {
     obj <- readRDS(rds)
-    obj@raw.data = as.matrix(obj@raw.data)
-    # obj <- CreateSeuratObject(
-    #     obj@raw.data
-    # )
 
     print(obj)
 
-    sce <- as.SingleCellExperiment(obj)
+    # expr = readRDS("/mnt/data8/zhangyiming/LungCancer10x/02_rds/all_cell_expr.rds")
+
+    mat = scm_new_matrix(as.matrix(obj@raw.data), obj@meta.data)
 
     ################################################
     # MetaCell
     #
     ################################################
 
-
     ### import expression data from matix
-    mat = scm_import_sce_to_mat(sce)
+    # mat = scm_import_sce_to_mat(sce)
 
     object = mat
     save(
@@ -124,7 +123,7 @@ mcell_mc_from_coclust_balanced(
 
 
 # outliers heatmap
-mcell_plot_outlier_heatmap(mc_id=paste(base_dir, "mc", sep = "_"), mat_id = base_dir, T_lfc=3)
+# mcell_plot_outlier_heatmap(mc_id=paste(base_dir, "mc", sep = "_"), mat_id = base_dir, T_lfc=3)
 
 
 mcell_mc_split_filt(
@@ -143,8 +142,11 @@ mcell_gset_from_mc_markers(
 
 
 ### plot cells by different colors
-marks_colors = read.csv("/mnt/raid62/Lung_cancer_10x/MetaCell/20190628_gene_markers.csv")[, 1:5]
-marks_colors$group = paste(marks_colors$group, marks_colors$gene)
+# marks_colors = read.xlsx("/mnt/raid62/Lung_cancer_10x/final_plots/20190701_gene_markers.xlsx")
+
+# print(head(marks_colors))
+
+# marks_colors$group = paste(marks_colors$Cells, marks_colors$Markers)
 # 
 # marks_colors = data.frame(
 #     group=c("Naive", "Prolif", "Tfh", "Treg"),
@@ -166,13 +168,13 @@ marks_colors$group = paste(marks_colors$group, marks_colors$gene)
 # Treg	TNFRSF4
 
 
-# marks_colors = data.frame(
-#     group=c("Monocytes", "B cells", "Mast", "Treg"),
-#     gene=c("TCF7", "TOP2A", "CXCL13", "FOXP3"),
-#     color=c("blue", "red", "green", "yellow"),
-#     priority=c(1, 1, 1, 1),
-#     T_fold=c(1, 1, 1, 1)
-# )
+marks_colors = data.frame(
+    group=c("Monocytes", "B cells", "Mast", "Treg"),
+    gene=c("TCF7", "TOP2A", "CXCL13", "FOXP3"),
+    color=c("blue", "red", "green", "yellow"),
+    priority=c(1, 1, 1, 1),
+    T_fold=c(1, 1, 1, 1)
+)
 
 
 # marks_colors = read.table(
@@ -201,11 +203,11 @@ mcell_mc2d_force_knn(
 
 
 
-mcell_mc2d_plot(
-    mc2d_id = paste(base_dir, "2dproj", sep = "_"), 
-    legend_pos="panel",
-    plot_edges = TRUE
-)
+# mcell_mc2d_plot(
+#     mc2d_id = paste(base_dir, "2dproj", sep = "_"), 
+#     legend_pos="panel",
+#     plot_edges = TRUE
+# )
 
 # mcell_mc2d_plot1(
 #     mc2d_id = paste(base_dir, "2dproj", sep = "_"), 

@@ -1,0 +1,544 @@
+---
+title: "MetaCell_comparision"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(openxlsx)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(stringr)
+library(dplyr)
+library(reshape2)
+library(tidyr)
+library(scatterpie)
+```
+
+
+
+```{R}
+# R is mess up
+read_lfp <- function(path) {
+
+    load(paste(path, paste0("mc.metacell_mc_f.Rda"), sep = "/"))
+    mc = object
+    
+    load(paste(path, paste0("gstat.metacell.Rda"), sep = "/"))
+    gstat = object
+    
+    
+    fp_max = apply(mc@mc_fp, 1, max)
+    fp_tot = gstat[intersect(rownames(mc@mc_fp), rownames(gstat)), "tot"]
+    
+    
+    f = fp_max > 0 & fp_tot > 0
+    
+    lfp = round(log2(mc@mc_fp[f,]), 2)
+    
+    return(lfp)
+}
+
+
+# function to make grid Dotplot
+DotPlotGrid <- function(object, markers, group.by = "res.0.6") {
+    mat = object@scale.data[intersect(markers$Markers, rownames(object@scale.data)), ]
+    mat = as.data.frame(t(mat))
+    
+
+    mat = melt(as.matrix(mat))
+    mat$group = object@meta.data[mat$Var1, group.by]
+    mat = merge(mat, markers, by.x = "Var2", by.y = "Markers")
+    
+    mat <- mat %>% 
+        group_by(Var2, Cells, group) %>% 
+        mutate(m = mean(value)) %>% 
+        mutate(p = sum(value > 0) / n()) %>%
+        select(Var2, value, group, Cells, m, p) %>% 
+        unique()
+    
+    ggplot(data = mat, aes(x=group, y=Var2, color = m, size = p)) +
+        geom_point() +
+        facet_grid(Cells~., scales = "free", space = "free")
+    
+}
+```
+
+
+## Read data
+
+```{r cars}
+res = NULL
+for(i in 1:3) {
+    temp = read_lfp(paste0("/mnt/raid62/Lung_cancer_10x/final_plots/04_meta_cell/R", i))
+    
+    colnames(temp) <- paste0("R.", i, ".", 1:ncol(temp))
+    
+    if(is.null(res)) {
+        res = temp
+    } else {
+        common_genes = intersect(rownames(res), rownames(temp))
+        
+        res = cbind(res[common_genes, ], temp[common_genes, ])
+    }
+}
+
+
+nm_sel <- read_lfp("/mnt/raid62/Lung_cancer_10x/final_plots/04_meta_cell/DL/")
+colnames(nm_sel) <- paste0("DL", 1:ncol(nm_sel))
+```
+
+```{r}
+mat <- cbind(res[intersect(rownames(res), rownames(nm_sel)), ], nm_sel[intersect(rownames(res), rownames(nm_sel)), ])
+```
+
+## Perform Seurat
+```{r}
+obj <- CreateSeuratObject(
+    as.matrix(mat), 
+    meta.data = data.frame(
+        source = c(
+            paste0("HX", sapply(colnames(res), function(x) {
+                str_split(x, "\\.")[[1]][2]
+            })), 
+            rep("DL", ncol(nm_sel))
+        )
+    )
+)
+
+obj@meta.data$source <- sapply(rownames(obj@meta.data), function(x) {
+    if(str_detect(x, "^R")) {
+        return(
+            paste0("HX", str_split(x, "\\.")[[1]][2])
+        )
+    } else {
+        return("DL")
+    }
+})
+
+```
+
+
+
+## Skip Scale, just run PCA and tSNE
+```{r}
+obj@scale.data = obj@raw.data
+
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = 100)
+```
+
+select PCs
+```{r fig.height=4, fig.width=12}
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+Run tSNE
+```{R fig.height=6, fig.width=12}
+library(reticulate)
+use_python("/mnt/data5/zhangyiming/program/pyenv/versions/3.6.8/bin/python")
+
+kee = import("kneed")
+n.pcs = kee$KneeLocator(
+    1:ncol(obj@dr$pca@cell.embeddings),
+    apply(obj@dr$pca@cell.embeddings, 2, sd), 
+    curve='convex', 
+    direction='decreasing'
+)
+n.pcs = n.pcs$knee
+
+
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+    geom_vline(
+        xintercept = n.pcs, 
+        linetype="dashed", 
+        color = "grey"
+    )
+```
+
+
+```{r}
+obj <- RunTSNE(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "pca", reduction.name = "tsne")
+obj <- FindClusters(object = obj, reduction.type = "pca", dims.use = 1:n.pcs, resolution = 0.6, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+```
+
+
+Check the clusters
+```{r fig.height=6, fig.width=12}
+p1 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "res.0.6", 
+    no.legend = TRUE, 
+    do.label = TRUE, 
+    label.size = 8, 
+    do.return = TRUE,
+    pt.size = 0.1
+)
+
+p2 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "source", 
+    no.legend = FALSE, 
+    do.label = FALSE, 
+    label.size = 8, 
+    do.return = TRUE,
+    pt.size = 0.1
+) + theme(legend.position = c(0.9, 0.85))
+
+plot_grid(p1, p2, nrow = 1)
+```
+
+### make dot plot by known markers
+```{r}
+markers <- read.xlsx("/mnt/raid62/Lung_cancer_10x/final_plots/20190701_gene_markers.xlsx", sheet = 1)
+
+markers <- markers[markers$Markers %in% rownames(obj@raw.data), ]
+```
+
+```{R eval=FALSE, fig.height=36, fig.width=12}
+PercentAbove <- function(x, threshold){
+  return(length(x = x[x > threshold]) / length(x = x))
+}
+
+
+ModifiedDotPlot <- function(
+  object,
+  group.by,
+  markers,
+  cols.use = c("lightgrey", "blue"),
+  col.min = -2.5,
+  col.max = 2.5,
+  dot.min = 0,
+  dot.scale = 6,
+  scale.by = 'radius',
+  scale.min = NA,
+  scale.max = NA,
+  x.axis.rotate = FALSE
+) {
+  scale.func <- switch(
+    EXPR = scale.by,
+    'size' = scale_size,
+    'radius' = scale_radius,
+    stop("'scale.by' must be either 'size' or 'radius'")
+  )
+  if (!missing(x = group.by)) {
+    object <- SetAllIdent(object = object, id = group.by)
+  }
+  
+  genes.plot <- intersect(row.names(object@raw.data), markers$Markers)
+
+  data.to.plot <- data.frame(FetchData(object = object, vars.all = genes.plot))
+  colnames(x = data.to.plot) <- genes.plot
+  data.to.plot$cell <- rownames(x = data.to.plot)
+  data.to.plot$id <- object@ident
+  data.to.plot %>% gather(
+    key = genes.plot,
+    value = expression,
+    -c(cell, id)
+  ) -> data.to.plot
+  data.to.plot %>%
+    group_by(id, genes.plot) %>%
+    summarize(
+      avg.exp = mean(expm1(x = expression)),
+      pct.exp = PercentAbove(x = expression, threshold = 0)
+    ) -> data.to.plot
+  data.to.plot %>%
+    ungroup() %>%
+    group_by(genes.plot) %>%
+    mutate(avg.exp.scale = scale(x = avg.exp)) %>%
+    mutate(avg.exp.scale = MinMax(
+      data = avg.exp.scale,
+      max = col.max,
+      min = col.min
+    )) ->  data.to.plot
+  data.to.plot$genes.plot <- factor(
+    x = data.to.plot$genes.plot,
+    levels = rev(x = genes.plot)
+  )
+  # data.to.plot$genes.plot <- factor(
+  #   x = data.to.plot$genes.plot,
+  #   levels = rev(x = sub(pattern = "-", replacement = ".", x = genes.plot))
+  # )
+  data.to.plot$pct.exp[data.to.plot$pct.exp < dot.min] <- NA
+  data.to.plot$pct.exp <- data.to.plot$pct.exp * 100
+  data.to.plot <- merge(data.to.plot, markers, by.x = "genes.plot", by.y = "Markers")
+  
+  p <- ggplot(data = data.to.plot, aes(x = id, y = genes.plot, size = pct.exp, color = avg.exp.scale)) + 
+    geom_point() + 
+    # guides(
+    #     color=guide_legend(
+    #         ncol = 2,
+    #         title.position = "top"
+    #     ),
+    #     size=guide_legend(
+    #         ncol = 1
+    #     ),
+    #     alpha=guide_legend(
+    #         ncol = 1
+    #     )
+    # ) +
+    scale.func(range = c(0, dot.scale), limits = c(scale.min, scale.max)) +
+    facet_grid(Cells ~ ., scale = "free", space = "free") +
+      scale_color_gradient(low = "lightgrey", high = "blue")
+  
+  if (x.axis.rotate) {
+    p = p + theme(
+        legend.position = "none",
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+    )
+  } else {
+    p = p + theme(
+        legend.position = "none",
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(hjust = 1, vjust = 0.5)
+        # axis.title.y = element_text(angle = 90)
+    )
+  }
+  
+  
+  return(p)
+}
+
+
+ModifiedDotPlot(obj, markers = markers, group.by = "res.0.6")
+```
+
+----
+### Guo2018
+```{r}
+read_guo <- function(path) {
+    load(paste(path, "mc.guo2018_tpm_scaled_filt_Tumor_Normal_Blood_outClean_nonAnn.Rda", sep = "/"))
+    mc = object
+    
+    load(paste(path, "gstat.guo2018_tpm_scaled_filt_Tumor_Normal_Blood.Rda", sep = "/"))
+    gstat = object
+    
+    
+    fp_max = apply(mc@mc_fp, 1, max)
+    fp_tot = gstat[intersect(rownames(mc@mc_fp), rownames(gstat)), "tot"]
+    
+    
+    f = fp_max > 0 & fp_tot > 0
+    
+    lfp = round(log2(mc@mc_fp[f,]), 2)
+}
+guo <- read_guo("/mnt/raid62/Lung_cancer_10x/final_plots/04_meta_cell/lung_db")
+
+
+immu <- read_lfp("/mnt/raid62/Lung_cancer_10x/final_plots/04_meta_cell/immu")
+colnames(immu) <- paste0("I.", 1:ncol(immu))
+```
+
+
+## Perform Seurat
+```{r}
+common_genes = intersect(rownames(guo), rownames(immu))
+mat = cbind(guo[common_genes, ], immu[common_genes, ])
+
+obj <- CreateSeuratObject(
+    as.matrix(mat), 
+    meta.data = data.frame(
+        source = c(
+            rep("HX", ncol(immu)), 
+            rep("Guo", ncol(guo))
+        )
+    )
+)
+
+obj@meta.data$source <- sapply(rownames(obj@meta.data), function(x) {
+    if(str_detect(x, "^I")) {
+        return("HX")
+    } else {
+        return("Guo2018")
+    }
+})
+
+```
+
+
+
+## Skip Scale, just run PCA and tSNE
+```{r}
+obj@scale.data = obj@raw.data
+
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = 100)
+```
+
+select PCs
+```{r fig.height=4, fig.width=12}
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+Run tSNE
+```{R fig.height=6, fig.width=18}
+library(reticulate)
+use_python("/mnt/data5/zhangyiming/program/pyenv/versions/3.6.8/bin/python")
+
+kee = import("kneed")
+n.pcs = kee$KneeLocator(
+    1:ncol(obj@dr$pca@cell.embeddings),
+    apply(obj@dr$pca@cell.embeddings, 2, sd), 
+    curve='convex', 
+    direction='decreasing'
+)
+n.pcs = n.pcs$knee
+
+
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+    geom_vline(
+        xintercept = n.pcs, 
+        linetype="dashed", 
+        color = "grey"
+    )
+```
+
+
+```{r}
+obj <- RunTSNE(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "pca", reduction.name = "tsne")
+obj <- FindClusters(object = obj, reduction.type = "pca", dims.use = 1:n.pcs, resolution = 0.6, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+```
+
+
+Check the clusters
+```{r fig.height=6, fig.width=12}
+p1 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "res.0.6", 
+    no.legend = TRUE, 
+    do.label = TRUE, 
+    label.size = 8, 
+    do.return = TRUE,
+    pt.size = 0.1
+)
+
+p2 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "source", 
+    no.legend = FALSE, 
+    do.label = FALSE, 
+    label.size = 8, 
+    do.return = TRUE,
+    pt.size = 0.1
+) + theme(legend.position = c(0.9, 0.9))
+
+plot_grid(p1, p2, nrow = 1, rel_widths = c(1, 1))
+```
+
+```{r fig.height=18, fig.width=12}
+FeaturePlot(
+    obj, features.plot = c("CD4", "CD3D", "CD3E", "CD3G", "CD8A", "CD8B"),
+    reduction.use = "tsne",
+    cols.use = c("lightgrey", "blue")
+)
+```
+
+
+---
+
+## Skip Scale, just run PCA and tSNE
+```{r}
+obj <- CreateSeuratObject(as.matrix(immu))
+
+obj@scale.data = obj@raw.data
+
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = 100)
+```
+
+select PCs
+```{r fig.height=4, fig.width=12}
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+Run tSNE
+```{R fig.height=6, fig.width=18}
+library(reticulate)
+use_python("/mnt/data5/zhangyiming/program/pyenv/versions/3.6.8/bin/python")
+
+kee = import("kneed")
+n.pcs = kee$KneeLocator(
+    1:ncol(obj@dr$pca@cell.embeddings),
+    apply(obj@dr$pca@cell.embeddings, 2, sd), 
+    curve='convex', 
+    direction='decreasing'
+)
+n.pcs = n.pcs$knee
+
+
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+    geom_vline(
+        xintercept = n.pcs, 
+        linetype="dashed", 
+        color = "grey"
+    )
+```
+
+
+```{r}
+obj <- RunTSNE(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "pca", reduction.name = "tsne")
+obj <- RunUMAP(object = obj, dims.use = 1:n.pcs, reduction.use = "pca")
+obj <- FindClusters(object = obj, reduction.type = "pca", dims.use = 1:n.pcs, resolution = 0.8, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+
+obj@meta.data <- as.character(as.numeric(obj@meta.data$res.0.8) + 1)
+```
+
+
+Check the clusters
+```{r fig.height=6, fig.width=6}
+p1 <- DimPlot(
+    obj, 
+    reduction.use = "tsne", 
+    group.by = "res.0.8", 
+    no.legend = TRUE, 
+    do.label = TRUE, 
+    label.size = 8, 
+    do.return = TRUE,
+    pt.size = 0.1
+)
+
+p1
+```
+
+
+```{r fig.height=24, fig.width=12}
+markers = read.xlsx("/mnt/raid62/Lung_cancer_10x/final_plots/20190701_gene_markers.xlsx", sheet = 3)
+markers <- na.omit(markers[, 1:2])
+
+
+p <- ModifiedDotPlot(obj, markers = markers, group.by = "res.0.8")
+p
+```
+
+
+```{r}
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

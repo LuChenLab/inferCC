@@ -198,6 +198,150 @@ make_clusterprofiler_plot <- function(data, group.by = NULL, topn = 20, p.val = 
 }
 
 
+do_kegg <- function(eg, cluster=NA, pvalueCutoff = 0.05) {
+    kk <- enrichKEGG(gene     = eg$ENTREZID,
+                     organism     = 'hsa',
+                     pvalueCutoff = pvalueCutoff)
+    kk <- as.data.frame(kk)
+    
+    if (nrow(kk) == 0) {
+        return(kk)
+    }
+    kk$cluster <- cluster
+    return(kk)
+}
+
+
+do_go <- function(eg, cluster = NA, pvalueCutoff = 0.01, qvalueCutoff = 0.05, cutoff=0.7) {
+    
+    res = NULL
+
+    ego <- enrichGO(gene      = eg$ENTREZID,
+                    keyType       = 'ENTREZID',
+                    OrgDb         = org.Hs.eg.db,
+                    ont           = "ALL",
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = pvalueCutoff,
+                    qvalueCutoff  = qvalueCutoff,
+                    readable      = FALSE)
+    res = as.data.frame(ego)
+    
+    if (is.null(res) || nrow(res) <= 0) {
+        return(res)
+    }
+    
+    res$cluster <- cluster
+    
+    return(res)
+}
+
+
+do_do <- function(eg, cluster = NA, pvalueCutoff = 0.05, qvalueCutoff = 0.05, minGSSize = 5, maxGSSize = 500) {
+    do <- enrichDO(gene     = eg$ENTREZID,
+                   ont           = "DO",
+                   pvalueCutoff  = pvalueCutoff,
+                   pAdjustMethod = "BH",
+                   minGSSize     = minGSSize,
+                   maxGSSize     = maxGSSize,
+                   qvalueCutoff  = qvalueCutoff,
+                   readable      = TRUE)
+    
+    do = as.data.frame(do)
+    
+    if (nrow(do) == 0) {
+        return(do)
+    }
+    do$cluster = cluster
+    
+    return(do)
+} 
+
+
+get_entrzid <- function(markers) {
+    
+    res = NULL
+    for(i in unique(markers$ident)) {
+        print(i)
+        
+        temp <- markers[markers$ident == i, "gene"]
+        eg <- bitr(unique(temp), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+        
+        if(!is.null(eg) && nrow(eg) > 0) {
+            eg$ident = i
+            
+            if(is.null(res)) {
+                res = eg
+            } else {
+                res = rbind(res, eg)
+            }
+        }
+    }
+    
+    return(res)
+}
+
+
+make_complex_heatmap <- function(obj, module, module_id=NULL, group.by = "res.0.6", order.by = "Cluster") {
+
+    if (!is.null(module_id)) {
+        module = module[module$ident == module_id, ]
+    }
+
+    rownames(module) <- module$gene
+    temp_module <- module[, 1, drop=FALSE]
+    temp_module[,1] <- as.character(temp_module[, 1])
+
+    # print(colnames(obj@meta.data))
+    meta <- obj@meta.data[, c("Stage", "PatientID", group.by)]
+    colnames(meta) <- c("Stage", "Patient", "Cluster")
+    meta <- meta[order(meta[, order.by]), ]
+
+    ### extract temp information
+    stage_colors = c("I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E", "LUAD_Normal"="#FECC1B", "LUSC_Normal"="#DA6906")
+    disease_colors = c("LUAD" = "#0084D1", "LUAD_Normal"="#FECC1B", "Normal"="#73BDFF", "LUSC_Normal"="#DA6906", "LUSC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B")
+    tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+    patient_colors = gg_color_hue(35)
+    names(patient_colors) <- c(
+        sapply(1:23, function(x){sprintf("PA%02d", x)}),
+        sapply(1:12, function(x){sprintf("PS%02d", x)})
+    )
+
+    mat = MinMax(as.matrix(obj@scale.data)[rownames(module), rownames(meta)], -2.5, 2.5)
+
+    cols_stage = stage_colors[unique(meta$Stage)]
+    # print(cols_stage)
+
+    cols_patients = patient_colors[as.numeric(gsub("P", "", sort(unique(meta$Patient))))]
+    names(cols_patients) <- sort(unique(meta$Patient))
+    # print(cols_patients)
+
+    cols_cluster = wes_palette("Darjeeling2", length(unique(meta$Cluster)), type = "continuous")
+    names(cols_cluster) <- unique(meta$Cluster)
+    # print(cols_cluster)
+
+    ann_colors = list(
+        Stage = cols_stage,
+        Patient = cols_patients,
+        Cluster = cols_cluster
+    )
+
+
+    ha = HeatmapAnnotation(
+        df = meta,
+        col = ann_colors
+    )
+
+    ht = Heatmap(
+        mat,
+        name = "mat",
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        top_annotation = ha,
+        column_title = module_id
+    )
+    draw(ht)
+}
 
 
 args = commandArgs(trailingOnly = T)
@@ -234,15 +378,18 @@ ig_genes = c(grep("^IGJ", nms, v=T),
 bad_genes = unique(c(grep("^MT-", nms, v=T), grep("^MTMR", nms, v=T), grep("^MTND", nms, v=T),"NEAT1","TMSB4X", "TMSB10", ig_genes))
 
 markers = markers[!rownames(markers) %in% bad_genes,]
-markers_de <- markers[markers$p_val_adj < 0.05 & abs(markers$avg_logFC) > 0.5, ]
+markers_de <- markers[markers$p_val_adj < 0.05 & markers$avg_logFC > 0.5, ]
 
 
 genes.use = rownames(obj@raw.data)[!rownames(obj@raw.data) %in% bad_genes]
 
 
+kegg = NULL
+go = NULL
+do = NULL
 for (i in unique(markers$ident)) {
     
-    temp_genes_use = markers[markers$ident == i & markers$gene %in% genes.use & markers$p_val_adj < 0.05, ]
+    temp_genes_use = markers[markers$ident == i & markers$gene %in% genes.use & markers$p_val_adj < 0.05 & abs(markers$avg_logFC) > 0.5, ]
 
     genes.label = c()
     temp_genes_use <- temp_genes_use[order(temp_genes_use$avg_logFC, decreasing = T), ]
@@ -251,22 +398,22 @@ for (i in unique(markers$ident)) {
     temp_genes_use <- temp_genes_use[order(temp_genes_use$avg_logFC, decreasing = F), ]
     genes.label = c(genes.label, temp_genes_use$gene[1:10])
 
-    p <- make_compare_dotplot_between_cluster(
-        object = obj, 
-        scale = F, 
-        genes.label = genes.label,
-        genes.use = genes.use,
-        cluster = i
-    )
+    # p <- make_compare_dotplot_between_cluster(
+    #     object = obj, 
+    #     scale = F, 
+    #     genes.label = genes.label,
+    #     genes.use = genes.use,
+    #     cluster = i
+    # )
 
-    ggsave(
-        filename = paste(output_dir, paste0(i, "_gene.pdf"), sep = "/"),
-        plot = p,
-        width = 6,
-        height = 6,
-        dpi = 600,
-        units = "in"
-    ) 
+    # ggsave(
+    #     filename = paste(output_dir, paste0(i, "_gene.pdf"), sep = "/"),
+    #     plot = p,
+    #     width = 6,
+    #     height = 6,
+    #     dpi = 600,
+    #     units = "in"
+    # ) 
 
 
     p <- make_voca_plot(markers[markers$ident == i & markers$gene %in% genes.use, ], genes.label = genes.label, genes.use = genes.use)
@@ -278,5 +425,68 @@ for (i in unique(markers$ident)) {
         height = 6,
         dpi = 600,
         units = "in"
-    ) 
+    )
+
+
+    ## cluster modules
+    eg = get_entrzid(temp_genes_use)
+
+    temp = do_kegg(eg, cluster = i)
+    kegg = rbind(kegg, temp)
+
+    if(!is.null(temp) && nrow(temp) > 0) {
+        p = make_clusterprofiler_plot(temp, title = paste0("KEGG (", i, ")"))
+        ggsave(
+            filename = paste(output_dir, paste0(i, "_kegg.pdf"), sep = "/"),
+            plot = p,
+            width = 12,
+            height = 12,
+            dpi = 600,
+            units = "in"
+        )
+    }
+
+
+    temp = do_go(eg, cluster = i)
+    go = rbind(go, temp)
+
+    if(!is.null(temp) && nrow(temp) > 0) {
+        p = make_clusterprofiler_plot(temp, group.by="ONTOLOGY", title = paste0("GO (", i, ")"))
+        ggsave(
+            filename = paste(output_dir, paste0(i, "_go.pdf"), sep = "/"),
+            plot = p,
+            width = 16,
+            height = 12,
+            dpi = 600,
+            units = "in"
+        )
+    }
+
+    temp = do_do(eg, cluster = i)
+    do = rbind(do, temp)
+
+    if(!is.null(temp) && nrow(temp) > 0) {
+        p = make_clusterprofiler_plot(temp, title = paste0("DO (", i, ")"))
+        ggsave(
+            filename = paste(output_dir, paste0(i, "_do.pdf"), sep = "/"),
+            plot = p,
+            width = 12,
+            height = 12,
+            dpi = 600,
+            units = "in"
+        )
+    }
 }
+
+
+wb = createWorkbook()
+addWorksheet(wb, "KEGG")
+writeData(wb, 1, kegg)
+
+addWorksheet(wb, "GO")
+writeData(wb, 2, go)
+
+addWorksheet(wb, "DO")
+writeData(wb, 3, do)
+
+saveWorkbook(wb, file = paste(output_dir, "clusterprofiler.xlsx", sep = "/"), overwrite = T)

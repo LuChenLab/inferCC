@@ -24,6 +24,8 @@ load_pacakges <- function() {
     library(reticulate)
     library(stringr)
     library(ggrastr)
+    library(monocle3)
+    library(slingshot)
 }
 
 
@@ -67,6 +69,7 @@ get_smote_match <- function(meta, num.cells=NULL) {
     convert_int <- function(meta, column="") {
         # meta = apply(meta, 2, as.character)
         for (i in colnames(meta)) {
+            meta[, i] = as.character(meta[, i])
             if (i != column) {
 
                 temp = sort(unique(as.character(meta[, i])))
@@ -82,8 +85,9 @@ get_smote_match <- function(meta, num.cells=NULL) {
         
         return(as.data.frame(meta))
     }
-        
-    meta1 = convert_int(meta[, c("PatientID", "Gender", "Age", "Disease", "Stage")])  
+
+    meta1 = convert_int(meta[, c("PatientID", "Gender", "Age", "Disease", "Stage")])
+
     # rownames(meta1) = rownames(meta)
     # meta1 = na.omit(meta1)
 

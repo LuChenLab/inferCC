@@ -12,6 +12,125 @@ library(stringr)
 
 
 
+make_clusterprofiler_plot <- function(data, group.by = NULL, topn = 20, p.val = 0.05, title = NULL) {
+    data = data[data$p.adjust < 0.05, ]
+    
+    if (!is.null(group.by)) {
+        res = NULL
+        for (i in unique(data[, group.by])) {
+            temp = data[data[, group.by] == i, ]
+            temp = as.data.frame(temp %>% top_n(-topn, p.adjust))
+            
+            res = rbind(res, temp)
+        }
+    } else {
+        res = as.data.frame(data %>% top_n(-topn, p.adjust))
+    }
+    
+    res$GeneRatio <- sapply(res$GeneRatio, function(x) {
+        temp = str_split(x, "/")[[1]]
+        return(as.numeric(temp[1]) / as.numeric(temp[2]))
+    })
+    
+    p <- ggplot(data = res, aes(x=GeneRatio, y = reorder(Description, -p.adjust), color = p.adjust, size = Count)) + geom_point()
+    
+    if (!is.null(group.by)) {
+        p <- eval(
+            parse(
+                text = paste0("p + facet_grid(.~", group.by, ", scales = \"free_y\")")
+            )
+        )
+    }
+    
+    p = p + 
+        scale_color_gradientn(colors=rev(wes_palette("Zissou1", 100, type = "continuous"))) +
+        labs(title = title, y = "")
+    return(p)
+}
+
+
+do_kegg <- function(eg, cluster=NA, pvalueCutoff = 0.05) {
+    kk <- enrichKEGG(gene     = eg$ENTREZID,
+                     organism     = 'hsa',
+                     pvalueCutoff = pvalueCutoff)
+    kk <- as.data.frame(kk)
+    
+    if (nrow(kk) == 0) {
+        return(kk)
+    }
+    kk$cluster <- cluster
+    return(kk)
+}
+
+
+do_go <- function(eg, cluster = NA, pvalueCutoff = 0.01, qvalueCutoff = 0.05, cutoff=0.7) {
+    
+    res = NULL
+
+    ego <- enrichGO(gene      = eg$ENTREZID,
+                    keyType       = 'ENTREZID',
+                    OrgDb         = org.Hs.eg.db,
+                    ont           = "ALL",
+                    pAdjustMethod = "BH",
+                    pvalueCutoff  = pvalueCutoff,
+                    qvalueCutoff  = qvalueCutoff,
+                    readable      = FALSE)
+    res = as.data.frame(ego)
+    
+    if (is.null(res) || nrow(res) <= 0) {
+        return(res)
+    }
+    
+    res$cluster <- cluster
+    
+    return(res)
+}
+
+
+do_do <- function(eg, cluster = NA, pvalueCutoff = 0.05, qvalueCutoff = 0.05, minGSSize = 5, maxGSSize = 500) {
+    do <- enrichDO(gene     = eg$ENTREZID,
+                   ont           = "DO",
+                   pvalueCutoff  = pvalueCutoff,
+                   pAdjustMethod = "BH",
+                   minGSSize     = minGSSize,
+                   maxGSSize     = maxGSSize,
+                   qvalueCutoff  = qvalueCutoff,
+                   readable      = TRUE)
+    
+    do = as.data.frame(do)
+    
+    if (nrow(do) == 0) {
+        return(do)
+    }
+    do$cluster = cluster
+    
+    return(do)
+} 
+
+
+get_entrzid <- function(markers) {
+    
+    res = NULL
+    for(i in unique(markers$ident)) {
+        print(i)
+        
+        temp <- markers[markers$ident == i, "gene"]
+        eg <- bitr(unique(temp), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+        
+        if(!is.null(eg) && nrow(eg) > 0) {
+            eg$ident = i
+            
+            if(is.null(res)) {
+                res = eg
+            } else {
+                res = rbind(res, eg)
+            }
+        }
+    }
+    
+    return(res)
+}
+
 
 
 make_voca_plot <- function(data, genes.label, genes.use = NULL) {
@@ -163,15 +282,18 @@ ig_genes = c(grep("^IGJ", nms, v=T),
 bad_genes = unique(c(grep("^MT-", nms, v=T), grep("^MTMR", nms, v=T), grep("^MTND", nms, v=T),"NEAT1","TMSB4X", "TMSB10", ig_genes))
 
 markers = markers[!rownames(markers) %in% bad_genes,]
-markers_de <- markers[markers$p_val_adj < 0.05 & abs(markers$avg_logFC) > 0.5, ]
+markers_de <- markers[markers$p_val_adj < 0.05 & markers$avg_logFC > 0.5, ]
 
 
 genes.use = rownames(obj@raw.data)[!rownames(obj@raw.data) %in% bad_genes]
 
 
+kegg = NULL
+go = NULL
+do = NULL
 for (i in unique(markers$ident)) {
     
-    temp_genes_use = markers[markers$ident == i & markers$gene %in% genes.use & markers$p_val_adj < 0.05, ]
+    temp_genes_use = markers[markers$ident == i & markers$gene %in% genes.use & markers$p_val_adj < 0.05 & abs(markers$avg_logFC) > 0.5, ]
 
     genes.label = c()
     temp_genes_use <- temp_genes_use[order(temp_genes_use$avg_logFC, decreasing = T), ]
@@ -208,6 +330,69 @@ for (i in unique(markers$ident)) {
         height = 6,
         dpi = 600,
         units = "in"
-    ) 
+    )
+
+    ## cluster modules
+    eg = get_entrzid(temp_genes_use)
+
+    temp = do_kegg(eg, cluster = i)
+    kegg = rbind(kegg, temp)
+
+    if(!is.null(temp) && nrow(temp) > 0) {
+        p = make_clusterprofiler_plot(temp, title = paste0("KEGG (", i, ")"))
+        ggsave(
+            filename = paste(output_dir, paste0(i, "_kegg.pdf"), sep = "/"),
+            plot = p,
+            width = 12,
+            height = 12,
+            dpi = 600,
+            units = "in"
+        )
+    }
+
+
+    temp = do_go(eg, cluster = i)
+    go = rbind(go, temp)
+
+    if(!is.null(temp) && nrow(temp) > 0) {
+        p = make_clusterprofiler_plot(temp, group.by="ONTOLOGY", title = paste0("GO (", i, ")"))
+        ggsave(
+            filename = paste(output_dir, paste0(i, "_go.pdf"), sep = "/"),
+            plot = p,
+            width = 16,
+            height = 12,
+            dpi = 600,
+            units = "in"
+        )
+    }
+
+    temp = do_do(eg, cluster = i)
+    do = rbind(do, temp)
+
+    if(!is.null(temp) && nrow(temp) > 0) {
+        p = make_clusterprofiler_plot(temp, title = paste0("DO (", i, ")"))
+        ggsave(
+            filename = paste(output_dir, paste0(i, "_do.pdf"), sep = "/"),
+            plot = p,
+            width = 12,
+            height = 12,
+            dpi = 600,
+            units = "in"
+        )
+    }
 }
+
+
+wb = createWorkbook()
+addWorksheet(wb, "KEGG")
+writeData(wb, 1, kegg)
+
+addWorksheet(wb, "GO")
+writeData(wb, 2, go)
+
+addWorksheet(wb, "DO")
+writeData(wb, 3, do)
+
+
+saveWorkbook(wb, file = paste(output_dir, "clusterprofiler.xlsx", sep = "/"), overwrite = T)
 

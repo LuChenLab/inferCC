@@ -28,7 +28,7 @@ def __call__(cmd):
 
 
 
-def runr(input_dir, output_dir, n_jobs = 20):
+def runr(input_dir, output_dir, n_jobs = 5):
     u"""
     main function
     :param input_dir
@@ -45,7 +45,7 @@ def runr(input_dir, output_dir, n_jobs = 20):
                 cell_name = parent.replace(input_dir, "").strip("/")
                
                 tasks.append(
-                    "Rscript {0} {1} {2} 1".format(
+                    "Rscript {0} {1} {2} 5".format(
                         os.path.join(__dir__, "metacell_on_all_cells.R"),
                         os.path.join(parent, f),
                         os.path.join(output_dir, cell_name)

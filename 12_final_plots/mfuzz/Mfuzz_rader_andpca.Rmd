@@ -27,15 +27,15 @@ library(SingleCellExperiment)
 ## Read data
 
 ```{r}
-sysu_luad <- read.csv("/mnt/raid62/Lung_cancer_10x/SYSU/ADC.csv", row.names = 1)
-sysu_lusc <- read.csv("/mnt/raid62/Lung_cancer_10x/SYSU/SCC.csv", row.names = 1)
+sysu_luad <- read.csv("SYSU/ADC.csv", row.names = 1)
+sysu_lusc <- read.csv("SYSU/SCC.csv", row.names = 1)
 ```
 
 
 ## Read TCGA data
 ```{r}
-tcga_luad = readRDS("/mnt/raid62/Lung_cancer_10x/TCGA/LUAD.rds")
-tcga_lusc = readRDS("/mnt/raid62/Lung_cancer_10x/TCGA/LUAD.rds")
+tcga_luad = readRDS("TCGA/LUAD.rds")
+tcga_lusc = readRDS("TCGA/LUAD.rds")
 ```
 
 
@@ -263,10 +263,15 @@ format_radar_tcga_expr_mat <- function(
 ```{r}
 glob = import("glob")
 
-files = glob$glob("/mnt/raid62/Lung_cancer_10x/final_plots/03_each_cells/LUSC/*/mfuzz/results.csv")
+files = glob$glob("03_each_cells/LUSC/*/mfuzz/results.csv")
 
 registerDoMC(20)
-foreach(i=files) %dopar% {
+for(i in files) {
+    print(i)
+    # if(file.exists(paste(output_dir, "mfuzz_radar_bulk.pdf", sep = "/"))) {
+    #     next
+    # }
+    
     module = read.csv(i, row.names = 1)
     obj <- readRDS(paste(dirname(dirname(i)), "seurat.rds", sep = "/"))
     
@@ -321,10 +326,9 @@ foreach(i=files) %dopar% {
 ```
 
 ```{r}
-files = glob$glob("/mnt/raid62/Lung_cancer_10x/final_plots/03_each_cells/LUAD/*/mfuzz/results.csv")
+files = glob$glob("03_each_cells/LUAD/*/mfuzz/results.csv")
 
-registerDoMC(20)
-foreach(i=files) %dopar% {
+for(i in files) {
     module = read.csv(i, row.names = 1)
     obj <- readRDS(paste(dirname(dirname(i)), "seurat.rds", sep = "/"))
     
@@ -457,7 +461,7 @@ format_pca_sysu_expr_mat <- function(
     n.pcs=6,
     legend.title = ""
 ) {
-  
+
     cells = data.frame(
         Stage = sapply(colnames(expr), function(x) {
           str_split(x, "_")[[1]][4]
@@ -465,9 +469,13 @@ format_pca_sysu_expr_mat <- function(
         Cells = colnames(expr),
         stringsAsFactors = F
     )
-
+    print(dim(cells))
+    
     mat = expr[intersect(rownames(expr), as.character(module$gene)), ]
+    
     pca = prcomp(t(mat), scale. = F, center = F)
+    
+    n.pcs = min(n.pcs, ncol(pca$x) - 1)
     
     plist = list()
     
@@ -545,17 +553,16 @@ format_pca_tcga_expr_mat <- function(
       Cells = meta$barcode,
       stringsAsFactors = F
     )
-
+    
     mat = assay(expr, "raw_count")
     rownames(mat) = sapply(rownames(mat), function(x) { str_split(x, "\\|")[[1]][1] })
 
     mat = mat[intersect(rownames(mat), as.character(module$gene)), ]
-    print(typeof(mat))
-    
+   
     pca = prcomp(t(mat), scale. = F, center = F)
     
     plist = list()
-    
+    n.pcs = min(n.pcs, ncol(pca$x) - 1)
     for(i in 1:(n.pcs - 1)) {
         p <- autoplot(pca, x=i, y=i+1, data = cells, colour = 'Stage') + 
           scale_color_manual(
@@ -610,10 +617,10 @@ format_pca_tcga_expr_mat <- function(
 
 ## make pca plots
 ```{r}
-files = glob$glob("/mnt/raid62/Lung_cancer_10x/final_plots/03_each_cells/LUSC/*/mfuzz/results.csv")
+files = glob$glob("03_each_cells/LUSC/*/mfuzz/results.csv")
 
-registerDoMC(20)
-foreach(i=files) %dopar% {
+#registerDoMC(20)
+for(i in files) {
     module = read.csv(i, row.names = 1)
     obj <- readRDS(paste(dirname(dirname(i)), "seurat.rds", sep = "/"))
     
@@ -646,17 +653,17 @@ foreach(i=files) %dopar% {
     ggsave(
         filename = paste(output_dir, "mfuzz_pca.pdf", sep = "/"),
         plot = p1,
-        width = 6,
-        height = 6,
+        width = 18,
+        height = 12,
         dpi = 600,
         units = "in"
     )
     
     ggsave(
         filename = paste(output_dir, "mfuzz_pca_bulk.pdf", sep = "/"),
-        plot = plot_grid(p2, p3, nrow = 1),
-        width = 12,
-        height = 6,
+        plot = plot_grid(p2, p3, ncol = 1),
+        width = 18,
+        height = 24,
         dpi = 600,
         units = "in"
     )
@@ -667,10 +674,11 @@ foreach(i=files) %dopar% {
 
 
 ```{r}
-files = glob$glob("/mnt/raid62/Lung_cancer_10x/final_plots/03_each_cells/LUAD/*/mfuzz/results.csv")
+files = glob$glob("03_each_cells/LUAD/*/mfuzz/results.csv")
 
-registerDoMC(20)
-foreach(i=files) %dopar% {
+# registerDoMC(20)
+for(i in files) {
+    
     module = read.csv(i, row.names = 1)
     obj <- readRDS(paste(dirname(dirname(i)), "seurat.rds", sep = "/"))
     
@@ -703,17 +711,17 @@ foreach(i=files) %dopar% {
     ggsave(
         filename = paste(output_dir, "mfuzz_pca.pdf", sep = "/"),
         plot = p1,
-        width = 6,
-        height = 6,
+        width = 18,
+        height = 12,
         dpi = 600,
         units = "in"
     )
     
     ggsave(
         filename = paste(output_dir, "mfuzz_pca_bulk.pdf", sep = "/"),
-        plot = plot_grid(p2, p3, nrow = 1),
-        width = 12,
-        height = 6,
+        plot = plot_grid(p2, p3, ncol = 1),
+        width = 18,
+        height = 24,
         dpi = 600,
         units = "in"
     )

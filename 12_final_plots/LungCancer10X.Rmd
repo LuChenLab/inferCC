@@ -1,0 +1,1234 @@
+insta---
+title: "LungCancer10X"
+author: "Zhang Yiming"
+date: "2019/7/5"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Seurat)
+library(harmony)
+library(openxlsx)
+library(stringr)
+library(reticulate)
+library(stringr)
+library(dplyr)
+library(ggrepel)
+library(tidyr)
+library(stringr)
+library(doMC)
+library(ggrastr)
+library(ComplexHeatmap)
+library(wesanderson)
+```
+
+
+## Loda data
+```{r cars}
+obj <- readRDS("/mnt/raid62/Lung_cancer_10x/00_data_ingest/04_rds_generated/20190610_seurat_obj_selected_patients_harmony_formatted_meta.rds")
+```
+
+```{R}
+samples = read.xlsx("/mnt/raid62/Lung_cancer_10x/project_scripts/12_final_plots/20190707_meta.xlsx", sheet = 1)
+
+patients = NULL
+for(i in 1:nrow(samples)) {
+    
+    temp = NULL
+    for(j in c("Normal", "Tumor")){
+        if(!is.na(samples[i, j])) {
+            temp_samples = str_split(samples[i, j], "/")[[1]]
+            temp = data.frame(
+                name=rep(samples[i, 1], length(temp_samples)),
+                sample=temp_samples,
+                type = rep(j, length(temp_samples))
+            )
+        }
+        patients = rbind(patients, temp)
+    }
+    
+    
+}
+
+patients = merge(patients, samples, by.x = "name", by.y = "Name")
+# patients$Disease = sapply(patients$Disease, function(x) {
+#     str_replace(x, "\t", "")
+# })
+rownames(patients) <- patients$sample
+patients$Disease = patients$Cancer.type
+patients$Disease[patients$type == "Normal"] <- paste(
+    patients$Disease[patients$type == "Normal"],
+    patients$type[patients$type == "Normal"],
+    sep = "_"
+)
+
+meta = obj@meta.data
+
+meta = meta[, c(
+    "nGene", "nUMI", "SampleID", "Batch",
+    "Tissue", "Cells",  "batch", "percent.mito", "res.0.6",  
+    "cell_name",  "orig.ident"
+)]
+
+meta <- merge(meta, patients[, c("sample", "PatientID", "Gender", "Disease", "Stage", "Age", "T", "N", "M")], by.x = "SampleID", by.y = "sample", all.x =T)
+
+meta$Stage[is.na(meta$Stage) & meta$Batch != 3] = "Normal"
+
+rownames(meta) <- meta$Cells
+obj@meta.data = meta
+```
+
+
+### Filter samples
+```{r}
+meta = obj@meta.data[obj@meta.data$SampleID %in% patients$sample, ]
+
+for(i in colnames(patients)[4:ncol(patients)]) {
+    meta[, i] <- patients[meta$SampleID, i]
+}
+
+meta <- meta[, !colnames(meta) %in% c("orig.ident", "res.0.8", "old_cluster")]
+```
+
+### Rename disease
+```{r}
+meta$Disease = as.character(meta$Disease)
+luad_patients = unique(meta$PatientID[meta$Disease == "ADC"])
+meta$Disease[meta$PatientID %in% luad_patients & meta$Disease == "Normal"] = "Normal_LUAD"
+
+lusc_patients = unique(meta$PatientID[meta$Disease == "SCC"])
+meta$Disease[meta$PatientID %in% lusc_patients & meta$Disease == "Normal"] = "Normal_LUSC"
+```
+
+
+```{r}
+meta$Disease[meta$Disease == "ADC"] = "LUAD"
+
+meta$Disease[meta$Disease == "SCC"] = "LUSC"
+```
+
+
+```{r}
+temp_meta = obj@meta.data[obj@meta.data$Batch == 3, intersect(colnames(meta), colnames(obj@meta.data))]
+temp_meta$Tumor_size = -1
+temp_meta$T = "Unknown"
+
+meta <- rbind(meta, temp_meta)
+```
+
+
+### Reset Patient ID
+
+```{r}
+nms = rownames(obj@raw.data)
+ig_genes = c(grep("^IGJ", nms, v=T), 
+                grep("^IGH",nms,v=T),
+                grep("^IGK", nms, v=T), 
+                grep("^IGL", nms, v=T))
+
+bad_genes = unique(c(grep("^MT-", nms, v=T), grep("^MTMR", nms, v=T), grep("^MTND", nms, v=T),"NEAT1","TMSB4X", "TMSB10", ig_genes))
+
+
+new_obj <- CreateSeuratObject(
+    obj@raw.data[!rownames(obj@raw.data) %in% bad_genes, rownames(meta)],
+    meta.data = meta
+)
+
+
+obj_bak = obj
+obj = new_obj
+rm(new_obj)
+```
+
+
+```{r fig.height=6, fig.width=18}
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@raw.data), value = TRUE)
+percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+
+# AddMetaData adds columns to object@meta.data, and is a great place to
+# stash QC stats
+obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+
+VlnPlot(object = obj, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
+```
+
+
+```{r fig.height=6, fig.width=12}
+par(mfrow = c(1, 2))
+GenePlot(object = obj, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = obj, gene1 = "nUMI", gene2 = "nGene")
+```
+
+#### normalization, scale and PCA
+```{r}
+# obj <- FilterCells(object = obj, subset.names = c("nGene", "percent.mito"), low.thresholds = c(200, -Inf), high.thresholds = c(Inf, 0.1))
+obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+gc()
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+gc()
+obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+gc()
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = 100)
+gc()
+```
+
+#### garbage collection and run Harmony
+```{r}
+gc()
+obj <- RunHarmony(obj, c("batch"))
+```
+
+
+#### make PCElbowPlot to select num. of PCs
+
+```{r}
+reticulate::use_python("/mnt/data5/zhangyiming/program/pyenv/versions/3.6.8/bin/python")
+library(reticulate)
+
+kee <- import("kneed")
+
+n.pcs = kee$KneeLocator(
+    1:ncol(obj@dr$pca@cell.embeddings),
+    apply(obj@dr$pca@cell.embeddings, 2, sd), 
+    curve='convex', 
+    direction='decreasing'
+)
+n.pcs = n.pcs$knee
+```
+
+```{r fig.height=6, fig.width=16}
+# n.pcs = 18
+
+pdf("/mnt/data5/zhangyiming/LungCancer10x/01_first_plots/pceblow.pdf", width = 12, height = 6)
+PCElbowPlot(obj, num.pc=100)  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+    geom_vline(
+        xintercept = n.pcs, 
+        linetype="dashed", 
+        color = "grey"
+    )
+dev.off()
+```
+
+```{R fig.height=6, fig.width=16}
+temp <- as.data.frame(apply(obj@dr$harmony@cell.embeddings, 2, sd))
+colnames(temp) <- c("sd")
+temp$Harmony = 1:nrow(temp)
+
+p <- ggplot(temp, aes(x=Harmony, y=sd)) + 
+    geom_point_rast() + 
+    ylab("Standard Dei of Harmony")  +
+    scale_x_continuous(breaks=1:100) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+    geom_vline(
+        xintercept = n.pcs, 
+        linetype="dashed", 
+        color = "grey"
+    )
+ggsave("/mnt/data5/zhangyiming/LungCancer10x/01_first_plots/HarmonyPlot.pdf", plot = p, width = 12, height = 6, dpi = 600, units = "in")
+```
+
+
+
+```{r}
+obj <- RunICA(obj, ics.compute = 100)
+
+for(i in seq(15, 50, 5)) {
+    obj <- RunTSNE(
+        object = obj, 
+        dims.use = 1:n.pcs, 
+        do.fast = TRUE, 
+        reduction.use = "harmony", 
+        reduction.name = paste0("tsne_", i), 
+        perplexity=i
+    )
+    gc()
+}
+
+
+for(i in seq(5, 50, 5)) {
+    obj <- RunUMAP(
+        object = obj, 
+        dims.use = 1:n.pcs, 
+        do.fast = TRUE, 
+        n_neighbors = i,
+        reduction.use = "harmony",
+        reduction.name = paste0("umap_", i)
+    )
+    gc()
+}
+
+
+for(i in seq(0.1, 0.5, 0.05)) {
+    obj <- RunUMAP(
+        object = obj, 
+        dims.use = 1:n.pcs, 
+        do.fast = TRUE, 
+        min_dist = i,
+        reduction.use = "harmony",
+        reduction.name = paste0("umap_", i)
+    )
+    gc()
+}
+
+
+
+obj <- FindClusters(object = obj, reduction.type = "harmony", resolution = 0.8, dims.use = 1:n.pcs, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+
+gc()
+obj@meta.data$res.0.8 <- as.character(as.numeric(obj@meta.data$res.0.8) + 1)
+```
+
+```{r}
+dir.create("reduction_test", showWarnings = F)
+
+for(i in seq(15, 50, 5)) {
+    p <- DimPlot(
+        obj, reduction.use = paste0("tsne_", i),
+        pt.size = 0.01,
+        do.return = T,
+        do.label = T,
+        no.legend = T,
+        label.size = 5,
+        group.by = "cell_name"
+    )
+    
+    ggsave(
+        paste("reduction_test", paste0("tsne_", i, ".png"), sep = "/"),
+        plot = p,
+        width = 6,
+        height = 6,
+        units = "in",
+        dpi = 600
+    )
+}
+
+
+for(i in seq(5, 50, 5)) {
+    p <- DimPlot(
+        obj, reduction.use = paste0("umap_", i),
+        pt.size = 0.01,
+        do.return = T,
+        do.label = T,
+        no.legend = T,
+        label.size = 5,
+        group.by = "cell_name"
+    )
+    
+    ggsave(
+        paste("reduction_test", paste0("umap_", i, ".png"), sep = "/"),
+        plot = p,
+        width = 6,
+        height = 6,
+        units = "in",
+        dpi = 600
+    )
+}
+
+for(i in seq(0.1, 0.5, 0.05)) {
+    p <- DimPlot(
+        obj, reduction.use = paste0("umap_", i),
+        pt.size = 0.01,
+        do.return = T,
+        do.label = T,
+        no.legend = T,
+        label.size = 5,
+        group.by = "cell_name"
+    )
+    
+    ggsave(
+        paste("reduction_test", paste0("umap_", i, ".png"), sep = "/"),
+        plot = p,
+        width = 6,
+        height = 6,
+        units = "in",
+        dpi = 600
+    )
+}
+
+
+
+```
+
+```{r fig.height=36, fig.width=12}
+PercentAbove <- function(x, threshold){
+  return(length(x = x[x > threshold]) / length(x = x))
+}
+
+
+ModifiedDotPlot <- function(
+  object,
+  group.by,
+  markers,
+  cols.use = c("lightgrey", "blue"),
+  col.min = -2.5,
+  col.max = 2.5,
+  dot.min = 0,
+  dot.scale = 6,
+  scale.by = 'radius',
+  scale.min = NA,
+  scale.max = NA,
+  x.axis.rotate = FALSE
+) {
+  scale.func <- switch(
+    EXPR = scale.by,
+    'size' = scale_size,
+    'radius' = scale_radius,
+    stop("'scale.by' must be either 'size' or 'radius'")
+  )
+  if (!missing(x = group.by)) {
+    object <- SetAllIdent(object = object, id = group.by)
+  }
+  
+  genes.plot <- intersect(row.names(object@raw.data), markers$Markers)
+
+  data.to.plot <- data.frame(FetchData(object = object, vars.all = genes.plot))
+  colnames(x = data.to.plot) <- genes.plot
+  data.to.plot$cell <- rownames(x = data.to.plot)
+  data.to.plot$id <- object@ident
+  data.to.plot %>% gather(
+    key = genes.plot,
+    value = expression,
+    -c(cell, id)
+  ) -> data.to.plot
+  data.to.plot %>%
+    group_by(id, genes.plot) %>%
+    summarize(
+      avg.exp = mean(expm1(x = expression)),
+      pct.exp = PercentAbove(x = expression, threshold = 0)
+    ) -> data.to.plot
+  data.to.plot %>%
+    ungroup() %>%
+    group_by(genes.plot) %>%
+    mutate(avg.exp.scale = scale(x = avg.exp)) %>%
+    mutate(avg.exp.scale = MinMax(
+      data = avg.exp.scale,
+      max = col.max,
+      min = col.min
+    )) ->  data.to.plot
+  data.to.plot$genes.plot <- factor(
+    x = data.to.plot$genes.plot,
+    levels = rev(x = genes.plot)
+  )
+  # data.to.plot$genes.plot <- factor(
+  #   x = data.to.plot$genes.plot,
+  #   levels = rev(x = sub(pattern = "-", replacement = ".", x = genes.plot))
+  # )
+  data.to.plot$pct.exp[data.to.plot$pct.exp < dot.min] <- NA
+  data.to.plot$pct.exp <- data.to.plot$pct.exp * 100
+  data.to.plot <- merge(data.to.plot, markers, by.x = "genes.plot", by.y = "Markers")
+  
+  p <- ggplot(data = data.to.plot, aes(x = id, y = genes.plot, size = pct.exp, color = avg.exp.scale)) + 
+    geom_point() + 
+    # guides(
+    #     color=guide_legend(
+    #         ncol = 2,
+    #         title.position = "top"
+    #     ),
+    #     size=guide_legend(
+    #         ncol = 1
+    #     ),
+    #     alpha=guide_legend(
+    #         ncol = 1
+    #     )
+    # ) +
+    scale.func(range = c(0, dot.scale), limits = c(scale.min, scale.max)) +
+    facet_grid(Cells ~ ., scale = "free", space = "free") +
+      scale_color_gradient(low = "lightgrey", high = "blue")
+  
+  if (x.axis.rotate) {
+    p = p + theme(
+        legend.position = "none",
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 1)
+    )
+  } else {
+    p = p + theme(
+        legend.position = "none",
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(hjust = 0.5, vjust = 1)
+        # axis.title.y = element_text(angle = 90)
+    )
+  }
+  
+  
+  return(p)
+}
+
+
+markers = read.xlsx("/mnt/data5/zhangyiming/LungCancer10x/20190701_gene_markers.xlsx", sheet = 3)
+markers <- na.omit(markers[, 1:2])
+# markers <- markers[markers$Cells %in% obj@meta.data$cell_name, ]
+
+p <- ModifiedDotPlot(obj, markers = markers, group.by = "res.0.8")
+
+ggsave("/mnt/data5/zhangyiming/LungCancer10x/01_first_plots/dotplot_08.pdf", plot = p, width = 12, height = 30, units = "in", dpi = 600)
+p
+```
+
+
+## make plots of different clsuter
+```{r pressure, echo=FALSE}
+p <- DimPlot(
+    obj, reduction.use = "tsne",
+    pt.size = 0.01,
+    do.return = T,
+    do.label = T,
+    no.legend = T,
+    label.size = 5,
+    group.by = "res.0.8"
+)
+ggsave(
+    "/mnt/data5/zhangyiming/LungCancer10x/01_first_plots/cluster.pdf",
+    plot = p,
+    width = 6,
+    height = 6,
+    units = "in"
+)
+```
+
+
+## make plots of different cells
+```{r pressure, fig.height=6, fig.width=6}
+cell_names = read.xlsx("/mnt/data5/zhangyiming/LungCancer10x/02_rds/cell_names.xlsx")
+
+obj@meta.data$cell_name = cell_names[obj@meta.data$res.0.8, "Cell"]
+
+write.csv(obj@meta.data, "/mnt/data5/zhangyiming/LungCancer10x/02_rds/meta.csv")
+
+
+p <- DimPlot(
+    obj, reduction.use = "tsne",
+    pt.size = 0.01,
+    do.return = T,
+    do.label = T,
+    no.legend = T,
+    label.size = 5,
+    group.by = "cell_name"
+)
+
+p
+# ggsave(
+#     "/mnt/data5/zhangyiming/LungCancer10x/01_first_plots/cells.pdf",
+#     plot = p,
+#     width = 6,
+#     height = 6,
+#     units = "in"
+# )
+```
+
+## make plots of different batches
+```{r pressure, echo=FALSE}
+p <- DimPlot(
+    obj, reduction.use = "tsne",
+    pt.size = 0.01,
+    do.return = T,
+    do.label = T,
+    no.legend = T,
+    label.size = 5,
+    group.by = "batch"
+)
+ggsave(
+    "/mnt/data5/zhangyiming/LungCancer10x/01_first_plots/batch.pdf",
+    plot = p,
+    width = 6,
+    height = 6
+)
+```
+
+
+
+
+```{r}
+saveRDS(obj, "/mnt/data5/zhangyiming/LungCancer10x/02_rds/seurat_obj.rds")
+```
+
+```{R}
+obj <- readRDS("/mnt/data5/zhangyiming/LungCancer10x/02_rds/seurat_obj.rds")
+```
+
+## Split obj into different disease
+```{r}
+output_dir = "/mnt/data5/zhangyiming/LungCancer10x/02_rds/01_split_cells"
+dir.create(output_dir, showWarnings = F, recursive = T)
+
+dir.create(paste0(output_dir, "/LUSC"), showWarnings = F, recursive = T)
+dir.create(paste0(output_dir, "/LUAD"), showWarnings = F, recursive = T)
+
+
+for(i in sort(unique(as.character(obj@meta.data$cell_name)))) {
+    print(i)
+    meta = obj@meta.data[obj@meta.data$Batch != 3, ]
+    
+    cells = rownames(meta)[as.character(meta$cell_name) == i]
+
+    temp = CreateSeuratObject(
+        obj@raw.data[, which(colnames(obj@raw.data) %in% cells)],
+        meta.data = obj@meta.data[cells, ],
+        project = i
+    )
+
+    saveRDS(temp, paste0(output_dir, "/", str_replace(i, "\\s", "_"), ".rds"))
+    print("LUSC")    
+    # LUSC
+    cells = rownames(meta)[as.character(meta$cell_name) == i & as.character(meta$Disease) == "LUSC"]
+    
+    temp = CreateSeuratObject(
+        obj@raw.data[, which(colnames(obj@raw.data) %in% cells)],
+        meta.data = obj@meta.data[cells, ],
+        project = i
+    )
+    
+    saveRDS(temp, paste0(output_dir, "/LUSC/", str_replace(i, "\\s", "_"), ".rds"))
+    
+    
+    # LUAD
+    print("LUAD")
+    cells = rownames(meta)[as.character(meta$cell_name) == i & as.character(meta$Disease) == "LUAD"]
+    
+    temp = CreateSeuratObject(
+        obj@raw.data[, which(colnames(obj@raw.data) %in% cells)],
+        meta.data = obj@meta.data[cells, ],
+        project = i
+    )
+    
+    saveRDS(temp, paste0(output_dir, "/LUAD/", str_replace(i, "\\s", "_"), ".rds"))
+}
+```
+
+
+----
+
+## make feature plots
+```{r}
+markers = read.xlsx("/mnt/data8/zhangyiming/LungCancer10x/20190701_gene_markers.xlsx", sheet = 3)
+markers <- na.omit(markers[, 1:2])
+```
+
+
+```{r fig.height=6, fig.width=6}
+make_feature_plot <- function(
+    obj, 
+    gene, 
+    cell, 
+    pt.size = 0.1, 
+    alpha = 0.5, 
+    sort = T, 
+    reduction.use="umap_0.1"
+) {
+    data = obj@meta.data
+    data$value = obj@data[which(rownames(obj@data) == gene), rownames(data)]
+    data$tSNE_1 = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 1]
+    data$tSNE_2 = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 2]
+    
+    if(sort) {
+        data = data[order(data$value, decreasing = F), ]
+    }
+    
+    p <- ggplot(data = data, aes(x=tSNE_1, y=tSNE_2, color = value)) +
+        geom_point_rast(size = pt.size, alpha = alpha) +
+        scale_color_gradient(low = "lightgrey", high = "blue") +
+        theme_bw() +
+        labs(title = paste0(gene, "(", cell, ")")) +
+        theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = 20), 
+            legend.position = "none",
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 15)
+        )
+    p
+}
+```
+
+```{R}
+features_dir = "/mnt/data8/zhangyiming/LungCancer10x/01_first_plots/feature_plots"
+dir.create(features_dir, showWarnings = F, recursive = T)
+
+for(i in 1:nrow(markers)) {
+    print(i)
+    p <- make_feature_plot(obj, markers[i, 1], markers[i, 2], sort = F)
+
+    ggsave(
+        filename = paste(
+            features_dir,
+            paste0(
+                str_replace_all(markers[i, 2], "\\s+", "_"),
+                "_",
+                markers[i, 1],
+                ".pdf"
+            ),
+            sep = "/"
+        ),
+        plot = p,
+        width = 6,
+        height = 6,
+        dpi = 600,
+        units = "in"
+    )
+}
+
+
+features_dir = "/mnt/data8/zhangyiming/LungCancer10x/01_first_plots/feature_plots_tsne"
+dir.create(features_dir, showWarnings = F, recursive = T)
+
+for(i in 1:nrow(markers)) {
+    print(i)
+    p <- make_feature_plot(obj, markers[i, 1], markers[i, 2], sort = F, reduction.use = "tsne")
+
+    ggsave(
+        filename = paste(
+            features_dir,
+            paste0(
+                str_replace_all(markers[i, 2], "\\s+", "_"),
+                "_",
+                markers[i, 1],
+                ".pdf"
+            ),
+            sep = "/"
+        ),
+        plot = p,
+        width = 6,
+        height = 6,
+        dpi = 600,
+        units = "in"
+    )
+}
+```
+
+## 4 Main figures
+### make tsne of different cells
+```{r fig.height=6, fig.width=6}
+make_cell_types_plot <- function(
+    obj, 
+    pt.size = 0.1, 
+    alpha = 0.5,
+    reduction.use = "tSNE"
+) {
+    data = obj@meta.data
+    
+    data$x_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 1]
+    data$y_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 2]
+    
+    text_loc = data[, c("x_c", "y_c", "cell_name", "res.0.8")] %>% 
+        group_by(cell_name) %>%
+        mutate(x = median(x_c), y = median(y_c)) %>%
+        dplyr::select(x, y, cell_name) %>%
+        unique()
+    
+    print(head(text_loc))
+    print(dim(text_loc))
+    
+    p <- ggplot(data = data, aes(x=x_c, y=y_c, color = cell_name)) +
+        geom_point_rast(size = pt.size, alpha = alpha) +
+        geom_text_repel(data = text_loc, aes(x=x, y=y, size = 10, alpha = 1, label = cell_name), color = "black") +
+        theme_bw() +
+        labs(
+            title = "Cell type", 
+            x=paste(reduction.use, "1", sep = "_"),
+            y=paste(reduction.use, "2", sep = "_")
+        ) +
+        theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = 20), 
+            legend.position = "none",
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 15)
+        )
+    p
+}
+
+p <- make_cell_types_plot(obj, alpha = 0.8, reduction.use = "umap_0.1")
+p = p + labs(x="UMAP1", y="UMAP2")
+ggsave(
+    filename = "01_first_plots/cell_types_umap.pdf",
+    plot = p,
+    width = 6,
+    height = 6,
+    dpi = 600,
+    units = "in"
+)
+
+p <- make_cell_types_plot(obj, alpha = 0.8, reduction.use = "tsne")
+p = p + labs(x="UMAP1", y="UMAP2")
+ggsave(
+    filename = "01_first_plots/cell_types_tsne.pdf",
+    plot = p,
+    width = 6,
+    height = 6,
+    dpi = 600,
+    units = "in"
+)
+```
+
+
+### make tsne of tissues
+```{r fig.height=6, fig.width=6}
+make_disease_plot <- function(
+    obj, 
+    pt.size = 0.1, 
+    alpha = 0.5,
+    reduction.use = "tSNE",
+    legend.position="bottom",
+    legend.ncol = 1
+) {
+    data = obj@meta.data
+    
+    data$x_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 1]
+    data$y_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 2]
+    
+    data$Disease = as.character(data$Disease)
+    data$Disease[is.na(data$Disease)] = "Unknown"
+    
+    # data = data[order(data$Disease, decreasing = T), ]
+    data = rbind(
+        data[data$Disease == "Unknown", ],
+        data[data$Disease != "Unknown", ]
+    )
+    
+    p <- ggplot(data = data, aes(x=x_c, y=y_c, color = Disease)) +
+        geom_point_rast(size = pt.size, alpha = alpha) +
+        # geom_text_repel(data = text_loc, aes(x=x, y=y, size = 10, alpha = 1, label = Disease), color = "black") +
+        theme_bw() +
+        labs(
+            title = "Disease", 
+            x=paste(reduction.use, "1", sep = "_"),
+            y=paste(reduction.use, "2", sep = "_"),
+            color = ""
+        ) +
+        theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = 20), 
+            legend.position = legend.position,
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 15),
+            legend.background = element_blank(),
+            legend.key = element_rect(colour = NA, fill = NA)
+        ) +
+        scale_color_manual(
+            values = c(
+                "LUAD" = "#0084D1", 
+                "LUAD_Normal"="#FECC1B", 
+                "Normal"="#73BDFF", 
+                "LUSC_Normal"="#DA6906", 
+                "LUSC"="#A0C807", 
+                "LELC"="#6A0019", 
+                "CPI"="#C5000B",
+                "Unknown"="lightgrey"
+            )
+        ) +
+        guides(color = guide_legend(ncol = legend.ncol, override.aes = list(size = 5)))
+    p
+}
+
+p <- make_disease_plot(obj, alpha = 0.5, reduction.use = "umap_0.1", legend.position = c(0.86, 0.15))
+p = p + labs(x="UMAP1", y="UMAP2")
+ggsave(
+    filename = "01_first_plots/disease_umap.pdf",
+    plot = p,
+    width = 6,
+    height = 6,
+    dpi = 600,
+    units = "in"
+)
+
+p <- make_disease_plot(obj, alpha = 0.5, reduction.use = "tsne", legend.position = c(0.5, 0.05), legend.ncol = 5)
+p = p + labs(x="UMAP1", y="UMAP2")
+ggsave(
+    filename = "01_first_plots/disease_tsne.pdf",
+    plot = p,
+    width = 6,
+    height = 6,
+    dpi = 600,
+    units = "in"
+)
+```
+
+
+### make tsne of clusters
+```{r fig.height=6, fig.width=6}
+make_cluster_plot <- function(
+    obj, 
+    pt.size = 0.1, 
+    alpha = 0.5,
+    reduction.use = "tSNE"
+) {
+    data = obj@meta.data
+    
+    data$x_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 1]
+    data$y_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 2]
+    
+    text_loc = data[, c("x_c", "y_c", "cell_name", "res.0.8")] %>% 
+        group_by(res.0.8) %>%
+        mutate(x = median(x_c), y = median(y_c)) %>%
+        dplyr::select(x, y, res.0.8) %>%
+        unique()
+    
+    p <- ggplot(data = data, aes(x=x_c, y=y_c, color = as.factor(res.0.8))) +
+        geom_point_rast(size = pt.size, alpha = alpha) +
+        geom_text_repel(data = text_loc, aes(x=x, y=y, size = 10, alpha = 1, label = res.0.8), color = "black") +
+        theme_bw() +
+        labs(
+            title = "Cluster", 
+            x=paste(reduction.use, "1", sep = "_"),
+            y=paste(reduction.use, "2", sep = "_")
+        ) +
+        theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = 20), 
+            legend.position = "none",
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 15)
+        )
+    p
+}
+
+p <- make_cluster_plot(obj, alpha = 0.5, reduction.use = "umap_0.1")
+p
+# ggsave(
+#     filename = "01_first_plots/cluster_umap.pdf",
+#     plot = p,
+#     width = 6,
+#     height = 6,
+#     dpi = 600,
+#     units = "in"
+# )
+
+p <- make_cluster_plot(obj, alpha = 0.5, reduction.use = "tsne")
+p
+# ggsave(
+#     filename = "01_first_plots/cluster_tsne.pdf",
+#     plot = p,
+#     width = 6,
+#     height = 6,
+#     dpi = 600,
+#     units = "in"
+# )
+```
+
+
+### make tsne of batch and patients
+```{r fig.height=6, fig.width=6}
+
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+patient_colors = gg_color_hue(35)
+names(patient_colors) <- c(
+    sapply(1:23, function(x){sprintf("PA%02d", x)}),
+    sapply(1:12, function(x){sprintf("PS%02d", x)})
+)
+
+make_plot <- function(
+    obj, 
+    pt.size = 0.1, 
+    alpha = 0.5,
+    reduction.use = "tSNE",
+    group.by = "batch",
+    title = "",
+    legend.position = "bottom",
+    patients = FALSE,
+    legend.ncol = 2
+) {
+    data = obj@meta.data
+    
+    data$x_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 1]
+    data$y_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 2]
+    
+    data$group = as.character(data[, group.by])
+    data$group[is.na(data$group)] = "Unknown"
+    
+    data = rbind(
+        data[data$group == "Unknown", ],
+        data[data$group != "Unknown", ]
+    )
+    
+    p <- ggplot(data = data, aes(x=x_c, y=y_c, color = group)) +
+        geom_point_rast(size = pt.size, alpha = alpha) +
+        theme_bw() +
+        labs(
+            title = str_to_title(title, locale = "en"), 
+            x=paste(reduction.use, "1", sep = "_"),
+            y=paste(reduction.use, "2", sep = "_"),
+            color = ""
+        ) +
+        theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = 20), 
+            legend.position = legend.position,
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 15),
+            legend.background = element_blank(),
+            # legend.key = element_blank(),
+            legend.text = element_text(size = 12),
+            legend.spacing.x = unit(0.1, 'cm')
+        ) +
+        guides(color = guide_legend(
+            override.aes = list(size = 5), 
+            ncol = legend.ncol,
+            keywidth = 0.01,
+            keyheight = 0.01,
+            default.unit = "inch"
+        ))
+    
+    if(patients) {
+        p = p + scale_color_manual(
+            values = c(
+                patient_colors,
+                c("Unknown"="lightgrey")
+            )
+        )
+    }
+
+    p
+}
+
+# p <- make_plot(obj, alpha = 0.5, reduction.use = "umap_0.1")
+# # p
+# ggsave(
+#     filename = "01_first_plots/batch_umap.pdf",
+#     plot = p,
+#     width = 6,
+#     height = 6,
+#     dpi = 600,
+#     units = "in"
+# )
+# 
+# p <- make_plot(obj, alpha = 0.5, reduction.use = "tsne")
+# ggsave(
+#     filename = "01_first_plots/batch_tsne.pdf",
+#     plot = p,
+#     width = 6,
+#     height = 6,
+#     dpi = 600,
+#     units = "in"
+# )
+
+
+
+p <- make_plot(
+    obj, 
+    alpha = 0.5, 
+    reduction.use = "umap_0.1", 
+    group.by = "PatientID", 
+    title = "patients",
+    legend.position = c(0.82, 0.13), 
+    legend.ncol = 3,
+    patients = T
+)
+p = p + labs(x="UMAP1", y="UMAP2")
+p
+ggsave(
+    filename = "01_first_plots/patient_umap.pdf",
+    plot = p,
+    width = 6,
+    height = 6,
+    dpi = 600,
+    units = "in"
+)
+# 
+# p <- make_plot(obj, alpha = 0.5, reduction.use = "tsne", group.by = "PatientID", title = "patients", legend.position = "none")
+# p
+# ggsave(
+#     filename = "01_first_plots/patient_tsne.pdf",
+#     plot = p,
+#     width = 6,
+#     height = 6,
+#     dpi = 600,
+#     units = "in"
+# )
+```
+
+
+### make tsne of tissues
+```{r fig.height=6, fig.width=6}
+make_trans_plot <- function(
+    obj, 
+    pt.size = 0.1, 
+    alpha = 0.5,
+    reduction.use = "tSNE",
+    legend.position = "bottom"
+) {
+    
+    data = obj@meta.data
+    
+    data$x_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 1]
+    data$y_c = obj@dr[[reduction.use]]@cell.embeddings[rownames(data), 2]
+    
+    p <- ggplot(data = data, aes(x=x_c, y=y_c, color = log10(nUMI + 1))) +
+        geom_point_rast(size = pt.size, alpha = alpha) +
+        theme_bw() +
+        labs(
+            title = "Transcripts counts", 
+            x=paste(reduction.use, "1", sep = "_"),
+            y=paste(reduction.use, "2", sep = "_"),
+            color = ""
+        ) +
+        theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = 20), 
+            legend.position = legend.position,
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 15),
+            legend.title = element_text(size = 15),
+            legend.text = element_text(size = 10),
+            legend.background = element_blank()
+        ) +
+        scale_color_gradient(low = "lightgrey", high = "blue") +
+        annotate(
+            geom="text", 
+            x=12, 
+            y=-18, 
+            label="log10(counts + 1)",
+            size = 5
+        )
+    p
+}
+
+p <- make_trans_plot(obj, alpha = 0.5, reduction.use = "umap_0.1", legend.position = c(0.9, 0.25))
+p = p + labs(x="UMAP1", y="UMAP2")
+p
+ggsave(
+    filename = "01_first_plots/transcript_umap.pdf",
+    plot = p,
+    width = 6,
+    height = 6,
+    dpi = 600,
+    units = "in"
+)
+
+# p <- make_trans_plot(obj, alpha = 0.5, reduction.use = "tsne")
+# ggsave(
+#     filename = "01_first_plots/transcript_tsne.pdf",
+#     plot = p,
+#     width = 6,
+#     height = 6,
+#     dpi = 600,
+#     units = "in"
+# )
+```
+
+
+## Make marker complex heatmap
+```{r fig.height=8, fig.width=8}
+# extract common cell types
+cell_types = sort(unique(intersect(markers$Cells, obj@meta.data$cell_name)))
+
+# order markers
+temp_markers = NULL
+for(i in cell_types) {
+    temp = markers[markers$Cells == i, ]
+    temp = temp[order(temp$Markers), ]
+    temp_markers = rbind(temp_markers, temp)
+}
+
+# order cells
+cells = c()
+for(i in cell_types) {
+    meta = obj@meta.data[obj@meta.data$cell_name == i, ]
+    meta = meta[order(meta$res.0.8), ]
+    cells = c(cells, rownames(meta))
+}
+
+cell_color = wes_palette("Moonrise3", length(cell_types), type = "continuous")
+names(cell_color) = cell_types
+
+# top anno
+ta = HeatmapAnnotation(
+    cell = obj@meta.data[cells, "cell_name"],
+    # annotation_name_side = "none",
+    col = list(
+        cell=cell_color
+    )
+)
+
+# left anno
+la = rowAnnotation(
+    cell = temp_markers$Cells,
+    # annotation_name_side = "none",
+    col = list(
+        cell=cell_color
+    )
+    # labels = temp_markers$Cells, 
+    # labels_gp = gpar(col = "white", fontsize = 10)
+)
+
+pdf("01_first_plots/marker_heatmap.pdf", height = 20, width = 12)
+Heatmap(
+    as.matrix(obj@scale.data[temp_markers$Markers, cells]), 
+    top_annotation = ta,
+    left_annotation = la,
+    cluster_rows = F,
+    cluster_columns = F,
+    name = "mat",
+    show_row_names = F,
+    show_column_names = F
+)
+dev.off()
+```
+
+```{r}
+immu = c(
+    "B cells",
+    "CD4",
+    "CD8",
+    "Dendritic",
+    "Exhaust T",
+    "Endothelial",
+    "Erythroid precursor",
+    "Granulocyte",
+    "Mast",
+    "Monocytes",
+    "NK",
+    "T_cells",
+    "Treg"
+)
+
+
+
+cells = rownames(obj@meta.data)[as.character(obj@meta.data$cell_name) %in% immu & obj@meta.data$Batch != 3]
+
+# expr <- readRDS("all_cell_expr.rds")
+new_obj <- CreateSeuratObject(
+    obj@raw.data[,cells],
+    meta.data = obj@meta.data[cells, ]
+)
+
+
+saveRDS(new_obj, "/mnt/data5/zhangyiming/LungCancer10x/02_rds/seurat_obj_immu.rds")
+
+
+meta = obj@meta.data[obj@meta.data$Batch != 3, ]
+
+for(i in 1:3) {
+    set.seed(i)
+
+    cells = sample(1:nrow(meta), 100000)
+
+    new_obj <- CreateSeuratObject(
+        obj@raw.data[, cells],
+        meta.data = meta[cells, ]
+    )
+
+    saveRDS(new_obj, paste0("/mnt/data5/zhangyiming/LungCancer10x/02_rds/seurat_obj_ori_R", i, ".rds")) 
+}
+
+
+for(i in unique(obj@meta.data$Disease)) {
+    print(i)
+    cells = rownames(obj@meta.data)[as.character(obj@meta.data$cell_name) %in% immu & obj@meta.data$Batch != 3 & obj@meta.data$Disease == i]
+    new_obj <- CreateSeuratObject(
+        obj@raw.data[, cells],
+        meta.data=obj@meta.data[cells, ]
+    )
+
+    saveRDS(new_obj, paste0("/mnt/data5/zhangyiming/LungCancer10x/02_rds/seurat_obj_immu_", i, ".rds"))
+}
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

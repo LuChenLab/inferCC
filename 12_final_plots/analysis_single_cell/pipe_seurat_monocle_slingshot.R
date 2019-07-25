@@ -2,6 +2,14 @@ dpi = 600
 
 # load packages
 args = commandArgs(trailingOnly=TRUE)
+
+# args = c(
+#     '/mnt/raid62/Lung_cancer_10x/project_scripts/12_final_plots/analysis_single_cell/basic.R',
+#     '/mnt/raid62/Lung_cancer_10x/final_plots/02_rds/01_split_cells/LUAD/Alveolar_II.rds',
+#     '/mnt/raid62/Lung_cancer_10x/final_plots/03_each_cells/LUAD/Alveolar_II',
+#     'DO'
+# )
+
 basic_script = args[1]
 input_rds = args[2]
 image_dir = args[3]
@@ -11,8 +19,6 @@ trajectory = args[4]
 print(args)
 
 source(basic_script)
-
-# use_python("/mnt/data5/zhangyiming/program/pyenv/versions/3.6.8/bin/python")
 
 set.seed(1)
 
@@ -39,7 +45,7 @@ if (file.exists("seurat.rds")) {
     n.pcs = n.pcs$knee
 } else {
     obj <- readRDS(input_rds)
-
+    print(obj)
     ### 2. check is the variables like Stage and Patient are highly variable
     if (trajectory == "DO") {
 
@@ -57,7 +63,7 @@ if (file.exists("seurat.rds")) {
             obj@raw.data[, rownames(m)],
             meta.data = obj@meta.data[rownames(m),]
         )
-
+        print(selected_obj)
         stats = as.data.frame(table(obj@meta.data$Stage))
         stats$label = "Before"
         stats$type = "Stage"
@@ -429,14 +435,16 @@ if(file.exists("markers_by_cluster.xlsx")) {
 
 ### Monocle
 # devtools::load_all("/mnt/raid61/Personal_data/huangfei/UCB/git_database/monocle3/")
+
+# devtools::load_all("/mnt/raid62/Lung_cancer_10x/monocle3")
+
 meta = selected_obj@meta.data
 
 meta$Stage[!meta$Disease %in% c("LUSC", "LUAD")] = meta$Disease[!meta$Disease %in% c("LUSC", "LUAD")]
 
 
 print(unique(meta$Stage))
-library(monocle3)
-library(slingshot)
+
 num_cores = 10
 low_thresh = 1 ### the threshold of low-expressed
 reduced_element = 1 ### the con-founding factors need to be reduced (batch effect)
@@ -522,12 +530,12 @@ if (file.exists("monocle3.rds") && trajectory != "DO") {
 }
 
 
-pData(cds)[,'Seurat_Cluster'] <- selected_obj@ident[colnames(cds)]
-p1 = plot_cells(cds,alpha=0.5, color_cells_by='PatientID')
-p2 = plot_cells(cds,alpha=0.5, color_cells_by='batch')
+# pData(cds)[,'Seurat_Cluster'] <- selected_obj@ident[colnames(cds)]
+# p1 = plot_cells(cds,alpha=0.5, color_cells_by='PatientID')
+# p2 = plot_cells(cds,alpha=0.5, color_cells_by='batch')
 
-p <- cowplot::plot_grid(p1, p2)
-ggsave(filename = "monocle3_umap_paitent_batch.pdf", plot = p, width = 12, height = 6, dpi = 600, units = "in")
+# p <- cowplot::plot_grid(p1, p2)
+# ggsave(filename = "monocle3_umap_paitent_batch.pdf", plot = p, width = 12, height = 6, dpi = 600, units = "in")
 
 
 ### using Benign or Stage I as root
@@ -593,15 +601,6 @@ ggsave(filename = "monocle3_trajectory_by_stage.pdf", plot = p, width = 6 * leng
 
 
 ## Slingshot
-if(sum(choosen) < ncol(selected_obj@raw.data)) {
-    temp = exportCDS(cds, export_to = "Seurat" , export_all = TRUE)
-    sling = as.SingleCellExperiment(temp)
-} else {
-    sling = as.SingleCellExperiment(selected_obj)
-}
-
-reducedDims(sling)$UMAP <- selected_obj@dr$umap@cell.embeddings[choosen,]
-
 if(file.exists("slingshot.rds") && trajectory != "DO") {
     sce = readRDS("slingshot.rds")
 } else {
@@ -622,47 +621,56 @@ legends = unique(sort(selected_obj@meta.data$Stage))
 cols_for_legend = sapply(legends, function(x){colors[x]})
 
 
-cols_for_stage = as.data.frame(colors)
+cols_for_stage = as.data.frame(stage_colors)
 cols_for_stage$Stage = rownames(cols_for_stage)
 cols_for_stage = merge(selected_obj@meta.data, cols_for_stage, by = "Stage")
 
 rownames(cols_for_stage) <- cols_for_stage$Cells
 
+print(head(cols_for_stage))
+
+tempUMAP = reducedDims(sce)$UMAP
+
 print("slingshot")
 pdf("slingpseudotime.pdf", width = 6, height = 6)
 
-tempUMAP = reducedDims(sce)$UMAP
-plot(tempUMAP, col = as.character(cols_for_stage[rownames(tempUMAP), "colors"]), pch=16, asp = 1, cex = 0.8)
+plot(
+    tempUMAP, 
+    col = as.character(cols_for_stage[rownames(tempUMAP), "stage_colors"]), 
+    pch=16, 
+    asp = 1, 
+    cex = 0.8
+)
 lines(SlingshotDataSet(sce), lwd = 3)
 
-legend(
-    "topright", 
-    legends, 
-    col=cols_for_legend, 
-    text.col="black", 
-    pch=16, 
-    bty="n", 
-    cex=1,
-    inset=c(-0.2,0)
-)
+# legend(
+#     "topright", 
+#     legends, 
+#     col=as.character(cols_for_legend),
+#     text.col="black", 
+#     pch=16, 
+#     bty="n", 
+#     cex=1,
+#     inset=c(-0.2,0)
+# )
 
 dev.off()
 
 
 ### plot first path
-dir.create("slingPseudotime", showWarnings=F)
-idx = 1
-for (i in grep("slingPseudotime", colnames(colData(sce)))) {
-    print(i)
-    pdf(paste0("slingPseudotime/", idx, ".pdf"), width = 6, height = 6)
+# dir.create("slingPseudotime", showWarnings=F)
+# idx = 1
+# for (i in grep("slingPseudotime", colnames(colData(sce)))) {
+#     print(i)
+#     pdf(paste0("slingPseudotime/", idx, ".pdf"), width = 6, height = 6)
     
-    colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
-    plot(reducedDims(sce)$UMAP, col = colors[cut(colData(sce)[, i], breaks=100)], pch=16, asp = 1, cex = 0.8)
-    lines(SlingshotDataSet(sce), lwd=2)
+#     colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+#     plot(reducedDims(sce)$UMAP, col = colors[cut(colData(sce)[, i], breaks=100)], pch=16, asp = 1, cex = 0.8)
+#     lines(SlingshotDataSet(sce), lwd=2)
     
-    dev.off()
-    idx = idx + 1
-}
+#     dev.off()
+#     idx = idx + 1
+# }
 
 
 
@@ -684,86 +692,86 @@ plot(tempUMAP, col = as.character(cols_for_stage[rownames(tempUMAP), "col"]), pc
 lines(SlingshotDataSet(sce), lwd = 3)
 
 
-legend("bottomright", 
-    legends,
-    col=cols_for_stage, 
-    text.col="black", pch=16, bty="n", cex=1)
+# legend("right", 
+#     legends,
+#     col=cols_for_stage, 
+#     text.col="black", pch=16, bty="n", cex=1)
 
 dev.off()
 
 
-### KEGG、GO and DOSE
-egs <- get_entrzid(markers_by_stage)
+# ### KEGG、GO and DOSE
+# egs <- get_entrzid(markers_by_stage)
 
 
-kegg_stage = NULL
-do_stage = NULL
-go_stage = NULL
-for(i in unique(egs$ident)) {
-    print(i)
-    eg <- egs[egs$ident == i,]
+# kegg_stage = NULL
+# do_stage = NULL
+# go_stage = NULL
+# for(i in unique(egs$ident)) {
+#     print(i)
+#     eg <- egs[egs$ident == i,]
 
-    temp = do_kegg(eg, cluster = i)
-    kegg_stage = rbind(kegg_stage, temp)
+#     temp = do_kegg(eg, cluster = i)
+#     kegg_stage = rbind(kegg_stage, temp)
 
-    temp = do_do(eg, cluster = i)
-    do_stage = rbind(do_stage, temp)
+#     temp = do_do(eg, cluster = i)
+#     do_stage = rbind(do_stage, temp)
 
-    temp = do_go(eg, cluster = i)
-    go_stage = rbind(go_stage, temp)
-}
-
-
-egs <- get_entrzid(markers_by_cluster)
+#     temp = do_go(eg, cluster = i)
+#     go_stage = rbind(go_stage, temp)
+# }
 
 
-kegg_clt = NULL
-do_clt = NULL
-go_clt = NULL
-for(i in unique(egs$ident)) {
-    print(i)
-    eg <- egs[egs$ident == i,]
-
-    temp = do_kegg(eg, cluster = i)
-    kegg_clt = rbind(kegg_clt, temp)
-
-    temp = do_do(eg, cluster = i)
-    do_clt = rbind(do_clt, temp)
-
-    temp = do_go(eg, cluster = i)
-    go_clt = rbind(go_clt, temp)
-}
+# egs <- get_entrzid(markers_by_cluster)
 
 
-### 4. save marker genes, kegg, go and dose results
-wb = createWorkbook()
-addWorksheet(wb, "marker genes")
-writeData(wb, 1, markers_by_stage, rowNames = TRUE)
+# kegg_clt = NULL
+# do_clt = NULL
+# go_clt = NULL
+# for(i in unique(egs$ident)) {
+#     print(i)
+#     eg <- egs[egs$ident == i,]
 
-addWorksheet(wb, "KEGG")
-writeData(wb, 2, kegg_stage)
+#     temp = do_kegg(eg, cluster = i)
+#     kegg_clt = rbind(kegg_clt, temp)
 
-addWorksheet(wb, "GO")
-writeData(wb, 3, go_stage)
+#     temp = do_do(eg, cluster = i)
+#     do_clt = rbind(do_clt, temp)
 
-addWorksheet(wb, "DOSE")
-writeData(wb, 4, do_stage)
+#     temp = do_go(eg, cluster = i)
+#     go_clt = rbind(go_clt, temp)
+# }
 
-saveWorkbook(wb, file = "markers_by_stage.xlsx", overwrite = T)
+
+# ### 4. save marker genes, kegg, go and dose results
+# wb = createWorkbook()
+# addWorksheet(wb, "marker genes")
+# writeData(wb, 1, markers_by_stage, rowNames = TRUE)
+
+# addWorksheet(wb, "KEGG")
+# writeData(wb, 2, kegg_stage)
+
+# addWorksheet(wb, "GO")
+# writeData(wb, 3, go_stage)
+
+# addWorksheet(wb, "DOSE")
+# writeData(wb, 4, do_stage)
+
+# saveWorkbook(wb, file = "markers_by_stage.xlsx", overwrite = T)
 
 
-wb = createWorkbook()
-addWorksheet(wb, "marker genes")
-writeData(wb, 1, markers_by_cluster, rowNames = TRUE)
+# wb = createWorkbook()
+# addWorksheet(wb, "marker genes")
+# writeData(wb, 1, markers_by_cluster, rowNames = TRUE)
 
-addWorksheet(wb, "KEGG")
-writeData(wb, 2, kegg_clt)
+# addWorksheet(wb, "KEGG")
+# writeData(wb, 2, kegg_clt)
 
-addWorksheet(wb, "GO")
-writeData(wb, 3, go_clt)
+# addWorksheet(wb, "GO")
+# writeData(wb, 3, go_clt)
 
-addWorksheet(wb, "DOSE")
-writeData(wb, 4, do_clt)
+# addWorksheet(wb, "DOSE")
+# writeData(wb, 4, do_clt)
 
-saveWorkbook(wb, file = "markers_by_cluster.xlsx", overwrite = T)
+# saveWorkbook(wb, file = "markers_by_cluster.xlsx", overwrite = T)
 
