@@ -344,8 +344,11 @@ if (file.exists("seurat.rds")) {
     # }
 }
 
+selected_obj@meta.data$Stage = as.character(selected_obj@meta.data$Stage)
 temp = str_detect(selected_obj@meta.data$Disease, "Normal")
-selected_obj@meta.data$Stage[temp] = selected_obj@meta.data$Disease[temp]
+selected_obj@meta.data$Stage[temp] = as.character(selected_obj@meta.data$Disease[temp])
+
+print(unique(selected_obj@meta.data$Stage))
 
 #### 1. tsne by disease
 p <- make_tsne_plot(selected_obj, pt.size = 0.5, colors = disease_colors, guide_ncol=4) + 
@@ -355,26 +358,104 @@ p <- make_tsne_plot(selected_obj, pt.size = 0.5, colors = disease_colors, guide_
         legend.background=element_blank(),
         legend.justification = "center"
     ) + 
-    guides(color = guide_legend(nrow = 1), override.aes = list(size = 3))
+    guides(color = guide_legend(ncol = 2, override.aes = list(size = 5)))
 
 
 ggsave("tsne_by_disease.pdf", plot = p, width = 6, height = 6, dpi = dpi, units = "in")
 
 
 #### 2. tsne by stage
-p <- make_tsne_plot(selected_obj, color="Stage", colors = stage_colors, pt.size = 0.5, guide_ncol=4) + 
+p <- make_tsne_plot(selected_obj, color="Stage", colors = stage_colors, pt.size = 0.5, guide_ncol=2) + 
     theme(
         legend.position = "top",
         legend.title = element_blank(),
         legend.background=element_blank(),
         legend.justification = "center"
     ) +
-    guides(color = guide_legend(nrow = 1), override.aes = list(size = 3))
+    guides(color = guide_legend(ncol = 2, override.aes = list(size = 5)))
 ggsave("tsne_by_stage.pdf", plot = p, width = 6, height = 6, units = "in", dpi = dpi)
 
 
+p <- myDimPlot(
+    selected_obj, 
+    reduction.use = "umap", 
+    group.by = "Stage", 
+    no.legend = TRUE, 
+    do.label = TRUE, 
+    label.size = 5, 
+    do.return = TRUE, 
+    pt.size = 0.01
+)
+ggsave("umap_stage.pdf", plot=p, width=6, height=6, dpi=dpi, units="in")
+
+p <- myDimPlot(
+    selected_obj, 
+    reduction.use = "umap", 
+    group.by = "Disease", 
+    no.legend = FALSE, 
+    do.label = FALSE, 
+    do.return = TRUE, 
+    pt.size = 0.01
+) + theme(legend.position = c(0.05, 0.1))
+ggsave("umap_disease.pdf", plot=p, width=6, height=6, dpi=dpi, units="in")
+
+
+
+v = sort(as.character(unique(selected_obj@meta.data$Disease)))
+
+v = v[order(nchar(v), v)]
+
+p <- make_scatterpie_plot(
+    selected_obj, 
+    color="Stage", 
+    colors = colors, 
+    guide_ncol=4,
+    legend.position = "bottom",
+)
+ggsave("tsne_stage_scatterpie.pdf", plot=p, width=6, height=6, dpi=dpi, units="in")
+
+
+p <- make_scatterpie_plot(
+    selected_obj, 
+    color="Stage", 
+    colors = colors, 
+    guide_ncol=4,
+    legend.position = "bottom",
+    reduction.use = "umap"
+)
+ggsave("umap_stage_scatterpie.pdf", plot=p, width=6, height=6, dpi=dpi, units="in")
+
+
+if (length(unique(selected_obj@meta.data$Disease)) > 1) {
+    p <- make_scatterpie_plot(
+        selected_obj, 
+        color="Disease", 
+        colors = colors, 
+        guide_ncol=length(v),
+        legend.position = "bottom",
+        legend.breaks = v 
+    )
+    ggsave("tsne_disease_scatterpie.pdf", plot=p, width=6, height=6, dpi=dpi, units="in")
+
+
+
+    p <- make_scatterpie_plot(
+        selected_obj, 
+        color="Disease", 
+        colors = colors, 
+        guide_ncol=length(v),
+        legend.position = "bottom",
+        legend.breaks = v,
+        reduction.use = "umap" 
+    )
+    ggsave("umap_disease_scatterpie.pdf", plot=p, width=6, height=6, dpi=dpi, units="in")
+
+
+}
+
+
 #### 4. make combine barplot
-p <- make_combined_barplot(selected_obj, rel_height = c(0.3, 1), with_disease = length(unique(selected_obj@meta.data$Disease)) > 1)
+p <- make_combined_barplot(selected_obj, rel_height = c(0.3, 1), with_disease = length(unique(selected_obj@meta.data$Disease)) > 1, ncol=4)
 ggsave("barplots.pdf", plot = p, width = 15, height = 10, dpi = dpi, units = "in", limitsize = FALSE)
 
 
@@ -402,7 +483,7 @@ if(file.exists("markers_by_cluster.xlsx")) {
 }
 
 
-#### 5. make dotplot and heatmap of top10 markers
+### 5. make dotplot and heatmap of top10 markers
 # if (ncol(selected_obj@raw.data) > 30000){
 #     cells = sample(1:ncol(obj@raw.data), 30000)
 #     cells = colnames(selected_obj@raw.data)[cells]
@@ -434,16 +515,6 @@ if(file.exists("markers_by_cluster.xlsx")) {
 ### Do trajectory
 
 ### Monocle
-# devtools::load_all("/mnt/raid61/Personal_data/huangfei/UCB/git_database/monocle3/")
-
-# devtools::load_all("/mnt/raid62/Lung_cancer_10x/monocle3")
-
-meta = selected_obj@meta.data
-
-meta$Stage[!meta$Disease %in% c("LUSC", "LUAD")] = meta$Disease[!meta$Disease %in% c("LUSC", "LUAD")]
-
-
-print(unique(meta$Stage))
 
 num_cores = 10
 low_thresh = 1 ### the threshold of low-expressed
@@ -627,7 +698,6 @@ cols_for_stage = merge(selected_obj@meta.data, cols_for_stage, by = "Stage")
 
 rownames(cols_for_stage) <- cols_for_stage$Cells
 
-print(head(cols_for_stage))
 
 tempUMAP = reducedDims(sce)$UMAP
 
@@ -643,16 +713,16 @@ plot(
 )
 lines(SlingshotDataSet(sce), lwd = 3)
 
-# legend(
-#     "topright", 
-#     legends, 
-#     col=as.character(cols_for_legend),
-#     text.col="black", 
-#     pch=16, 
-#     bty="n", 
-#     cex=1,
-#     inset=c(-0.2,0)
-# )
+legend(
+    "topright", 
+    legend=legends, 
+    col=as.character(cols_for_legend),
+    text.col="black", 
+    pch=16, 
+    bty="n", 
+    cex=1,
+    inset=c(-0.2,0)
+)
 
 dev.off()
 
@@ -692,86 +762,10 @@ plot(tempUMAP, col = as.character(cols_for_stage[rownames(tempUMAP), "col"]), pc
 lines(SlingshotDataSet(sce), lwd = 3)
 
 
-# legend("right", 
-#     legends,
-#     col=cols_for_stage, 
-#     text.col="black", pch=16, bty="n", cex=1)
+legend("right", 
+    legend=legends,
+    col=cols_for_stage, 
+    text.col="black", pch=16, bty="n", cex=1)
 
 dev.off()
-
-
-# ### KEGG、GO and DOSE
-# egs <- get_entrzid(markers_by_stage)
-
-
-# kegg_stage = NULL
-# do_stage = NULL
-# go_stage = NULL
-# for(i in unique(egs$ident)) {
-#     print(i)
-#     eg <- egs[egs$ident == i,]
-
-#     temp = do_kegg(eg, cluster = i)
-#     kegg_stage = rbind(kegg_stage, temp)
-
-#     temp = do_do(eg, cluster = i)
-#     do_stage = rbind(do_stage, temp)
-
-#     temp = do_go(eg, cluster = i)
-#     go_stage = rbind(go_stage, temp)
-# }
-
-
-# egs <- get_entrzid(markers_by_cluster)
-
-
-# kegg_clt = NULL
-# do_clt = NULL
-# go_clt = NULL
-# for(i in unique(egs$ident)) {
-#     print(i)
-#     eg <- egs[egs$ident == i,]
-
-#     temp = do_kegg(eg, cluster = i)
-#     kegg_clt = rbind(kegg_clt, temp)
-
-#     temp = do_do(eg, cluster = i)
-#     do_clt = rbind(do_clt, temp)
-
-#     temp = do_go(eg, cluster = i)
-#     go_clt = rbind(go_clt, temp)
-# }
-
-
-# ### 4. save marker genes, kegg, go and dose results
-# wb = createWorkbook()
-# addWorksheet(wb, "marker genes")
-# writeData(wb, 1, markers_by_stage, rowNames = TRUE)
-
-# addWorksheet(wb, "KEGG")
-# writeData(wb, 2, kegg_stage)
-
-# addWorksheet(wb, "GO")
-# writeData(wb, 3, go_stage)
-
-# addWorksheet(wb, "DOSE")
-# writeData(wb, 4, do_stage)
-
-# saveWorkbook(wb, file = "markers_by_stage.xlsx", overwrite = T)
-
-
-# wb = createWorkbook()
-# addWorksheet(wb, "marker genes")
-# writeData(wb, 1, markers_by_cluster, rowNames = TRUE)
-
-# addWorksheet(wb, "KEGG")
-# writeData(wb, 2, kegg_clt)
-
-# addWorksheet(wb, "GO")
-# writeData(wb, 3, go_clt)
-
-# addWorksheet(wb, "DOSE")
-# writeData(wb, 4, do_clt)
-
-# saveWorkbook(wb, file = "markers_by_cluster.xlsx", overwrite = T)
 

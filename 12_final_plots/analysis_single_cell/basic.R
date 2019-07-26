@@ -7,6 +7,7 @@ load_pacakges <- function() {
     library(harmony)
     library(cowplot)
     library(ggthemes)
+    library(scatterpie)
     library(dplyr)
     library(clusterProfiler)
     library(org.Hs.eg.db)
@@ -47,8 +48,8 @@ gg_color_hue <- function(n) {
 
 
 ### extract temp information
-stage_colors = c("I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E", "LUAD_Normal"="#FECC1B", "LUSC_Normal"="#DA6906")
-disease_colors = c("LUAD" = "#0084D1", "LUAD_Normal"="#FECC1B", "Normal"="#73BDFF", "LUSC_Normal"="#DA6906", "LUSC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B")
+stage_colors = c("I"="#EC7A21", "II"="#D73F47", "III"="#65A9A3", "IV"="#4A933E", "LUAD_Normal"="#FECC1B", "LUSC_Normal"="#778793")
+disease_colors = c("LUAD" = "#0084D1", "LUAD_Normal"="#FECC1B", "Normal"="#73BDFF", "LUSC_Normal"="#778793", "LUSC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B")
 tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
 patient_colors = gg_color_hue(35)
 names(patient_colors) <- c(
@@ -438,17 +439,30 @@ environment(myDimPlot) <- asNamespace('Seurat')
 
 
 
-make_tsne_plot <- function(object, color="Disease", alpha=0.8, colors=colors, pt.size = 0.1, guide_ncol=1) {
+make_tsne_plot <- function(
+    object, 
+    color="Disease", 
+    alpha=0.8, 
+    colors=colors, 
+    pt.size = 0.1, 
+    guide_ncol=1,
+    reduction.use = "tsne"
+) {
     meta = object@meta.data
-    
-    meta = merge(meta, object@dr$tsne@cell.embeddings, by = 0)
-    
-    command <- paste('ggplot(meta, aes(x=tSNE_1, y=tSNE_2, color=', color, '))', sep = '')
-    
-    p = eval(parse(text = command))
-    
-    p <- p + 
-        geom_point_rast(alpha=alpha, size=pt.size) +
+
+    coord = object@dr[[reduction.use]]@cell.embeddings
+    colnames(coord) = c("x", "y")
+
+    meta = merge(meta, coord, by = 0)
+
+    p <- ggplot() + 
+        geom_point_rast(
+            eval(parse(text = paste0('aes(x=x, y=y, color=', color, ')'))), 
+            data=meta, 
+            alpha=alpha, 
+            size=pt.size
+        ) +
+        coord_equal() +
         # SetXAxisGG() +
         # SetYAxisGG() +
         # SetLegendPointsGG(x = 6) +
@@ -464,12 +478,109 @@ make_tsne_plot <- function(object, color="Disease", alpha=0.8, colors=colors, pt
         ) +
         guides(color = guide_legend(ncol=guide_ncol, override.aes = list(size = 10, alpha = 1))) +
         scale_color_manual(values=colors)
+
+    if (reduction.use == "tsne") {
+        p <- p + labs(x="tSNE_1", y="tSNE_2")
+    } else if (reduction.use == "umap") {
+        p <- p + labs(x="UMAP1", y="UMAP2")
+    }
     
     return(p)
 }
+
 environment(make_tsne_plot) <- asNamespace('Seurat')
 
+make_scatterpie_plot <- function(
+    object, 
+    color="Disease", 
+    alpha=0.8, 
+    colors=colors, 
+    pt.size = 0.1, 
+    guide_ncol=1,
+    reduction.use = "tsne",
+    r=0.05,
+    legend.position="none",
+    legend.direction="horizontal",
+    legend.breaks=waiver()
+) {
+    meta = object@meta.data
 
+    coord = object@dr[[reduction.use]]@cell.embeddings
+    colnames(coord) = c("x", "y")
+
+    meta = merge(meta, coord, by = 0)
+
+    scatter = eval(
+        parse(
+            text=paste0(
+                "meta %>% group_by(res.0.8, ", color, ") %>% add_tally() %>% group_by(res.0.8) %>% mutate(x1 = median(x), y1 = median(y), perc = n / sum(n)) %>% dplyr::select(res.0.8, x1, y1, perc, ", color, ") %>% unique()"
+            )
+        )
+    )
+
+    colnames(scatter)[colnames(scatter) == color] = "group"
+
+    scatter = dcast(scatter, res.0.8 + x1 + y1 ~ group, value.var="perc")
+
+    scatter[is.na(scatter)] = 0
+    scatter$r = min(max(meta$x) - min(meta$x), max(meta$y) - min(meta$y)) * r
+    
+    print(head(scatter))
+
+    clt_color = gg_color_hue(length(unique(meta$res.0.8)))
+    names(clt_color) = 1:length(unique(meta$res.0.8))
+    
+    p <- ggplot() + 
+        geom_point_rast(
+            aes(x=x, y=y, color=factor(res.0.8)), 
+            data=meta, 
+            alpha=alpha, 
+            size=pt.size
+        ) +
+        geom_scatterpie(
+            aes(
+                x=x1,
+                y=y1, 
+                group=res.0.8,
+                r=r
+            ),
+            data=scatter,
+            cols=as.character(unique(meta[, color])),
+            color=NA
+        ) +
+        coord_equal() +
+        geom_text(
+            aes(x=x1, y=y1 - r - 0.5, label=res.0.8),
+            data=scatter,
+            size = 5 
+        ) +
+        theme_bw() +
+        theme(
+            legend.position = legend.position,
+            axis.text = element_text(size = 8),
+            axis.title = element_text(size = 10),
+            legend.text = element_text(size = 8),
+            # legend.background = element_blank()
+            legend.direction=legend.direction,
+            legend.spacing.x = unit(0.1, 'cm')
+        ) +
+        guides(
+            fill = guide_legend(
+                ncol=guide_ncol, 
+                override.aes = list(size = 3, alpha = 1)
+            )
+        ) +
+        scale_color_manual(values=clt_color, breaks = c()) + 
+        scale_fill_manual(values=colors, breaks = legend.breaks)
+
+    if (reduction.use == "tsne") {
+        p <- p + labs(x="tSNE_1", y="tSNE_2", color="", fill = "")
+    } else if (reduction.use == "umap") {
+        p <- p + labs(x="UMAP1", y="UMAP2", color="", fill="")
+    }
+
+    return(p)
+}
 
 
 
@@ -750,7 +861,7 @@ make_combined_barplot <- function(
     group.type = "int", 
     rel_height = c(0.2, 1),
     with_disease=TRUE,
-    ncol=3
+    ncol=4
 ) {
     ## make percentage bar plot with stage
     meta <- object@meta.data
@@ -768,7 +879,6 @@ make_combined_barplot <- function(
     temp <- as.data.frame(
         meta %>% 
             dplyr::select(group, Stage) %>% 
-            dplyr::filter(!Stage %in% c("Normal", "CPI")) %>% 
             dplyr::group_by(group, Stage) %>% 
             dplyr::add_tally() %>% 
             unique() %>% 
@@ -777,7 +887,6 @@ make_combined_barplot <- function(
     )
     
     temp1 <- as.data.frame(table(meta$Stage))
-    temp1 <- temp1[!temp1[,1] %in% c("Normal", "CPI"), ]
     colnames(temp1) <- c("Stage", "n")
     
     temp1$group = "Total"
@@ -796,7 +905,7 @@ make_combined_barplot <- function(
         labs(y="Fraction of cells", x = "") +
         # scale_x_discrete(breaks=plot_order) + 
         guides(fill = guide_legend(ncol=4)) + 
-        scale_fill_manual(values=colors)
+        scale_fill_manual(values=stage_colors)
     
     p1_legend <- get_legend(p1)
     
@@ -863,7 +972,12 @@ make_combined_barplot <- function(
     p3 <- ggplot(data = temp, aes(x=group, y=freq, fill=PatientID)) + 
         geom_bar(stat = "identity", width = .75) + 
         coord_flip() + 
-        theme(legend.position = "right", legend.title = element_blank(), legend.justification = "center") +
+        theme(
+            legend.position = "right", 
+            legend.title = element_blank(), 
+            legend.justification = "center",
+            legend.spacing.x = unit(0.1, 'cm')
+        ) +
         labs(y="Fraction of cells", x = "") +
         # scale_x_discrete(breaks=plot_order) + 
         guides(fill = guide_legend(ncol=ncol)) + 

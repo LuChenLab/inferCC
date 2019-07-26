@@ -37,7 +37,7 @@ def main(input_dir, output_dir, n_jobs = 20):
     for i in os.listdir(input_dir):
         if i.endswith("rds"):
             tasks.append(
-                "Rscript {0} {1} {2} {3} DO".format(
+                "Rscript {0} {1} {2} {3} DO12".format(
                     os.path.join(__dir__, "pipe_seurat_monocle_slingshot.R"),
                     os.path.join(__dir__, "basic.R"),
                     os.path.join(input_dir, i),
