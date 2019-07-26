@@ -7,6 +7,7 @@ library(cowplot)
 library(openxlsx)
 library(Seurat)
 library("wesanderson")
+library(WGCNA)
 
 
 EXHAUST = c(
@@ -16,7 +17,34 @@ EXHAUST = c(
     "TIGIT",
     "LAG3",
     "NBL1",
-    "CXCL13"
+    "CXCL13",
+    "LAG3",
+    "HAVCR2",
+    "PTMS",
+    "FAM3C",
+    "IFNG",
+    "AKAP5",
+    "CD7",
+    "PHLDA1",
+    "ENTPD1",
+    "TNS3",
+    "CXCL13",
+    "RDH10",
+    "DGKH",
+    "KIR2DL4",
+    "LYST",
+    "MIR155HG",
+    "RAB27A",
+    "CSF1",
+    "TNFRSF9",
+    "CD27",
+    "CCL3",
+    "ITGAE",
+    "PAG1",
+    "TNFRSF1B",
+    "GALNT1",
+    "GBP2",
+    "MYO7A"
 )
 
 
@@ -257,46 +285,46 @@ temp = read_lfp(args[2], meta = obj@meta.data)
 dir.create(args[3], showWarnings = F, recursive = T, mode = "0755")
 
 
-# p1 <- make_heatmap(obj, group.by = "Stage", genes.use = EXHAUST, scale = T, converter = STAGE2NUM, title = "Stage")
-# 
-# p2 <- make_heatmap(obj, group.by = "T", genes.use = EXHAUST, scale = T, converter = TUMORSIZE2NUM, title = "T")
-# 
-# p3 <- make_heatmap(obj, group.by = "res.0.8", genes.use = EXHAUST, scale = T, title = "Cluster")
-# 
-# p4 <- make_heatmap(obj, group.by = "TumorSize", genes.use = EXHAUST, scale = T, title = "Tumor Size (cm)")
-# 
-# p5 <- make_heatmap(obj, group.by = "N", genes.use = EXHAUST, scale = T, converter = N2NUM, title = "N")
-# 
-# p6 <- make_heatmap(obj, group.by = "M", genes.use = EXHAUST, scale = T, converter = M2NUM, title = "M")
-# 
-# 
-# ggsave(
-#     filename = paste(args[3], "mean.pdf", sep = "/"),
-#     plot = plot_grid(p1, p2, p3, p4, p5, p6, nrow = 2),
-#     width = 12,
-#     height = 12
-# )
-# 
-# 
-# p1 <- make_heatmap(obj, group.by = "Stage", genes.use = EXHAUST, scale = T, converter = STAGE2NUM, mean = F, title = "Stage")
-# 
-# p2 <- make_heatmap(obj, group.by = "T", genes.use = EXHAUST, scale = T, converter = TUMORSIZE2NUM, mean = F, title = "T")
-# 
-# p3 <- make_heatmap(obj, group.by = "res.0.8", genes.use = EXHAUST, scale = T, mean = F, title = "Cluster")
-# 
-# p4 <- make_heatmap(obj, group.by = "TumorSize", genes.use = EXHAUST, scale = T, mean = F, title = "Tumor Size (cm)")
-# 
-# p5 <- make_heatmap(obj, group.by = "N", genes.use = EXHAUST, scale = T, converter = N2NUM, mean = F, title = "N")
-# 
-# p6 <- make_heatmap(obj, group.by = "M", genes.use = EXHAUST, scale = T, converter = M2NUM, mean = F, title = "M")
-# 
-# 
-# ggsave(
-#     filename = paste(args[3], "signle_cell.pdf", sep = "/"),
-#     plot = plot_grid(p1, p2, p3, p4, p5, p6, nrow = 2),
-#     width = 12,
-#     height = 12
-# )
+p1 <- make_heatmap(obj, group.by = "Stage", genes.use = EXHAUST, scale = T, converter = STAGE2NUM, title = "Stage")
+
+p2 <- make_heatmap(obj, group.by = "T", genes.use = EXHAUST, scale = T, converter = TUMORSIZE2NUM, title = "T")
+
+p3 <- make_heatmap(obj, group.by = "res.0.8", genes.use = EXHAUST, scale = T, title = "Cluster")
+
+p4 <- make_heatmap(obj, group.by = "TumorSize", genes.use = EXHAUST, scale = T, title = "Tumor Size (cm)")
+
+p5 <- make_heatmap(obj, group.by = "N", genes.use = EXHAUST, scale = T, converter = N2NUM, title = "N")
+
+p6 <- make_heatmap(obj, group.by = "M", genes.use = EXHAUST, scale = T, converter = M2NUM, title = "M")
+
+
+ggsave(
+    filename = paste(args[3], "mean.pdf", sep = "/"),
+    plot = plot_grid(p1, p2, p3, p4, p5, p6, nrow = 2),
+    width = 12,
+    height = 12
+)
+
+
+p1 <- make_heatmap(obj, group.by = "Stage", genes.use = EXHAUST, scale = T, converter = STAGE2NUM, mean = F, title = "Stage")
+
+p2 <- make_heatmap(obj, group.by = "T", genes.use = EXHAUST, scale = T, converter = TUMORSIZE2NUM, mean = F, title = "T")
+
+p3 <- make_heatmap(obj, group.by = "res.0.8", genes.use = EXHAUST, scale = T, mean = F, title = "Cluster")
+
+p4 <- make_heatmap(obj, group.by = "TumorSize", genes.use = EXHAUST, scale = T, mean = F, title = "Tumor Size (cm)")
+
+p5 <- make_heatmap(obj, group.by = "N", genes.use = EXHAUST, scale = T, converter = N2NUM, mean = F, title = "N")
+
+p6 <- make_heatmap(obj, group.by = "M", genes.use = EXHAUST, scale = T, converter = M2NUM, mean = F, title = "M")
+
+
+ggsave(
+    filename = paste(args[3], "signle_cell.pdf", sep = "/"),
+    plot = plot_grid(p1, p2, p3, p4, p5, p6, nrow = 2),
+    width = 12,
+    height = 12
+)
 
 
 if(!is.null(temp)) {
@@ -337,7 +365,7 @@ if(!is.null(temp)) {
             aes(x=Expression, y=Perc, color=Group)
         ) +
             geom_point() +
-            facet_wrap(.~Gene, scales = "free") +
+            facet_wrap(.~Gene, scales = "free", ncol=3) +
             stat_cor(aes(color = Group), method = "spearman") +
             geom_smooth(method = "lm", se = T) +
             scale_color_manual(values = wes_palette("Darjeeling1"))
@@ -347,10 +375,78 @@ if(!is.null(temp)) {
             filename = paste(args[3], paste0(i, ".pdf"), sep = "/"),
             plot = p,
             width = 6 * ifelse(num_genes > 3, 3, num_genes),
-            height = 6 * ceiling(num_genes / 3)
+            height = 6 * ceiling(num_genes / 3),
+            limitsize = F
         )
     }
 }
 
 
+#####
+# Try WGCNA
 
+allowWGCNAThreads(nThreads = NULL)
+
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(t(obj@scale.data), powerVector = powers, verbose = 5)
+# Plot the results:
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="green")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+#选择beta值
+best_beta=sft$powerEstimate
+
+
+net = blockwiseModules(
+    t(obj@scale.data),
+    power = sft$powerEstimate,
+    maxBlockSize = 6000,
+    TOMType = "unsigned",
+    minModuleSize = 30,
+    reassignThreshold = 0,
+    mergeCutHeight = 0.25,
+    numericLabels = TRUE,
+    pamRespectsDendro = FALSE,
+    saveTOMs = TRUE,
+    saveTOMFileBase = "AS-green-FPKM-TOM",
+    verbose = 3
+)
+
+
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+table(mergedColors)
+# Plot the dendrogram and the module colors underneath
+
+pdf("DenroAndColors.pdf", width = 16, height = 8)
+plotDendroAndColors(
+    net$dendrograms[[1]],
+    mergedColors[net$blockGenes[[1]]],
+    "Module colors",
+    dendroLabels = FALSE,
+    hang = 0.03,
+    addGuide = TRUE,
+    guideHang = 0.05
+)
+dev.off()
+
+
+#首先针对样本做个系统聚类树
+datExpr_tree<-hclust(dist(obj@raw.data), method = "average")
+par(mar = c(0,5,2,0))
+plot(datExpr_tree, main = "Sample clustering", sub="", xlab="", cex.lab = 2, 
+     cex.axis = 1, cex.main = 1,cex.lab=1)
