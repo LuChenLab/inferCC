@@ -1,0 +1,2220 @@
+---
+title: "cell module"
+author: "Zhang Yiming"
+date: "2020/3/14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+
+
+```{r include=FALSE}
+options(stringsAsFactors = F)
+##### correlation between different patients with cell types
+library(pheatmap)
+library(ggcorrplot)
+library(Hmisc)
+library(reshape2)
+library(dplyr)
+library(ggbiplot)
+library(stringr)
+library(openxlsx)
+library("FactoMineR")
+library("factoextra")
+library(ggfortify)
+library(ComplexHeatmap)
+library(ggcorrplot)
+library(RColorBrewer)
+library(scatterpie)
+library(ggpubr)
+library(ggrastr)
+```
+
+
+
+## functions
+```{R}
+
+make_corr_plot <- function(
+    data, 
+    title,
+    axis_size = 18,
+    axis_title_size = 20,
+    title_size = 25,
+    legend.position="right",
+    legend_text_size = 15,
+    legend_title_size = 20
+) {
+    r = melt(data$r)
+    p = melt(data$P)
+    r$p <- p$value
+    # r$p[is.na(r$p)] <- 0
+    
+    r$p <- -log10(r$p)
+    
+    tree <- hclust(dist(data$r))
+    r$Var1 <- factor(r$Var1, levels = tree$labels[tree$order])
+    r$Var2 <- factor(r$Var2, levels = tree$labels[tree$order])
+    
+    ggplot(r, aes(x=Var1, y=Var2, color=value, size = p)) +
+        geom_point(data = subset(r, !is.na(p))) +                                      # plot points with p values
+        geom_point(data = subset(r, !is.na(p)), pch=21, colour="grey50") +             # plot a grey border for points
+        geom_point(data = subset(r, is.na(p)), size = 8) +                             # plot points without p values
+        geom_point(data = subset(r, is.na(p)), size = 8, pch=21, colour="grey50") +    # plot a grey border for points without p values
+        labs(x="", y="", title=title, size = "-log10(P.Value)", color="Corr") +
+        theme(
+            aspect.ratio=1,
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+            plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+            legend.position = legend.position,
+            axis.text = element_text(size = axis_size),
+            axis.title = element_text(size = axis_title_size),
+            legend.text = element_text(size = legend_text_size),
+            legend.title = element_text(size = legend_title_size)
+        ) +
+        scale_color_gradient2(
+            midpoint=0, 
+            low="blue", 
+            mid="white",
+            high="red", 
+            space ="Lab",
+            limit = c(-1, 1)
+        ) + 
+        scale_size(range = c(4, 8))
+    
+}
+
+
+make_pca_plots <- function(data) {
+    tpca = prcomp(data)
+    
+    plist = list()
+    for (i in seq(1, 6, by = 2)) {
+        plist[[length(plist) + 1]] <- ggbiplot(
+            tpca,
+            ellipse=F,
+            obs.scale = 1, 
+            var.scale = 1, 
+            var.axes = F,
+            choices = c(i, i + 1),
+            # labels=sapply(rownames(temp1), function(x) { str_split(x, "-")[[1]][3] }),
+            groups=sapply(rownames(temp1), function(x) { str_split(x, "-")[[1]][3] })
+        ) +
+            scale_colour_manual(values= c("AD" = "#0084D1", "NL(AD"="#FECC1B", "NL(AD)"="#778793", "Normal"="#73BDFF", "NL(SC)"="#778793", "SC"="#A0C807"))+
+            theme_minimal(base_family = "Arial Unicode MS")+
+            theme(
+                legend.position = "none",
+                axis.text = element_text(size = 20),
+                axis.title = element_text(size = 25),
+                aspect.ratio = 1
+            )
+    }
+    
+    legend = ggbiplot(
+        tpca,
+        ellipse=F,
+        obs.scale = 1, 
+        var.scale = 1, 
+        var.axes = F,
+        choices = c(1, 2),
+        # labels=sapply(rownames(temp1), function(x) { str_split(x, "-")[[1]][3] }),
+        groups=sapply(rownames(temp1), function(x) { str_split(x, "-")[[1]][3] })
+    ) +
+        scale_colour_manual(values= c("AD" = "#0084D1", "NL(AD"="#FECC1B", "NL(AD)"="#778793", "Normal"="#73BDFF", "NL(SC)"="#778793", "SC"="#A0C807"))+
+        theme_minimal(base_family = "Arial Unicode MS")+
+        theme(
+            axis.text = element_text(size = 20),
+            axis.title = element_text(size = 25),
+            aspect.ratio = 1,
+            legend.text = element_text(size = 18),
+            legend.title = element_blank()
+        ) +
+        guides(color = guide_legend(override.aes = list(size = 10)))
+    
+    legend <- cowplot::get_legend(legend)
+    plist[[length(plist) + 1]] = legend
+    
+    cowplot::plot_grid(plotlist = plist)
+}
+
+
+make_heatmap <- function(
+    data,
+    cluster_method = "ward.D2",
+    border = TRUE,
+    scale_dot_size = 0.9,
+    row_split = NULL,
+    column_split = NULL,
+    show_row_names = FALSE
+) {
+    library(ComplexHeatmap)
+    library(stringr)
+    library(circlize)
+    
+    colors = list(
+        Stage = c(
+            "I"="#65A9A3", 
+            "II"="#4A933E", 
+            "III"="#EC7A21", 
+            "IV"="#D73F47", 
+            "LUAD_Normal"="#FECC1B", 
+            "LUSC_Normal"="#778793"
+        ),
+        Disease = c(
+            "AD" = "#0084D1", 
+            "NL(AD)"="#FECC1B", 
+            "NL(AD"="#778793", 
+            "Normal"="#73BDFF", 
+            "NL(SC)"="#778793", 
+            "SC"="#A0C807",
+            "LC"="#91822B",
+            "NL(LC)"="#EDCAB0",
+            "UPS"="#EBAAA4",
+            "NL(UPS)"="#B43018"
+        ),
+        Batch = c("1"="#E9B0B7", "2"="#90D0E0", "3"="#769982")
+    )
+    
+    
+    ra <- rowAnnotation(
+        Disease = sapply(rownames(data), function(x) { str_split(x, "-")[[1]][3] }),
+        Stage = sapply(rownames(data), function(x) { str_split(x, "-")[[1]][2] }),
+        Batch = sapply(rownames(data), function(x) { str_split(x, "-")[[1]][4] }),
+        col = colors,
+        show_annotation_name = F,
+        show_legend = T,
+        annotation_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    )
+    
+    ba <- HeatmapAnnotation(
+        Disease = sapply(colnames(data), function(x) { str_split(x, "-")[[1]][3] }),
+        Stage = sapply(colnames(data), function(x) { str_split(x, "-")[[1]][2] }),
+        Batch = sapply(colnames(data), function(x) { str_split(x, "-")[[1]][4] }),
+        col = colors,
+        show_annotation_name = T,
+        show_legend = F,
+        annotation_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    )
+    
+    
+    col_fun = colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+    colnames(data) <- str_replace(colnames(data), "-\\d+$", "")
+    rownames(data) <- str_replace(rownames(data), "-\\d+$", "")
+    Heatmap(
+        data,
+        name = "Corr",
+        col = col_fun,
+        border = border,
+        right_annotation = ra,
+        show_row_names = show_row_names,
+        show_column_names = F,
+        # bottom_annotation = ba,
+        clustering_method_rows = cluster_method,
+        clustering_method_columns = cluster_method,
+        # rect_gp = gpar(type = "none"),
+        # cell_fun = function(j, i, x, y, width, height, fill) {
+        #     s = min(unit.c(convertWidth(width, "cm"), convertHeight(height, "cm")))
+        #     grid.circle(
+        #         x = x,
+        #         y = y, 
+        #         r = s * (data[i, j] + 0.1) * scale_dot_size,
+        #         gp = gpar(col = "white", fill = fill)
+        #     )
+        # },
+        
+        row_split = row_split,
+        column_split = column_split,
+        use_raster =  T,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontsize = 0, fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        ),
+    )
+}
+
+
+
+# reorder by cutree
+.get_border <- function(groups, by = 2) {
+    library(stringr)
+    library(dplyr)
+    
+    border = as.data.frame(table(groups$groups))
+    colnames(border)[1] = "groups"
+    rownames(border) <- as.character(border$groups)
+    border <- border[order(sapply(border$groups, function(x) {
+        as.numeric(str_replace(x, "G", ""))
+    })), ]
+
+    border$ymax <- cumsum(border$Freq)
+    border$ymin <- border$ymax - border$Freq
+
+    border
+}
+
+
+# Get lower triangle of the correlation matrix
+.get_lower_tri <- function(cormat, show.diag = FALSE) {
+    if (is.null(cormat)) {
+        return(cormat)
+    }
+    cormat[upper.tri(cormat)] <- NA
+    if (!show.diag) {
+        diag(cormat) <- NA
+    }
+    return(cormat)
+}
+
+# Get upper triangle of the correlation matrix
+.get_upper_tri <- function(cormat, show.diag = FALSE) {
+    if (is.null(cormat)) {
+        return(cormat)
+    }
+    cormat[lower.tri(cormat)] <- NA
+    if (!show.diag) {
+        diag(cormat) <- NA
+    }
+    return(cormat)
+}
+
+
+make_corr_piechart <- function(
+    data,
+    groups,
+    rowOrder,
+    k = 8,
+    r = 2,
+    by = 3,
+    text_position = c(-2, -2)
+) {
+    library(ggplot2)
+    library(scatterpie)
+    library(dplyr)
+    library(reshape2)
+    library(cowplot)
+    
+    # justify group order
+    groups <- as.data.frame(groups)
+    groups <- groups[rowOrder, , drop = F]
+    groups$groups <- factor(groups$groups, levels = unique(groups$groups))
+    groups$groups <- as.numeric(groups$groups)
+    groups$groups <- as.character(paste0("G", groups$groups))
+    
+    # calculate the group border
+    border <- .get_border(groups, rowOrder)
+    
+    # calculate the group compositions
+    temp <- as.data.frame(groups)
+    temp$groups <- as.character(temp$groups)
+    temp$group <- sapply(rownames(temp), function(x) {
+        str_split(x, "-")[[1]][by]
+    })
+    
+    temp <- temp %>%
+        group_by(groups, group) %>%
+        add_tally() %>%
+        mutate(perc = n / sum(n)) %>%
+        unique() %>%
+        as.data.frame()
+
+    temp1 = temp
+    temp <- dcast(temp, groups~group, value.var = "perc", fun.aggregate = mean, fill = 0)
+
+    temp$x = border[temp$groups, "ymin"] + (border[temp$groups, "ymax"] - border[temp$groups, "ymin"]) / 2 - 2
+    temp$y = border[temp$groups, "ymin"] + (border[temp$groups, "ymax"] - border[temp$groups, "ymin"]) / 2 + 1
+    temp <- temp[, c("x", "y", "groups", colnames(temp)[!colnames(temp) %in% c("x", "y", "groups")])]
+    # temp$groups <- sapply(temp$groups, function(x) { .id_mapper(x, k) })
+    
+    # make the correlation
+    mat = data[rowOrder, rowOrder]
+    mat <- .get_lower_tri(mat)
+    mat <- melt(as.matrix(mat))
+    mat[mat$Var1 == mat$Var2, "value"] = 1
+
+    p <- ggplot() +
+        geom_point(
+            aes(
+                x=Var1,
+                y=Var2,
+                color = value
+            ),
+            data = mat[!is.na(mat$value), ],
+            inherit.aes = F
+        ) +
+        scale_color_gradient2(
+            low = "#6D9EC1",
+            mid = "white",
+            high = "#E46726",
+            limit = c(-1, 1),
+            name = "Corr"
+        ) +
+        coord_equal() +
+        theme_void(base_family = "Arial Unicode MS") +
+        geom_segment(  # 横线
+            aes(
+                x = ymin + 0.5,
+                y = ymin + 0.5,
+                xend = ymax + 0.5,
+                yend = ymin + 0.5
+            ),
+            data = border,
+            inherit.aes = FALSE
+        ) +
+        geom_segment(  # 竖线
+            aes(
+                x = ymax + 0.5,
+                y = ymin + 0.5,
+                xend = ymax + 0.5,
+                yend = ymax + 0.5
+            ),
+            data = border,
+            inherit.aes = FALSE
+        ) +
+        geom_text(
+            aes(
+                x = x,
+                y = y,
+                label = k - as.numeric(str_replace_all(groups, "G", "")) + 1
+            ),
+            size = 5,
+            angle = -135,
+            data = temp
+        )
+        labs(x = "", y = "", fill = "")
+
+    legend <- get_legend(p)
+
+    p <- p + theme(legend.position = "none")
+
+    plist <- list()
+    for (i in unique(temp1$groups)) {
+        temp2 = temp1[temp1$groups == i, ]
+
+        plist[[as.character(i)]] = ggpie(
+            data = temp2,
+            "perc",
+            fill = "group",
+            palette = c(
+                "AD" = "#0084D1", 
+                "NL(AD)"="#FECC1B", 
+                "NL(AD"="#778793", 
+                "Normal"="#73BDFF", 
+                "NL(SC)"="#778793", 
+                "SC"="#A0C807",
+                "LC"="#91822B",
+                "NL(LC)"="#EDCAB0",
+                "UPS"="#EBAAA4",
+                "NL(UPS)"="#B43018"
+            ),
+            font.family = "Arial Unicode MS"
+        ) +
+            theme(
+                legend.position = "none",
+                axis.text = element_blank(),
+                plot.title = element_text(hjust = 0.5, vjust = -1),
+                plot.margin = unit(c(0, 0, 0, 0), "cm")
+            ) +
+            labs(title = k - as.numeric(str_replace_all(i, "G", "")) + 1)
+    }
+    
+    temp_p <- ggpie(
+        data = temp1,
+        "perc",
+        fill = "group",
+        palette = c(
+            "AD" = "#0084D1", 
+            "NL(AD)"="#FECC1B", 
+            "NL(AD"="#778793", 
+            "Normal"="#73BDFF", 
+            "NL(SC)"="#778793", 
+            "SC"="#A0C807",
+            "LC"="#91822B",
+            "NL(LC)"="#EDCAB0",
+            "UPS"="#EBAAA4",
+            "NL(UPS)"="#B43018"
+        )
+    ) +
+        labs(fill = "Disease") +
+        theme(legend.position = "right") +
+        guides(fill = guide_legend(ncol = 2))
+    
+    pie <- plot_grid(plotlist = rev(plist), nrow = 2)
+    pie <- plot_grid(
+        pie, 
+        ggplot() + theme_void(), 
+        get_legend(temp_p), 
+        ggplot() + theme_void(),
+        legend, 
+        nrow = 1, 
+        rel_widths = c(0.6, 0.05, 0.2, 0.05, 0.1)
+    )
+    
+    print(
+        pie, 
+        vp = grid::viewport(
+            name = "piechart", 
+            x = unit(0.45, "npc"), 
+            y = unit(0.2, "npc"), 
+            clip = "off", 
+            width = unit(0.9, "npc"), 
+            height = unit(0.3, "npc")
+        )
+    )
+    print(
+        p,
+        vp = grid::viewport(
+            name = "rotate",
+            x = unit(0.5, "npc"),
+            y = unit(0.45, "npc"),
+            angle = 135,
+            clip = "off",
+            width = unit(0.8, "npc"),
+            height = unit(0.7, "npc")
+        )
+    )
+}
+
+
+
+make_corr_group_composition_heatmap <- function(
+    data,
+    groups,
+    k = 8,
+    perc = TRUE
+) {
+    library(ComplexHeatmap)
+    library(circlize)
+    data = temp_cor
+
+    groups <- as.data.frame(groups)
+    groups$Disease <- sapply(rownames(groups), function(x) {
+        str_split(x, "-")[[1]][3]
+    })
+    groups$value = 1
+    groups <- dcast(groups, groups~Disease, fun.aggregate = sum, value.var = "value")
+    groups$groups <- max(groups$groups) - groups$groups + 1
+    rownames(groups) <- groups$groups
+    groups <- groups[, colnames(groups) != "groups"]
+    
+    cell_fun = function(j, i, x, y, width, height, fill) {
+        if (groups[i, j] > 0) {
+            grid.text(sprintf("%d", groups[i, j]), x, y, gp = gpar(fontsize = 10))
+        }
+    }
+    name = "Num. of samples"
+
+    if (perc) {
+        groups = apply(groups, 2, function(col) {
+            col / sum(col)
+        })
+        groups = groups
+        cell_fun = function(j, i, x, y, width, height, fill) {
+           if (groups[i, j] > 0) {
+               grid.text(sprintf("%.1f", groups[i, j] * 100), x, y, gp = gpar(fontsize = 10))
+           }
+        }
+        name = "%"
+    }
+    
+    stats = summary(as.vector(as.matrix(groups)))
+
+    col_fun = colorRamp2(
+        c(stats[1], stats[3], stats[6]), 
+        c("#6D9EC1", "white", "#E46726")
+    )
+    
+    if (ncol(groups) == 2) {
+        col_fun = colorRamp2(
+            c(stats[1], stats[6]), 
+            c("#6D9EC1", "#E46726")
+        )
+    }
+    
+    Heatmap(
+        as.matrix(groups),
+        name = name,
+        cell_fun = cell_fun,
+        col = col_fun,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        ),
+        use_raster = T
+    )
+}
+
+
+make_piechart_of_stages_by_h <- function(h, ncol) {
+    # meta$Disease[meta$Disease %in% c("NL(SC)", "NL(AD)","NL")] = "NL"
+    # meta <- meta[!is.na(meta$Stage), ]
+    mtx = h@matrix
+
+    o <- row_order(h)
+    tree = NULL
+    for (i in 1:length(o)) {
+        temp = data.frame(
+            Clt = rep(i, length(o[[i]])), 
+            SampleID = rownames(mtx)[o[[i]]]
+        )
+        tree <- rbind(tree, temp)
+    }
+
+    tree$Disease = sapply(tree$SampleID, function(x) {
+        str_split(x, "-")[[1]][3]
+    })
+    
+    temp <- tree %>%
+        group_by(Disease, Clt) %>%
+        add_tally() %>%
+        dplyr::select(Clt, Disease, n) %>%
+        unique() %>%
+        group_by(Clt) %>%
+        mutate(label = paste0(Disease, "(", round(n / sum(n) * 100, digits = 2), "%)")) %>%
+        as.data.frame()
+
+    plist = list()
+    for (i in sort(unique(temp$Clt))) {
+        plist[[length(plist) + 1]] <- ggpie(
+            temp[temp$Clt == i, ],
+            "n", 
+            label = "label", 
+            fill = "Disease", 
+            color = "white",
+            palette =  c( 
+                "LUAD" = "#0084D1",  "NL(AD)"="#FECC1B",  
+                "NL"="#778793", "AD" = "#0084D1", "SC"="#A0C807",
+                "BSPN"="#C93311",  "NL(SC)"="#778793",  "LUSC"="#A0C807",
+                "LC"="#91822B", "NL(LC)"="#EDCAB0",
+                "UPS"="#EBAAA4", "NL(UPS)"="#B43018"
+            ),
+            title = i,
+            lab.pos = "in",
+            font.family = "Arial Unicode MS"
+        ) + theme(
+            legend.position = "none", 
+            plot.margin = unit(c(0, 0, 0, 0), "cm"),
+            title = element_text(size = 15),
+            panel.background = element_blank(),
+            text = element_text(size = 12)
+        )
+    }
+    
+    cowplot::plot_grid(plotlist = plist, ncol = ncol, scale = 1.1)
+}
+
+
+### using cutree and max number of samples as label
+make_heatmap_number_merged <- function(
+    data, 
+    scale_dot_size=0.9, 
+    row_split=NULL, column_split=NULL,
+    cluster_rows = T, cluster_columns = T,
+    show_row_names = F, show_column_names = T,
+    only_non_immu = FALSE, 
+    only_immu = FALSE,
+    batch = NULL, col_fun=NULL
+) {
+    
+    if (only_non_immu) {
+        data = data[, !colnames(data) %in% immu_cells]
+    } else if (only_immu) {
+        data = data[, colnames(data) %in% immu_cells]
+    }
+    
+    if (is.null(col_fun)) {
+        col_fun <- colorRamp2(c(0, 0.5, 1), c("blue", "white", "red"))
+    }
+    
+    ra <- rowAnnotation(
+        Stage = sapply(rownames(data), function(x) { str_split(x, "-")[[1]][2] }),
+        col = list(
+            Stage=c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "Normal"="#73BDFF")
+        ), 
+        show_annotation_name = F, show_legend = T,
+        annotation_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    )
+    
+    if (!is.null(batch)) {
+        ra <- rowAnnotation(
+            Stage = sapply(rownames(data), function(x) { str_split(x, "-")[[1]][2] }),
+            Batch = ifelse(batch == 3, "Lambrechts", "WCH"),
+            col = list(
+                Stage=c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "Normal"="#73BDFF"),
+                Batch = c("WCH"="#E9B0B7", "Lambrechts"="#90D0E0", "3"="#769982")
+            ), 
+            show_annotation_name = F, show_legend = T,
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+    
+    Heatmap(
+        data,
+        name = "Weight",
+        col = col_fun,
+        right_annotation = ra,
+        # bottom_annotation = ba,
+        show_row_names = show_row_names,
+        show_column_names = show_column_names,
+        row_split = row_split,
+        column_split = column_split,
+        cluster_rows = cluster_rows,
+        cluster_columns = cluster_columns,
+        border = T,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        ),
+        use_raster = T
+    )
+}
+
+kmean_cluster <- function(data, k=4, seed=42) {
+    set.seed(seed)
+    
+    temp_kmeans <- kmeans(data, k)
+    temp_tree <- as.data.frame(temp_kmeans$cluster)
+    colnames(temp_tree) <- "Clt"
+    temp_tree
+}
+```
+
+
+## Loading meta
+```{R}
+immu_cells = c(
+    "Tregs", "Mφ", "CD8", "Mast", "NK",
+    "CD4", "DC", "B", "Gran"
+)
+
+
+short_names <- c(
+    "APII"="AT2",
+    "Alveolar II"="AT2",
+    "Basal"="Basal",
+    "B cells"="B",
+    "CD4+"="CD4",
+    "CD4"="CD4",
+    "CD8+"="CD8",
+    "CD8"="CD8",
+    "Ciliated"="Cilia",
+    "Club"="Club",
+    "DC"="DC",
+    "Dendritic"="DC",
+    "Endothelial"="EC",
+    "Epithelial"="Epi",
+    "Exhaust T"="Exh T",
+    "Fibroblasts"="Fib",
+    "Granulocyte"="Gran",
+    "Mast"="Mast",
+    "Mascrophages"="Mφ",
+    "Macrophages"="Mφ",
+    "Monocytes"="Mφ",
+    "Neuroendocrine"="NE",
+    "NK"="NK",
+    "Tregs"="Tregs"
+)
+
+short_names <- as.data.frame(short_names)
+
+meta = readRDS(full.path("11_CNV/meta.rds"))
+meta$Immu <- meta$cell_short %in% immu_cells
+
+# meta$cell_short[meta$cell_short == "Mφ"] = "Mo"
+meta$Disease = as.character(meta$Disease)
+meta$Disease <- sapply(meta$Disease, function(x) {
+    disease = c(
+        "LUAD"="AD",
+        "LUSC"="SC",
+        "LUAD_Normal"="NL(AD)",
+        "LUSC_Normal"="NL(SC)",
+        "LULC"="LC",
+        "LULC_Normal"="NL(LC)",
+        "Pleiomorphic"="UPS",
+        "Pleiomorphic Normal"="NL(UPS)"
+    )
+    
+    as.character(disease[x])
+})
+
+meta <- meta %>%
+    group_by(SampleID) %>%
+    add_tally() %>%
+    as.data.frame()
+
+meta$sizeFactor <- (as.numeric(as.character(meta$n)) / min(as.numeric(as.character(meta$n))))
+meta <- meta[, colnames(meta) != "n"]
+rownames(meta) <- meta$Cells
+
+axis_size = 18
+axis_title_size = 20
+title_size = 25
+legend.position="right"
+legend_text_size = 15
+legend_title_size = 20
+
+
+my_theme <- theme(
+    aspect.ratio=1,
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+    legend.position = legend.position,
+    axis.text = element_text(size = axis_size),
+    axis.title = element_text(size = axis_title_size),
+    legend.text = element_text(size = legend_text_size),
+    legend.title = element_text(size = legend_title_size),
+    panel.grid = element_blank()
+)
+```
+
+
+```{R}
+## 每个患者不同疾病不同时期统计
+temp <- meta %>%
+    dplyr::select(PatientID, Stage, Disease) %>%
+    unique() %>%
+    group_by(Stage, Disease) %>%
+    add_tally() %>%
+    dplyr::select(Stage, Disease, n) %>%
+    unique() %>%
+    as.data.frame()
+
+## 每种细胞类型不同疾病比例
+temp <- meta %>%
+    group_by(cell_short, Disease) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Disease, n) %>%
+    unique() %>%
+    group_by(Disease) %>%
+    mutate(n = n / sum(n) * 100) %>%
+    dplyr::select(cell_short, Disease, n) %>%
+    unique() %>%
+    as.data.frame()
+
+
+## ATII和Basal不同疾病不停时期的比例
+temp = meta[meta$cell_short %in% c("AT2", "Basal"), ] %>%
+    group_by(cell_short, Stage, Disease) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Disease, Stage, n) %>%
+    unique() %>%
+    group_by(cell_short, Disease) %>%
+    mutate(p = n / sum(n) * 100) %>%
+    as.data.frame()
+
+
+ggplot(temp[str_detect(temp$Disease, "(AD|SC)"), ], aes(x=Stage, y=p, fill = Disease)) +
+    geom_bar(stat = "identity", position = position_dodge()) +
+    facet_grid(.~cell_short)
+```
+
+
+
+## All sample
+```{r fig.height=4, fig.width=6}
+dir.create("02_rds/heatmap", showWarnings = F)
+dir.create("02_rds/heatmap/corr_comp/num", showWarnings = F, recursive = T)
+dir.create("02_rds/heatmap/corr_comp/perc", showWarnings = F, recursive = T)
+
+temp <- meta[str_detect(meta$Disease, "^(AD|SC)$") & !meta$cell_short %in% immu_cells, ] %>%
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor, Immu) %>%
+    unique() %>%
+    group_by(PatientID, Disease, Immu) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+temp2 = temp1
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 4, column_split = 4)
+
+draw(h)
+
+pdf(full.path("02_rds/heatmap/cell_corr_patients_AD_SC.pdf"), width = 5, height = 4)
+draw(h)
+dev.off()
+```
+
+
+
+```{r fig.height=4, fig.width=6}
+temp <- meta[str_detect(meta$Disease, "^(AD|SC)$") & meta$Malignant & !meta$cell_short %in% immu_cells, ] %>%
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor, Immu) %>%
+    unique() %>%
+    group_by(PatientID, Disease, Immu) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+temp2 = temp1
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 4, column_split = 4)
+
+draw(h)
+
+pdf(full.path("02_rds/heatmap/cell_corr_patients_AD_SC_malignant.pdf"), width = 5, height = 4)
+draw(h)
+dev.off()
+```
+
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+contrib = melt(pca.var$contrib)
+contrib$Vs = "AD_vs_SC"
+contrib$Type = "All"
+```
+
+
+```{r fig.height=4, fig.width=6}
+# temp <- meta %>%
+#     group_by(PatientID, Disease, cell_short) %>%
+#     add_tally() %>%
+#     dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+#     unique() %>%
+#     group_by(PatientID, Disease) %>%
+#     mutate(p = n / sum(n)) %>%
+#     as.data.frame()
+# 
+# 
+# temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+# 
+# temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+# rownames(temp1) <- temp1$PatientID
+# temp1 <- temp1[, colnames(temp1) != "PatientID"]
+# 
+# temp_cor <- as.data.frame(cor(t(temp1)))
+# 
+# h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 6, column_split = 6)
+
+# tiff(full.path("02_rds/heatmap/cell_corr_patients_scaled.tiff"), width = 6, height = 4, compression = "lzw", units = "in", res = 1200)
+# draw(h)
+# dev.off()
+```
+
+```{R}
+make_pca_analysis(temp1, full.path("02_rds/pca/all_cell_al_sample"))
+```
+
+
+
+```{r}
+ggsave(
+    filename = full.path("02_rds/heatmap/cell_corr_patients_scaled_piechart.pdf"),
+    plot = make_piechart_of_stages_by_h(h, 3),
+    width = 9,
+    height = 6
+)
+```
+
+
+### Immune
+```{r}
+temp <- meta[meta$cell_short %in% immu_cells & str_detect(meta$Disease, "(AD|SC)"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+# make_pca_analysis(temp1, full.path("02_rds/pca/all_sample_immune"))
+
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 6, column_split = 6)
+
+draw(h)
+
+# pdf(full.path("02_rds/heatmap/cell_corr_patients_immune.pdf"), width = 10, height = 8)
+# draw(h)
+# dev.off()
+```
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+temp = melt(pca.var$contrib)
+temp$Vs = "AD_vs_SC"
+temp$Type = "Immune"
+contrib = rbind(contrib, temp)
+```
+
+
+```{r}
+p <- make_piechart_of_stages_by_h(h, 3)
+print(p)
+
+
+ggsave(
+    filename = full.path("02_rds/heatmap/cell_corr_patients_immune_piechart.pdf"),
+    plot = p,
+    width = 9,
+    height = 6
+)
+```
+
+
+### Non-Immune
+```{r}
+temp <- meta[!meta$cell_short %in% c(immu_cells) & str_detect(meta$Disease, "(AD|SC)"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+make_pca_analysis(temp1, full.path("02_rds/pca/all_sample_non_immune"))
+
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 4, column_split = 4)
+
+draw(h)
+
+# pdf(full.path("02_rds/heatmap/cell_corr_patients_non_immune.pdf"), width = 10, height = 8)
+# draw(h)
+# dev.off()
+```
+
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+temp = melt(pca.var$contrib)
+temp$Vs = "AD_vs_SC"
+temp$Type = "Stromal"
+contrib = rbind(contrib, temp)
+```
+
+
+
+```{r}
+p <- make_piechart_of_stages_by_h(h, 3)
+print(p)
+
+
+ggsave(
+    filename = full.path("02_rds/heatmap/cell_corr_patients_non_immune_piechart.pdf"),
+    plot = p,
+    width = 9,
+    height = 6
+)
+```
+
+
+## LUAD
+
+```{r}
+temp <- meta[meta$Disease %in% c("AD", "NL(AD)"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+# make_pca_analysis(temp1, full.path("02_rds/pca/AD_immune"))
+
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 3, column_split = 3)
+
+draw(h)
+
+# pdf(full.path("02_rds/heatmap/cell_corr_patients_AD.pdf"), width = 10, height = 8)
+# draw(h)
+# dev.off()
+```
+
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+temp = melt(pca.var$contrib)
+temp$Vs = "AD_vs_NL"
+temp$Type = "All"
+contrib = rbind(contrib, temp)
+```
+
+### Immune
+```{r}
+temp <- meta[meta$cell_short %in% immu_cells & meta$Disease %in% c("AD", "NL(AD)"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+# make_pca_analysis(temp1, full.path("02_rds/pca/AD_immune"))
+
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 3, column_split = 3)
+
+draw(h)
+
+# pdf(full.path("02_rds/heatmap/cell_corr_patients_AD_immune.pdf"), width = 10, height = 8)
+# draw(h)
+# dev.off()
+```
+
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+temp = melt(pca.var$contrib)
+temp$Vs = "AD_vs_NL"
+temp$Type = "Immune"
+contrib = rbind(contrib, temp)
+```
+
+
+```{r}
+p <- make_piechart_of_stages_by_h(h, 3)
+print(p)
+
+
+ggsave(
+    filename = full.path("02_rds/heatmap/cell_corr_patients_AD_immune_piechart.pdf"),
+    plot = p,
+    width = 9,
+    height = 3
+)
+```
+
+
+### Non-Immune
+```{r}
+temp <- meta[!meta$cell_short %in% immu_cells & meta$Disease %in% c("AD", "NL(AD)"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+# make_pca_analysis(temp1, full.path("02_rds/pca/AD_non_immune"))
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 3, column_split = 3)
+
+
+
+get_row_order <- function(h) {
+    or = c()
+    temp = row_order(h)
+    for (i in temp) {
+        or = c(or, i)
+    }
+    or
+}
+
+
+# make_corr_piechart(temp1, row_ord, rowOrder = get_row_order(h))
+
+
+
+draw(h)
+
+# pdf(full.path("02_rds/heatmap/cell_corr_patients_AD_non_immune.pdf"), width = 10, height = 8)
+# draw(h)
+# dev.off()
+```
+
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+temp = melt(pca.var$contrib)
+temp$Vs = "AD_vs_NL"
+temp$Type = "Stromal"
+contrib = rbind(contrib, temp)
+```
+
+
+
+```{r}
+p <- make_piechart_of_stages_by_h(h, 3)
+print(p)
+
+
+ggsave(
+    filename = full.path("02_rds/heatmap/cell_corr_patients_AD_non_immune_piechart.pdf"),
+    plot = p,
+    width = 9,
+    height = 3
+)
+```
+
+
+## LUSC
+
+```{r}
+temp <- meta[meta$Disease %in% c("SC", "NL(SC)"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+# make_pca_analysis(temp1, full.path("02_rds/pca/AD_immune"))
+
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 3, column_split = 3)
+
+draw(h)
+
+# pdf(full.path("02_rds/heatmap/cell_corr_patients_SC.pdf"), width = 10, height = 8)
+# draw(h)
+# dev.off()
+```
+
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+temp = melt(pca.var$contrib)
+temp$Vs = "SC_vs_NL"
+temp$Type = "All"
+contrib = rbind(contrib, temp)
+```
+
+
+### Immune
+```{r}
+temp <- meta[meta$cell_short %in% immu_cells & meta$Disease %in% c("SC", "NL(SC)"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+make_pca_analysis(temp1, full.path("02_rds/pca/SC_immune"))
+
+
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 3, column_split = 3)
+
+draw(h)
+
+# pdf(full.path("02_rds/heatmap/cell_corr_patients_SC_immune.pdf"), width = 10, height = 8)
+# draw(h)
+# dev.off()
+```
+
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+temp = melt(pca.var$contrib)
+temp$Vs = "SC_vs_NL"
+temp$Type = "Immune"
+contrib = rbind(contrib, temp)
+```
+
+
+```{r}
+p <- make_piechart_of_stages_by_h(h, 3)
+print(p)
+
+
+ggsave(
+    filename = full.path("02_rds/heatmap/cell_corr_patients_SC_immune_piechart.pdf"),
+    plot = p,
+    width = 9,
+    height = 3
+)
+```
+
+### Non-Immune
+```{r}
+temp <- meta[!meta$cell_short %in% immu_cells & meta$Disease %in% c("SC", "NL(SC)"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+# make_pca_analysis(temp1, full.path("02_rds/pca/SC_non_immune"))
+
+
+temp_cor <- as.data.frame(cor(t(temp1)))
+
+h <- make_heatmap(temp_cor, scale_dot_size = 0.4, row_split = 3, column_split = 3)
+
+draw(h)
+
+# pdf(full.path("02_rds/heatmap/cell_corr_patients_SC_non_immune.pdf"), width = 10, height = 8)
+# draw(h)
+# dev.off()
+```
+
+
+```{r}
+res.pca = prcomp(temp1)
+pca.var = get_pca_var(res.pca)
+
+temp = melt(pca.var$contrib)
+temp$Vs = "SC_vs_NL"
+temp$Type = "Stromal"
+contrib = rbind(contrib, temp)
+```
+
+
+```{r}
+p <- make_piechart_of_stages_by_h(h, 3)
+print(p)
+
+
+ggsave(
+    filename = full.path("02_rds/heatmap/cell_corr_patients_SC_non_immune_piechart.pdf"),
+    plot = p,
+    width = 9,
+    height = 3
+)
+```
+
+
+```{r}
+saveRDS(contrib, full.path("11_CNV/sc_contrib.rds"))
+```
+
+
+```{r fig.height=4, fig.width=8}
+contrib$Type = factor(contrib$Type, levels = c("All", "Stromal", "Immune"))
+
+temp = contrib[contrib$Var2 == "Dim.1" & contrib$Vs == "AD_vs_SC", ] %>%
+    group_by(Var1, Var2) %>%
+    mutate(val = median(value)) %>%
+    dplyr::select(Var1, Var2, val) %>%
+    unique() %>%
+    as.data.frame()
+
+contrib$Var1 <- factor(contrib$Var1, levels = temp$Var1[order(temp$val, decreasing = T)])
+
+p <- ggplot(
+    contrib[contrib$Var2 == "Dim.1" & contrib$Type != "All", ], 
+    aes(x=Var1, y=value, fill=Vs, label = round(value, digits = 1))
+    ) +
+    geom_bar(stat = "identity", position = position_dodge()) +
+    # geom_text(position = position_dodge(width = 1), angle = 90) +
+    facet_grid(.~Type, scales = "free", space = "free") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        plot.title = element_text(hjust = 0.5, size = 15), 
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12, angle = 90, hjust = 1, vjust = 0.5),
+        panel.grid = element_blank(),
+        axis.title = element_text(size = 15),
+        strip.text = element_text(size = 15),
+        legend.position = c(0.9, 0.8),
+        legend.background = element_blank()
+    ) +
+    labs(
+        x = "", y = "Contributions(%)", 
+        title = "Contribution of cells to Dim-1",
+        fill = ""
+    )
+   
+
+ggsave(
+    filename = full.path("02_rds/pca/contrib_barplot.pdf"),
+    width = 8, height = 4, plot = p, device = cairo_pdf
+) 
+```
+
+
+### Make different samples by cell weight
+```{r}
+temp <- meta[!meta$cell_short %in% immu_cells & meta$Disease %in% c("AD"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+rownames(temp) <- make.unique(temp$PatientID)
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+h <- make_heatmap_number_merged(
+    temp1,
+    row_split = 5, # temp_tree[rownames(temp1), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = T, cluster_columns = T,
+    show_column_names = T,
+    batch = temp[rownames(temp1), "Batch"]
+)
+
+
+pdf(full.path("02_rds/heatmap/cell_weight_AD.pdf"), width = 4, height = 3)
+draw(h)
+dev.off()
+```
+
+
+```{r}
+temp <- meta[!meta$cell_short %in% immu_cells & meta$Disease %in% c("AD") & meta$Batch == 3, ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+rownames(temp) <- make.unique(temp$PatientID)
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+h <- make_heatmap_number_merged(
+    temp1,
+    # row_split = 5, # temp_tree[rownames(temp1), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = T, cluster_columns = T,
+    show_column_names = T, col_fun = colorRamp2(c(0, 0.15, 0.3), c("blue", "white", "red"))
+)
+
+
+# pdf(full.path("02_rds/heatmap/cell_weight_AD_NM.pdf"), width = 4, height = 3)
+draw(h)
+# dev.off()
+```
+
+
+```{r}
+tree = NULL
+o <- row_order(h)
+for (i in 1:length(o)) {
+    tree = rbind(data.frame(
+        PatientID = rownames(temp1)[o[[i]]],
+        Clt = rep(i, length(o[[i]]))
+    ), tree)
+}
+```
+
+
+
+```{r}
+temp <- meta[!meta$cell_short %in% immu_cells & meta$Disease %in% c("SC"), ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+rownames(temp) <- make.unique(temp$PatientID)
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+h <- make_heatmap_number_merged(
+    temp1,
+    row_split = 5, 
+    # column_split = rownames(temp_tree),
+    cluster_rows = T, cluster_columns = T,
+    show_column_names = T,
+    batch = temp[rownames(temp1), "Batch"]
+)
+
+pdf(full.path("02_rds/heatmap/cell_weight_SC.pdf"), width = 4, height = 3)
+draw(h)
+dev.off()
+```
+
+
+
+```{r}
+temp <- meta[!meta$cell_short %in% immu_cells & meta$Disease %in% c("SC") & meta$Batch == 3, ] %>% 
+    group_by(PatientID, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Disease, cell_short, Stage, n, Batch, sizeFactor) %>%
+    unique() %>%
+    mutate(n = n / sizeFactor) %>%
+    group_by(PatientID, Disease) %>%
+    mutate(p = n / sum(n))
+
+temp = as.data.frame(temp)
+temp$PatientID = paste(temp$PatientID, temp$Stage, temp$Disease, temp$Batch, sep = "-")
+
+temp1 = dcast(temp, PatientID~cell_short, value.var = "p", fill = 0, fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+temp1 <- temp1[, colnames(temp1) != "PatientID"]
+
+
+h <- make_heatmap_number_merged(
+    temp1,
+    # row_split = 5, # temp_tree[rownames(temp1), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = T, cluster_columns = T,
+    show_column_names = T, col_fun = colorRamp2(c(0, 0.15, .3), c("blue", "white", "red"))
+)
+
+
+pdf(full.path("02_rds/heatmap/cell_weight_SC_NM.pdf"), width = 4, height = 3)
+draw(h)
+dev.off()
+```
+
+
+```{r}
+o <- row_order(h)
+for (i in 1:length(o)) {
+    tree = rbind(data.frame(
+        PatientID = rownames(temp1)[o[[i]]],
+        Clt = rep(i, length(o[[i]]))
+    ), tree)
+}
+
+tree$PatientID = sapply(tree$PatientID, function(x) {
+    str_split(x, "-")[[1]][1]
+})
+
+
+write.csv(tree, full.path("02_rds/heatmap/disease_subtypes.csv"))
+```
+
+
+## Piechart of subtypes
+### process meta info
+```{r}
+sample_meta <- read.xlsx(full.path("肺癌单细胞测序纳入病人基本信息定稿2020年3月终版.xlsx"))
+sample_meta$PatientID <- sapply(sample_meta$Patient.number, function(x) {
+    if (str_detect(x, "LUAD")) {
+        str_replace_all(x, "LUAD", "PA")
+    } else {
+        str_replace_all(x, "LUSC", "PS")
+    }
+    
+})
+
+tree$PatientID = sapply(tree$PatientID, function(x) {
+    str_split(x, "-")[[1]][1]
+})
+
+
+tree <- merge(tree, sample_meta, by = "PatientID")
+
+
+tree$Clt = sapply(paste(tree$Cancer.type, tree$Clt, sep = "_"), function(x) { 
+    groups = c(
+        "LUAD_1" = "ATII_high", "LUAD_2" = "Fib-high", "LUAD_3" = "NE-high", 
+        "LUAD_4"="Mix", "LUAD_5"="ATII-hybrid",
+        "LUSC_1" = "Fib_high", "LUSC_2" = "ATII-high", "LUSC_3" = "Mix", 
+        "LUSC_4"="Basal-high", "LUSC_5"="Basal-hybrid"
+    )
+    
+    groups[[x]] 
+})
+```
+
+```{r}
+make_piechart_of_subtypes <- function(tree, group.by, lab.adjust = 0) {
+    tree$group = tree[, group.by]
+
+    temp <- tree %>%
+        group_by(Clt, Cancer.type, group) %>%
+        add_tally() %>%
+        dplyr::select(Clt, Cancer.type, group, n) %>%
+        unique() %>%
+        group_by(Clt, Cancer.type) %>%
+        mutate(p = round(n / sum(n) * 100, 2)) %>%
+        as.data.frame()
+    
+    temp$labs = paste0(temp$group, "(", temp$p, "%)")
+    
+    subtypes = unique(tree$group)
+    colors = wes_palette("Darjeeling1", length(subtypes), "continuous")
+    names(colors) = subtypes
+    
+    plist = list()
+    for (i in unique(temp$Cancer.type)) {
+        temp1 = temp[temp$Cancer.type == i, ]
+        
+        temp_list = list()
+        
+        for (j in unique(temp1$Clt)) {
+            temp_list[[j]] = ggpie(
+                temp1[temp1$Clt == j, ],  "n", 
+                fill = "group", label = "labs",
+                title = j, palette = colors,
+                lab.pos = "in", lab.adjust = lab.adjust
+            ) + theme(
+                legend.position = "none", 
+                plot.margin = unit(c(0, 0, 0, 0), "cm")
+            )
+        }
+        
+        plist[[i]] = cowplot::plot_grid(plotlist = temp_list, nrow = length(temp_list))
+    }
+    
+    cowplot::plot_grid(plotlist = plist, ncol = 2)
+}
+
+
+make_barchart_of_subtypes <- function(tree, group.by) {
+    tree$group = tree[, group.by]
+
+    temp <- tree %>%
+        group_by(Clt, Cancer.type, group) %>%
+        add_tally() %>%
+        dplyr::select(Clt, Cancer.type, group, n) %>%
+        unique() %>%
+        group_by(Clt, Cancer.type) %>%
+        mutate(p = round(n / sum(n) * 100, 2)) %>%
+        as.data.frame()
+    
+    temp$labs = paste0(temp$n, "\n(", temp$p, "%)")
+    
+    subtypes = unique(tree$group)
+    colors = wes_palette("Darjeeling1", length(subtypes), "continuous")
+    names(colors) = subtypes
+    
+    ggplot(temp, aes(x=Clt, y=p, fill = group, label=labs)) +
+        geom_bar(stat = "identity") +
+        geom_text(size = 3, position = position_stack(vjust = 0.5)) +
+        facet_grid(~Cancer.type, scales = "free") +
+        theme(axis.text = element_text(angle = 90, hjust = 0.5, vjust = 0)) +
+        scale_fill_manual(values = colors)
+}
+```
+
+
+```{r fig.height=4, fig.width=8}
+ggsave(
+    filename = full.path("02_rds/heatmap/subtypes/Predominant.pdf"),
+    plot = make_barchart_of_subtypes(tree, "Predominant.subtype"),
+    width = 8, height = 4
+)
+```
+
+
+
+```{r fig.height=15, fig.width=10}
+ggsave(
+    filename = full.path("02_rds/heatmap/subtypes/T.pdf"),
+    plot = make_barchart_of_subtypes(tree, "T"),
+    width = 8, height = 4
+)
+```
+
+
+```{r fig.height=15, fig.width=10}
+ggsave(
+    filename = full.path("02_rds/heatmap/subtypes/M.pdf"),
+    plot = make_barchart_of_subtypes(tree, "M"),
+    width = 8, height = 4
+)
+```
+
+
+```{r fig.height=15, fig.width=10}
+ggsave(
+    filename = full.path("02_rds/heatmap/subtypes/N.pdf"),
+    plot = make_barchart_of_subtypes(tree, "N"),
+    width = 8, height = 4
+)
+```
+
+
+```{r fig.height=15, fig.width=10}
+ggsave(
+    filename = full.path("02_rds/heatmap/subtypes/Differetitation.pdf"),
+    plot = make_barchart_of_subtypes(tree, "Differetitation"),
+    width = 8, height = 4
+)
+```
+
+
+```{r}
+tree$group = as.numeric(as.character(tree[, "Diameter.(cm)"]))
+
+
+for (i in unique(tree$Cancer.type)) {
+    p <- ggplot(tree[tree$Cancer.type == i, ], aes(x=Clt, y=group)) +
+        geom_point() +
+        facet_grid(.~Cancer.type, scales = "free") +
+        labs(title = i)
+    
+    print(p)
+}
+```
+
+
+
+```{r}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+
+temp <- meta %>%
+    filter(Disease %in% c("LUAD", "LUSC")) %>%
+    group_by(PatientID, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Stage, Disease, cell_short, n) %>%
+    unique() %>%
+    group_by(PatientID) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+temp$PatientID = as.character(temp$PatientID)
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mφ", "Tregs")
+
+temp$Immune <- ifelse(temp$cell_short %in% immune, "Immune", "Non-immune")
+```
+
+
+```{r fig.height=5, fig.width=10}
+
+dir.create(full.path("02_rds/dotplot/"), showWarnings = F, recursive = T)
+
+
+plist = list()
+for (i in unique(temp$Disease)) {
+    temp_data = temp[temp$Disease == i, ]
+    
+    p <- ggplot(temp_data, aes(x=PatientID, y=cell_short, size = p)) +
+        geom_point() +
+        facet_grid(Immune~Stage, scales = "free", space = "free") +
+        labs(y=i, size = "") +
+        scale_size_continuous(range = c(0, 8)) +
+        theme_bw(base_family = "Arial Unicode MS") +
+        theme(
+            panel.grid = element_blank(),
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+        )
+    
+    ggsave(
+        filename = full.path("02_rds/dotplot/", paste0(i, ".pdf")),
+        plot = p, width = 10, height = 5
+    )
+}
+
+# cowplot::plot_grid(plotlist = plist, ncol = 1)
+```
+
+
+## Normalized using overall percentage
+
+```{r fig.height=5, fig.width=10}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+
+dir.create(full.path("02_rds/dotplot/normalized_by_total_percentage"), showWarnings = F, recursive = T)
+
+
+sizeFactor <- meta %>%
+    group_by(cell_short, Disease) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Disease, n) %>%
+    unique() %>%
+    group_by(Disease) %>%
+    mutate(sizeFactor = n / sum(n)) %>%
+    dplyr::select(cell_short, Disease, sizeFactor) %>%
+    unique() %>%
+    as.data.frame()
+
+rownames(sizeFactor) <- paste(sizeFactor$Disease, sizeFactor$cell_short)
+
+temp <- meta %>%
+    filter(Disease %in% c("LUAD", "LUSC")) %>%
+    group_by(PatientID, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Stage, Disease, cell_short, n) %>%
+    unique() %>%
+    group_by(PatientID) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+temp$PatientID = as.character(temp$PatientID)
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mo", "Tregs")
+
+temp$Immune <- ifelse(temp$cell_short %in% immune, "Immune", "Non-immune")
+temp$p_correct <- temp$p / sizeFactor[paste(temp$Disease, temp$cell_short), "sizeFactor"]
+
+
+plist = list()
+for (i in unique(temp$Disease)) {
+    temp_data = temp[temp$Disease == i, ]
+    
+    # patients = unique(temp_data[, c("PatientID", "Stage")])
+    # patients = patients[order(patients$Stage), ]
+    # 
+    # a <- sapply(patients$Stage, function(x) {
+    #      Stage = c(
+    #         "I"="#65A9A3", 
+    #         "II"="#4A933E", 
+    #         "III"="#EC7A21", 
+    #         "IV"="#D73F47"
+    #     )
+    #      Stage[[x]]
+    # })
+    # names(a) <- patients$PatientID
+    # 
+    # temp_data$PatientID <- factor(temp_data$PatientID, levels = patients$PatientID)
+    # 
+    p <- ggplot(temp_data, aes(x=PatientID, y=cell_short, size = p_correct)) +
+        geom_point() +
+        facet_grid(Immune~Stage, scales = "free", space = "free") +
+        labs(y=i, size = "") +
+        scale_size_continuous(range = c(0, 8)) +
+        theme_bw(base_family = "Arial Unicode MS") +
+        theme(
+            panel.grid = element_blank(),
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+        )
+    
+    ggsave(
+        filename = full.path("02_rds/dotplot/normalized_by_total_percentage", paste0(i, ".pdf")),
+        plot = p, width = 10, height = 5
+    )
+}
+
+# cowplot::plot_grid(plotlist = plist, ncol = 1)
+```
+
+
+
+
+
+### Malignant
+```{r fig.height=5, fig.width=10}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+
+dir.create(full.path("02_rds/dotplot/malignant"), showWarnings = F, recursive = T)
+
+
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+
+sizeFactor <- meta[meta$Malignant, ] %>%
+    group_by(cell_short, Disease) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Disease, n) %>%
+    unique() %>%
+    group_by(Disease) %>%
+    mutate(sizeFactor = n / sum(n)) %>%
+    dplyr::select(cell_short, Disease, sizeFactor) %>%
+    unique() %>%
+    as.data.frame()
+
+rownames(sizeFactor) <- paste(sizeFactor$Disease, sizeFactor$cell_short)
+
+temp <- meta %>%
+    filter(Disease %in% c("LUAD", "LUSC") & Malignant) %>%
+    group_by(PatientID, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Stage, Disease, cell_short, n) %>%
+    unique() %>%
+    group_by(PatientID) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+temp$PatientID = as.character(temp$PatientID)
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mo", "Tregs")
+
+temp$Immune <- ifelse(temp$cell_short %in% immune, "Immune", "Non-immune")
+temp$p_correct <- temp$p / sizeFactor[paste(temp$Disease, temp$cell_short), "sizeFactor"]
+
+plist = list()
+for (i in unique(temp$Disease)) {
+    temp_data = temp[temp$Disease == i, ]
+    
+    p <- ggplot(temp_data, aes(x=PatientID, y=cell_short, size = p)) +
+        geom_point() +
+        facet_grid(Immune~Stage, scales = "free", space = "free") +
+        labs(y=i, size = "") +
+        scale_size_continuous(range = c(0, 8)) +
+        theme_bw(base_family = "Arial Unicode MS") +
+        theme(
+            panel.grid = element_blank(),
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+        )
+    
+    ggsave(
+        filename = full.path("02_rds/dotplot/malignant", paste0(i, ".pdf")),
+        plot = p, width = 10, height = 5
+    )
+}
+
+# cowplot::plot_grid(plotlist = plist, ncol = 1)
+```
+
+
+
+### Non Malignant
+```{r fig.height=5, fig.width=10}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+dir.create(full.path("02_rds/dotplot/non_malignant"), showWarnings = F, recursive = T)
+
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+
+sizeFactor <- meta %>%
+    filter(!Malignant) %>%
+    group_by(cell_short, Disease) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Disease, n) %>%
+    unique() %>%
+    group_by(Disease) %>%
+    mutate(sizeFactor = n / sum(n)) %>%
+    dplyr::select(cell_short, Disease, sizeFactor) %>%
+    unique() %>%
+    as.data.frame()
+
+rownames(sizeFactor) <- paste(sizeFactor$Disease, sizeFactor$cell_short)
+
+temp <- meta %>%
+    filter(Disease %in% c("LUAD", "LUSC") & !Malignant) %>%
+    group_by(PatientID, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Stage, Disease, cell_short, n) %>%
+    unique() %>%
+    group_by(PatientID) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+temp$PatientID = as.character(temp$PatientID)
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mo", "Tregs")
+
+temp$Immune <- ifelse(temp$cell_short %in% immune, "Immune", "Non-immune")
+temp$p_correct <- temp$p / sizeFactor[paste(temp$Disease, temp$cell_short), "sizeFactor"]
+
+plist = list()
+for (i in unique(temp$Disease)) {
+    temp_data = temp[temp$Disease == i, ]
+    
+    p <- ggplot(temp_data, aes(x=PatientID, y=cell_short, size = p)) +
+        geom_point() +
+        facet_grid(Immune~Stage, scales = "free", space = "free") +
+        labs(y=i, size = "") +
+        scale_size_continuous(range = c(0, 8)) +
+        theme_bw(base_family = "Arial Unicode MS") +
+        theme(
+            panel.grid = element_blank(),
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+        )
+    
+    ggsave(
+        filename = full.path("02_rds/dotplot/non_malignant", paste0(i, ".pdf")),
+        plot = p, width = 10, height = 5
+    )
+}
+
+# cowplot::plot_grid(plotlist = plist, ncol = 1)
+```
+
+
+
+
+### Malignant, percentage by immune/non immune
+```{r fig.height=5, fig.width=10}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+dir.create(full.path("02_rds/dotplot/malignant/normalized"), showWarnings = F, recursive = T)
+
+
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mφ", "Tregs")
+
+meta$Immune <- ifelse(meta$cell_short %in% immune, "Immune", "Non-immune")
+
+sizeFactor <- meta %>%
+    filter(Malignant) %>%
+    group_by(cell_short, Disease) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Disease, Immune, n) %>%
+    unique() %>%
+    group_by(Disease, Immune) %>%
+    mutate(sizeFactor = n / sum(n)) %>%
+    dplyr::select(cell_short, Disease, sizeFactor) %>%
+    unique() %>%
+    as.data.frame()
+
+rownames(sizeFactor) <- paste(sizeFactor$Disease, sizeFactor$cell_short)
+
+temp <- meta %>%
+    filter(Disease %in% c("LUAD", "LUSC") & Malignant) %>%
+    group_by(PatientID, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Stage, Disease, Immune, cell_short, n) %>%
+    unique() %>%
+    group_by(PatientID, Immune) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+temp$PatientID = as.character(temp$PatientID)
+
+
+temp$p_correct <- temp$p / sizeFactor[paste(temp$Disease, temp$cell_short), "sizeFactor"]
+
+plist = list()
+for (i in unique(temp$Disease)) {
+    temp_data = temp[temp$Disease == i, ]
+    
+    p <- ggplot(temp_data, aes(x=PatientID, y=cell_short, size = p)) +
+        geom_point() +
+        facet_grid(Immune~Stage, scales = "free", space = "free") +
+        labs(y=i, size = "") +
+        scale_size_continuous(range = c(0, 8)) +
+        theme_bw(base_family = "Arial Unicode MS") +
+        theme(
+            panel.grid = element_blank(),
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+        )
+    
+    ggsave(
+        filename = full.path("02_rds/dotplot/malignant/normalized", paste0(i, ".pdf")),
+        plot = p, width = 10, height = 5
+    )
+}
+
+# cowplot::plot_grid(plotlist = plist, ncol = 1)
+```
+
+
+
+### Non Malignant, percentage by immune/non immune
+```{r fig.height=5, fig.width=10}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+
+dir.create(full.path("02_rds/dotplot/non_malignant/normalized"), showWarnings = F, recursive = T)
+
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mφ", "Tregs")
+
+meta$Immune <- ifelse(meta$cell_short %in% immune, "Immune", "Non-immune")
+
+sizeFactor <- meta %>%
+    filter(!Malignant) %>%
+    group_by(cell_short, Disease) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Disease, Immune, n) %>%
+    unique() %>%
+    group_by(Disease, Immune) %>%
+    mutate(sizeFactor = n / sum(n)) %>%
+    dplyr::select(cell_short, Disease, sizeFactor) %>%
+    unique() %>%
+    as.data.frame()
+
+rownames(sizeFactor) <- paste(sizeFactor$Disease, sizeFactor$cell_short)
+
+temp <- meta %>%
+    filter(Disease %in% c("LUAD", "LUSC") & !Malignant) %>%
+    group_by(PatientID, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Stage, Disease, cell_short, Immune, n) %>%
+    unique() %>%
+    group_by(PatientID, Immune) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+temp$PatientID = as.character(temp$PatientID)
+
+
+temp$p_correct <- temp$p / sizeFactor[paste(temp$Disease, temp$cell_short), "sizeFactor"]
+
+plist = list()
+for (i in unique(temp$Disease)) {
+    temp_data = temp[temp$Disease == i, ]
+    
+    p <- ggplot(temp_data, aes(x=PatientID, y=cell_short, size = p)) +
+        geom_point() +
+        facet_grid(Immune~Stage, scales = "free", space = "free") +
+        labs(y=i, size = "") +
+        scale_size_continuous(range = c(0, 8)) +
+        theme_bw(base_family = "Arial Unicode MS") +
+        theme(
+            panel.grid = element_blank(),
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+        )
+    
+    ggsave(
+        filename = full.path("02_rds/dotplot/non_malignant/normalized", paste0(i, ".pdf")),
+        plot = p, width = 10, height = 5
+    )
+}
+
+# cowplot::plot_grid(plotlist = plist, ncol = 1)
+```
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

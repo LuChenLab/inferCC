@@ -1,0 +1,100 @@
+---
+title: "TCGA"
+author: "Ygidtu"
+date: "2019/5/13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(TCGAbiolinks)
+library(dplyr)
+library(DT)
+library(SummarizedExperiment)
+
+
+dir.create("TCGA", showWarnings = F)
+
+query <- GDCquery(
+    project = "TCGA-LUAD",   # TCGA 肿瘤的标签，可从TCGA data portal查询
+    data.category = "Gene expression",
+    data.type = "Gene expression quantification",
+    platform = "Illumina HiSeq",
+    file.type  = "results",
+    experimental.strategy = "RNA-Seq",
+    legacy = TRUE
+)
+
+# 下载查询到的所有数据，只需要下载一次。随后只需要在下载目录内GDCquery和GDCprepare；或者直接saveRDS，以后加载RDS即可
+GDCdownload(query)
+
+# 准备数据
+data <- GDCprepare(query)
+
+saveRDS(data)
+
+# 提取表达量
+counts <- assay(data, "raw_count")
+
+
+# 下载clinical信息, save成文件，或者直接从上边的data中
+clin <- GDCquery_clinic("TCGA-LUAD", "clinical")
+
+# or
+
+clin <- colData(data)
+
+
+# 直接做图到文件
+TCGAanalyze_survival(clin,
+                     "gender"
+                    )
+```
+
+
+通常不需要做table，以及调整一下其他参数
+
+一下为我提取数据，构建meta info的方法
+```{r}
+
+expression = t(assay(data, "raw_count"))
+gene_names = as.character(sapply(colnames(expression), function(x){strsplit(x, "\\|", perl=T)[[1]][1]}))
+colnames(expression) <- gene_names
+
+expression = merge(as.data.frame(colData(data)), expression, by = 0)
+
+# 构建基因的low和high。标准可自定
+for (i in colnames(expression)) {
+    if (i %in% gene_names) {
+        expression[, i] <- ifelse(expression[, i] > median(expression[, i]),'high','low')
+    }
+}
+    
+
+surv <- TCGAanalyze_survival(
+    expression, 
+    clusterCol = i,
+    risk.table = F,     # 去掉table
+    conf.int = F,       # 去掉误差线
+    surv.median.line = "hv",   # 添加两条median survival days线
+    filename = NULL
+)
+
+
+# 从作图模块中提取所需的值，p值，low high的median survival days等
+temp = surv$plot$layers[[6]]$data
+
+max_x = max(surv$plot$data$time) * 0.8
+p <- surv$plot + geom_text(aes(x = max_x, y = 0.9), label = i, size = 7)
+
+ggplot2::ggsave(filename = paste0(i, ".pdf"), width = 10, height = 5, plot = p, dpi = 600)
+
+col_names <- c("pvalue",  as.character(temp[, "type"]), "gene")
+
+res <- c(
+    as.numeric(gsub("p = ", "", surv$plot$layers[[4]]$aes_params$label)),
+    as.numeric(temp[, "x1"]),
+    i
+)
+```

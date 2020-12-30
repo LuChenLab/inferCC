@@ -1,0 +1,208 @@
+---
+title: "Corr with bioxiv"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r include=FALSE}
+options(stringsAsFactors = F)
+library(Seurat)
+library(ComplexHeatmap)
+library(circlize)
+library(wesanderson)
+library(openxlsx)
+library(stringr)
+library(reshape2)
+library(ggthemes)
+library(dplyr)
+library(tidyr)
+
+root.dir = "LungCancer10x"
+full.path <- function(...) { paste(root.dir, ..., sep = "/") }
+```
+
+## Including Plots
+
+```{r}
+PercentAbove <- function(x, threshold){
+    return(length(x = x[x > threshold]) / length(x = x))
+}
+
+
+ModifiedDotData <- function(
+    object,
+    group.by,
+    markers,
+    cols.use = c("lightgrey", "blue"),
+    col.min = -2.5,
+    col.max = 2.5,
+    dot.min = 0,
+    dot.scale = 6,
+    scale.by = 'radius',
+    cells.use = NULL
+) {
+    scale.func <- switch(
+        EXPR = scale.by,
+        'size' = scale_size,
+        'radius' = scale_radius,
+        stop("'scale.by' must be either 'size' or 'radius'")
+    )
+    if (!missing(x = group.by)) {
+        object <- SetAllIdent(object = object, id = group.by)
+    }
+    
+    genes.plot <- intersect(row.names(object@raw.data), markers$Markers)
+    
+    data.to.plot <- data.frame(FetchData(object = object, vars.all = genes.plot))
+    colnames(x = data.to.plot) <- genes.plot
+    data.to.plot$cell <- rownames(x = data.to.plot)
+    data.to.plot$id <- object@ident
+    
+    if (!is.null(cells.use)) {
+        data.to.plot <- data.to.plot[data.to.plot$cell %in% cells.use, ]
+    }
+    
+    data.to.plot %>% gather(
+        key = genes.plot,
+        value = expression,
+        -c(cell, id)
+    ) -> data.to.plot
+    data.to.plot %>%
+        group_by(id, genes.plot) %>%
+        summarize(
+            avg.exp = mean(expm1(x = expression)),
+            pct.exp = PercentAbove(x = expression, threshold = 0),
+            median.log = median(expm1(x = expression))
+        ) -> data.to.plot
+    data.to.plot %>%
+        ungroup() %>%
+        group_by(genes.plot) %>%
+        mutate(avg.exp.scale = scale(x = avg.exp)) %>%
+        mutate(avg.exp.scale = MinMax(
+            data = avg.exp.scale,
+            max = col.max,
+            min = col.min
+        )) ->  data.to.plot
+    data.to.plot$genes.plot <- factor(
+        x = data.to.plot$genes.plot,
+        levels = rev(x = genes.plot)
+    )
+    # data.to.plot$genes.plot <- factor(
+    #   x = data.to.plot$genes.plot,
+    #   levels = rev(x = sub(pattern = "-", replacement = ".", x = genes.plot))
+    # )
+    data.to.plot$pct.exp[data.to.plot$pct.exp < dot.min] <- NA
+    data.to.plot$pct.exp <- data.to.plot$pct.exp * 100
+    data.to.plot <- merge(data.to.plot, markers, by.x = "genes.plot", by.y = "Markers")
+    
+    return(data.to.plot)
+}
+```
+
+
+```{r}
+meta = readRDS(full.path("02_rds/meta.rds"))
+obj <- readRDS(full.path("02_rds/seurat_obj.rds"))
+
+
+obj@meta.data = meta
+data = read.csv(full.path("media-1.csv"), stringsAsFactors = F)
+colnames(data)[2] = "Markers"
+```
+
+
+```{r}
+expr = ModifiedDotData(obj, markers = data, group.by = "cell_short")
+```
+
+
+```{r fig.height=5, fig.width=5}
+temp = expr %>%
+    filter(cell != "") %>%
+    group_by(id, cell) %>%
+    mutate(R_mouse = cor(avg.exp, mouse_avg_exp), R_human = cor(avg.exp, human_avg_exp), R_median = cor(median.log, mouse_avg_exp)) %>%
+    dplyr::select(id, cell, R_human, R_mouse, R_median) %>%
+    unique() %>%
+    as.data.frame()
+
+
+ggplot(temp, aes(x=id, y=cell, color = R_mouse)) +
+    geom_point()
+```
+
+
+```{R fig.height=5, fig.width=10}
+ggplot(temp, aes(x=id, y=cell, color = R_human, size = R_human)) +
+    geom_point() +
+    scale_size_continuous(range = c(0, 5))
+```
+
+
+```{r fig.height=5, fig.width=10}
+ggplot(temp, aes(x=id, y=cell, color = R_median, size = R_median)) +
+    geom_point() +
+    scale_size_continuous(range = c(0, 05))
+```
+
+
+### Only normal cells
+```{R}
+expr = ModifiedDotData(obj, markers = data, group.by = "cell_short", cells.use = rownames(obj@meta.data)[str_detect(obj@meta.data$Disease, "Normal")])
+```
+
+
+```{r fig.height=10, fig.width=10}
+ggplot(temp, aes(x=id, y=cell, color = R_human, size = R_human)) +
+    geom_point() +
+    scale_size_continuous(range = c(0,15))
+```
+
+```{r fig.height=10, fig.width=10}
+ggplot(temp, aes(x=id, y=cell, color = R_mouse, size = R_mouse)) +
+    geom_point() +
+    scale_size_continuous(range = c(0,15))
+```
+
+
+### Test media 3
+```{r}
+data = read.xlsx(full.path("media-1_3.xlsx"), sheet = 2)
+```
+
+
+```{r}
+obj <- readRDS(full.path("11_CNV/each_cells/ATII/seurat_obj_LUAD.rds"))
+```
+
+
+```{R}
+for (i in unique(data$cell)) {
+    temp_data = data[data$cell == i, ]
+    temp_data = temp_data[temp_data$Gene %in% rownames(obj@raw.data), ]
+    
+    
+    col_fun = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow"))
+    
+    h <- Heatmap(
+        obj@scale.data[temp_data$Gene, ],
+        name = "Expr", col = col_fun,
+        cluster_rows = F, cluster_columns = F,
+        show_row_names = F, show_column_names = F,
+        row_split = temp_data$cluster,
+        column_split = obj@meta.data$res.0.03,
+        column_title = i
+    )
+    
+    draw(h)
+}
+```
+
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

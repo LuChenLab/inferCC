@@ -1,0 +1,1779 @@
+---
+title: "CaSpER"
+author: "Zhang Yiming"
+date: "2020/2/26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+full_path <- function(...) {
+    paste(root.dir, ..., sep = "/")
+}
+```
+
+
+```{r include=FALSE}
+library(Seurat)
+library(stringr)
+library(doMC)
+library(GenomicFeatures)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(openxlsx)
+library(DESeq2)
+library("BiocParallel")
+library(ggplot2)
+library(dplyr)
+library(ComplexHeatmap)
+library(UpSetR)
+library(sva)
+library(genefilter)
+library(limma)
+library("FactoMineR")
+library("factoextra")
+library(ggfortify)
+```
+
+```{r}
+dir.create(full_path("09_bulk/RNA_seq/DEGs/data"), recursive = T, showWarnings = F)
+dir.create(full_path("09_bulk/RNA_seq/DEGs/Res"), recursive = T, showWarnings = F)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+expr <- readRDS(full_path("02_rds/all_cell_expr.rds"))
+
+meta <- read.csv(full_path("02_rds/meta_after_singleR.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+
+```{r eval=FALSE, include=FALSE}
+create_seurat_object <- function(expr, meta) {
+    obj <- CreateSeuratObject(
+        expr[, intersect(rownames(meta), colnames(expr))],
+        meta.data = meta
+    )
+    
+    mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@raw.data), value = TRUE)
+    percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+    
+    obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+    
+    pcs = min(100, min(nrow(obj@raw.data), ncol(obj@raw.data)) - 1)
+    
+    obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+    obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+    obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+    
+    return(obj)
+}
+```
+
+
+```{r eval=FALSE, include=FALSE}
+find_markers <- function(obj) {
+    library(stringr)
+    nl = rownames(obj@meta.data)[str_detect(obj@meta.data$Disease, "Normal")]
+    
+    registerDoMC(4)
+    markers = foreach(i = unique(obj@meta.data$Stage), .combine = "rbind") %dopar% {
+        temp = rownames(obj@meta.data)[!str_detect(obj@meta.data$Disease, "Normal") & obj@meta.data$Stage == i]
+        if (length(temp) < 3) {
+            return(NULL)
+        }
+        
+        temp_markers = FindMarkers(obj, ident.1 = temp, ident.2 = nl, logfc.threshold = 0)
+        temp_markers$gene = rownames(temp_markers)
+        temp_markers$ident = i
+        return (temp_markers)
+    }
+    return(markers)
+}
+```
+
+
+
+## ATII
+```{r eval=FALSE, include=FALSE}
+temp_meta = meta[meta$cell_short == "ATII" & meta$Disease %in% c("LUAD", "LUAD_Normal"), ]
+obj <- create_seurat_object(expr, temp_meta)
+
+markers <- find_markers(obj)
+
+saveRDS(obj, full_path("09_bulk/RNA_seq/DEGs/Res/ATII.rds"))
+saveRDS(markers, full_path("09_bulk/RNA_seq/DEGs/Res/ATII_markers.rds"))
+```
+
+
+```{R}
+obj <- readRDS(full_path("09_bulk/RNA_seq/DEGs/Res/ATII.rds"))
+markers <- readRDS(full_path("09_bulk/RNA_seq/DEGs/Res/ATII_markers.rds"))
+
+markers <- markers[markers$avg_logFC > 0.25 & markers$p_val_adj < 0.05, ]
+markers <- markers[order(markers$avg_logFC, decreasing = T), ]
+print(head(markers))
+
+VlnPlot(obj, head(markers$gene), group.by = "Disease", y.log = T)
+```
+
+
+```{R}
+temp_expr <- melt(as.matrix(obj@scale.data[head(markers$gene), ]))
+temp_expr$Disease <- obj@meta.data[temp_expr$Var2, "Disease"]
+
+ggplot(temp_expr, aes(x=Disease, y=value)) +
+    geom_boxplot() +
+    facet_wrap(.~Var1, scales = "free")
+```
+
+
+## Basals
+```{r eval=FALSE, include=FALSE}
+# LUAD_Normal, LUSC, LUSC_Normal = 8, 21354, 1
+
+temp_meta = meta[meta$cell_short == "Basal" & meta$Disease %in% c("LUSC", "LUAD_Normal", "LUSC_Normal"), ]
+
+table(temp_meta$Disease)
+
+obj <- create_seurat_object(expr, temp_meta)
+
+markers <- find_markers(obj)
+
+saveRDS(obj, full_path("09_bulk/RNA_seq/DEGs/Res/Basal.rds"))
+saveRDS(markers, full_path("09_bulk/RNA_seq/DEGs/Res/Basal_markers.rds"))
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# LUAD_Normal, LUSC, LUSC_Normal = 8, 21354, 1
+temp_meta = rbind(
+    meta[meta$cell_short == "Basal" & meta$Disease %in% c("LUAD_Normal", "LUSC"), ],
+    meta[meta$Disease %in% c("LUSC_Normal"), ]
+)
+
+
+obj <- create_seurat_object(expr, temp_meta)
+
+markers <- find_markers(obj)
+
+saveRDS(obj, full_path("09_bulk/RNA_seq/DEGs/Res/Basal_all_LUSC.rds"))
+saveRDS(markers, full_path("09_bulk/RNA_seq/DEGs/Res/Basal_markers_all_LUSC.rds"))
+```
+
+
+### NE
+```{r eval=FALSE, include=FALSE}
+obj <- create_seurat_object(expr, meta[meta$cell_short == "NE" & meta$Disease %in% c("LUAD_Normal", "LUAD"), ])
+
+markers <- find_markers(obj)
+
+saveRDS(obj, full_path("09_bulk/RNA_seq/DEGs/Res/NE_all_LUAD.rds"))
+saveRDS(markers, full_path("09_bulk/RNA_seq/DEGs/Res/NE_markers_all_LUAD.rds"))
+```
+
+### Epi
+```{r eval=FALSE, include=FALSE}
+obj <- create_seurat_object(expr, meta[meta$cell_short == "Epi" & meta$Disease %in% c("LUAD_Normal", "LUAD"), ])
+
+markers <- find_markers(obj)
+
+saveRDS(obj, full_path("09_bulk/RNA_seq/DEGs/Res/Epi_all_LUAD.rds"))
+saveRDS(markers, full_path("09_bulk/RNA_seq/DEGs/Res/Epi_markers_all_LUAD.rds"))
+```
+
+
+
+### Fib
+```{r eval=FALSE, include=FALSE}
+obj <- create_seurat_object(expr, meta[meta$cell_short == "Fib" & meta$Disease %in% c("LUAD_Normal", "LUAD"), ])
+
+markers <- find_markers(obj)
+
+saveRDS(obj, full_path("09_bulk/RNA_seq/DEGs/Res/Fib_all_LUAD.rds"))
+saveRDS(markers, full_path("09_bulk/RNA_seq/DEGs/Res/Fib_markers_all_LUAD.rds"))
+```
+
+
+### Fib LUSC
+```{r eval=FALSE, include=FALSE}
+obj <- create_seurat_object(expr, meta[meta$cell_short == "Fib" & meta$Disease %in% c("LUSC_Normal", "LUSC"), ])
+
+markers <- find_markers(obj)
+
+saveRDS(obj, full_path("09_bulk/RNA_seq/DEGs/Res/Fib_all_LUSC.rds"))
+saveRDS(markers, full_path("09_bulk/RNA_seq/DEGs/Res/Fib_markers_all_LUSC.rds"))
+```
+
+
+### ATII LUSC
+```{r eval=FALSE, include=FALSE}
+obj <- create_seurat_object(expr, meta[meta$cell_short == "ATII" & meta$Disease %in% c("LUSC_Normal", "LUSC"), ])
+
+markers <- find_markers(obj)
+
+saveRDS(obj, full_path("09_bulk/RNA_seq/DEGs/Res/ATII_all_LUSC.rds"))
+saveRDS(markers, full_path("09_bulk/RNA_seq/DEGs/Res/ATII_markers_all_LUSC.rds"))
+```
+
+
+## Processing bulk data
+
+### bulk meta
+```{R}
+bulk_meta <- readRDS(full_path("09_bulk/RNA_seq/DEGs/data/All_est_meta.rds"))
+```
+
+### SYSU
+```{r pressure, eval=FALSE, include=FALSE}
+# First, import the GTF-file that you have also used as input for htseq-count
+
+txdb <- makeTxDbFromGFF(
+    "genome/Homo_sapiens/Homo_sapiens.GRCh38.93.gtf",
+    format="gtf"
+)
+# then collect the exons per gene id
+exons.list.per.gene <- exonsBy(txdb,by="gene")
+# then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
+exonic.gene.sizes <- lapply(exons.list.per.gene,function(x){sum(width(reduce(x)))})
+
+gene_info = as.data.frame(t(as.data.frame(exonic.gene.sizes)))
+colnames(gene_info)[1] = "Length"
+
+eg = bitr(rownames(gene_info), fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = org.Hs.eg.db)
+rownames(eg) = make.unique(eg$ENSEMBL)
+gene_info$ENSEMBL = rownames(gene_info)
+gene_info$SYMBOL = eg[gene_info$ENSEMBL, "SYMBOL"]
+
+saveRDS(gene_info, full_path("09_bulk/RNA_seq/DEGs/data/gene_length.rds"))
+```
+
+
+```{r eval=FALSE, include=FALSE}
+sysu <- read.xlsx(full_path("SYSU/CHOICE_Study_Tumor_Adjacent_RNA-seq_Data.xlsx"), rowNames = T)
+
+sysu_meta <- data.frame(
+    Disease=sapply(colnames(sysu), function(x) {
+        x = str_split(x, "_")[[1]][2]
+        
+        if (x == "ad") {
+            return("LUAD")
+        } else if (x == "sq") {
+            return("LUSC")
+        } else {
+            return("Mix")
+        }
+    }),
+    Stage=sapply(colnames(sysu), function(x) {
+        str_split(x, "_")[[1]][4]
+    }),
+    Source=rep("SYSU", ncol(sysu)),
+    row.names = colnames(sysu)
+)
+
+sysu_meta <- sysu_meta[sysu_meta$Disease %in% c("LUAD", "LUSC"), ]
+sysu_meta$Disease <- as.character(sysu_meta$Disease)
+
+gene_info = na.omit(gene_info)
+rownames(gene_info) = make.unique(gene_info$SYMBOL)
+
+sysu = sysu * gene_info[rownames(sysu), "Length"]
+sysu = na.omit(sysu)
+
+saveRDS(sysu, full_path("09_bulk/RNA_seq/DEGs/data/sysu.rds"))
+```
+
+
+
+#### East Asians
+```{r eval=FALSE, include=FALSE}
+read_east_asian <- function() {
+    tumor <- read.table(full_path("09_bulk/East_Asians/GIS031/GSK_RSEM_expCounts/GSK_RSEM_rerun_expCounts_172_Tumor.tsv"), header = T)
+    tumor <- tumor[!is.na(tumor$Gene.symbol), ]
+    rownames(tumor) <- make.unique(as.character(tumor$Gene.symbol))
+    tumor <- tumor[, str_detect(colnames(tumor), "A\\d+")]
+    colnames(tumor) <- paste(colnames(tumor), "Tumor", sep = "_")
+    
+    east <- read.table(full_path("09_bulk/East_Asians/GIS031/GSK_RSEM_expCounts/GSK_RSEM_rerun_expCounts_88_Normal.tsv"), header = T)
+    east <- east[!is.na(east$Gene.symbol), ]
+    rownames(east) <- make.unique(as.character(east$Gene.symbol))
+    east <- east[, str_detect(colnames(east), "A\\d+")]
+    colnames(east) <- paste(colnames(east), "Normal", sep = "_")
+    
+    for (i in colnames(tumor)) {
+        east[, i] <- tumor[rownames(east), i]
+    }
+    
+    east
+}
+
+
+read_east_meta <- function() {
+    east_meta <- read.table(full_path("09_bulk/East_Asians/GIS031/GIS031.clinical.patient.txt"), header = T, sep = "\t")
+    temp <- east_meta
+    temp$PATIENT_ID <- paste(temp$PATIENT_ID, "Tumor", sep = "_")
+    
+    east_meta$PATIENT_ID <- paste(east_meta$PATIENT_ID, "Normal", sep = "_")
+    
+    east_meta <- rbind(east_meta, temp)
+    rownames(east_meta) <- east_meta$PATIENT_ID
+    east_meta
+}
+
+east <- read_east_asian()
+
+saveRDS(east, full_path("09_bulk/RNA_seq/DEGs/data/EastAsians.rds"))
+```
+
+
+### TCGA
+```{R eval=FALSE, include=FALSE}
+tcga <- read.csv(full.path("TCGA/Lung.csv"), row.names = 1, stringsAsFactors = F)
+gtex <- readRDS(full_path("09_bulk/RNA_seq/DEGs/data/GTEx.rds"))
+east <- readRDS(full_path("09_bulk/RNA_seq/DEGs/data/EastAsians.rds"))
+
+bulk <- read.xlsx(full_path("09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+gene_pos <- read.table(full_path("09_bulk/RNA_seq/gene_pos.txt"), header = F, row.names = 5)
+gene_pos$V6 <- make.unique(as.character(gene_pos$V6))
+rownames(bulk) <- gene_pos[rownames(bulk), "V6"]
+
+sysu = readRDS(full_path("09_bulk/RNA_seq/DEGs/data/sysu.rds"))
+
+
+common_genes = intersect(rownames(tcga), rownames(gtex))
+common_genes = intersect(rownames(sysu), common_genes)
+common_genes = intersect(rownames(bulk), common_genes)
+common_genes = intersect(rownames(east), common_genes)
+
+expr <- cbind(tcga[common_genes, ], gtex[common_genes, ])
+expr <- cbind(expr[common_genes, ], sysu[common_genes, ])
+expr <- cbind(expr[common_genes, ], bulk[common_genes, ])
+expr <- cbind(expr[common_genes, ], east[common_genes, ])
+
+saveRDS(expr, full_path("09_bulk/RNA_seq/DEGs/data/All_expr_convert.rds"))
+
+rm(tcga)
+rm(gtex)
+rm(east)
+rm(bulk)
+rm(sysu)
+```
+
+
+### pesodobulk
+
+```{r eval=FALSE, include=FALSE}
+
+read_pseudobulk <- function() {
+    hx_nl <- read.csv(full_path("08_pseudobulk/pseudo_bulk_hx_normal.csv"), row.names = 1, stringsAsFactors = F)
+    rownames(hx_nl) <- paste(rownames(hx_nl, "Normal"), sep = "_")
+    
+    hx_tm <- read.csv(full_path("08_pseudobulk/pseudo_bulk_hx.csv"), row.names = 1, stringsAsFactors = F)
+    rownames(hx_tm) <- paste(rownames(hx_tm, "Tumor"), sep = "_")
+    
+    nm_tm <- read.csv(full_path("08_pseudobulk/pseudo_bulk_nm_tumor.csv"), row.names = 1, stringsAsFactors = F)
+    rownames(nm_tm) <- paste(rownames(nm_tm, "Tumor"), sep = "_")
+    
+    nm_nl <- read.csv(full_path("08_pseudobulk/pseudo_bulk_nm_normal.csv"), row.names = 1, stringsAsFactors = F)
+    rownames(nm_nl) <- paste(rownames(nm_nl, "Normal"), sep = "_")
+}
+
+pseudobulk <- rbind(hx_nl, hx_tm)
+pseudobulk <- rbind(pseudobulk, nm_tm)
+pseudobulk <- rbind(pseudobulk, nm_nl)
+
+pseudobulk <- t(pseudobulk)
+
+saveRDS(pseudobulk, full_path("09_bulk/RNA_seq/DEGs/data/pseodobulk.rds"))
+```
+
+```{R eval=FALSE, include=FALSE}
+meta <- read.csv("02_rds/meta_after_singleR.csv", row.names = 1, stringsAsFactors = F)
+nm_meta <- read.xlsx("02_rds/NM_meta.xlsx")
+rownames(nm_meta) <- nm_meta$SampleID
+
+meta[meta$Batch == 3, "Stage"] <- nm_meta[meta$SampleID[meta$Batch == 3], "Stage"]
+meta[meta$Batch == 3, "Disease"] <- nm_meta[meta$SampleID[meta$Batch == 3], "Disease"]
+
+temp_meta <- unique(meta[, c("Disease", "Stage", "PatientID")])
+temp_meta$PatientID[!str_detect(temp_meta$Disease, "Normal")] <- paste(temp_meta$PatientID[!str_detect(temp_meta$Disease, "Normal")], "Tumor", sep = "_")
+
+temp_meta$PatientID[str_detect(temp_meta$Disease, "Normal")] <- paste(temp_meta$PatientID[str_detect(temp_meta$Disease, "Normal")], "Normal", sep = "_")
+
+temp_meta$PatientID <- str_replace(temp_meta$PatientID, "DL", "P")
+
+saveRDS(temp_meta, full_path("09_bulk/RNA_seq/DEGs/data/pseudobulk_meta.rds"))
+```
+
+
+## ComBat
+
+### ComBat
+```{r}
+bulk_meta <- readRDS(full_path("09_bulk/RNA_seq/DEGs/data/All_est_meta.rds"))
+expr <- readRDS(full_path("09_bulk/RNA_seq/DEGs/data/All_expr_convert.rds"))
+```
+
+
+
+```{r}
+# @Thx: https://github.com/mskcc/RNAseqDB/blob/master/run-combat.R
+Iteration = 15
+
+
+# Find cutoff that make ComBat work
+GetFilterCutoff <- function(mydata, batch, modcombat, turnedOffGene, log){
+    steps = (1:20)*5;
+    for (i in steps){
+        print(i)
+        filter = apply(mydata, 1, function(x) length(x[x>5])>=i)
+        filter = filter & turnedOffGene
+        
+        if(log) {
+            filtered <- as.matrix( log2(mydata[filter,]+1) )
+        } else {
+            filtered <- as.matrix( mydata[filter,]+1 )
+        }
+            
+        result <- tryCatch({
+            combat_edata1 = ComBat(dat=filtered, batch=batch, mod=modcombat, par.prior=TRUE, prior.plots=FALSE)
+        }, warning = function(war) {
+        }, error = function(err) {
+        }, finally = {
+            if(exists("combat_edata1")){
+                print("ComBat Sucess")
+            }else{
+                print("ComBat failure")
+            }
+        })
+    
+        if(exists("combat_edata1")){
+            for (j in (i-4):(i-1)){
+                print(j)
+                filter = apply(mydata, 1, function(x) length(x[x>5])>=j)
+                filter = filter & turnedOffGene
+                
+                if(log) {
+                    filtered <- as.matrix( log2(mydata[filter,]+1) )
+                } else {
+                    filtered <- as.matrix( mydata[filter,]+1 )
+                }
+                
+                result2 <- tryCatch({
+                    combat_edata2 = ComBat(dat=filtered, batch=batch, mod=modcombat, par.prior=TRUE, prior.plots=FALSE)
+                }, warning = function(war) {
+                }, error = function(err) {
+                }, finally = {
+                    if(exists("combat_edata2")){
+                        print("ComBat Sucess")
+                    }else{
+                        print("ComBat failure")
+                    }
+                })
+                
+                if(exists("combat_edata2")){
+                    return(j)
+                }
+            }
+            return(i)
+        }
+    }
+    return(0)
+}
+
+# Find genes that fails ComBat
+GetTroubleGene <- function (mydata, batch, modcombat, filterCutoff, turnedOffGene, log){
+    filterPass = apply(mydata, 1, function(x) length(x[x>5])>=filterCutoff)
+    filterPass = filterPass & turnedOffGene
+    filterFail = apply(mydata, 1, function(x) length(x[x>5])>=(filterCutoff-1))
+    filterFail = filterFail & turnedOffGene
+    
+    diff = xor(filterPass,filterFail)
+    dub_genes = which(diff)
+    
+    good_genes = c()
+    for (i in dub_genes){
+        print(i)
+        filter = filterPass
+        filter[i] = TRUE
+        
+        if(log) {
+            filtered <- as.matrix( log2(mydata[filter,]+1) )
+        } else {
+            filtered <- as.matrix( mydata[filter,]+1 )
+        }
+
+        result2 <- tryCatch({
+            ComBat(dat=filtered, batch=batch, mod=modcombat, par.prior=TRUE, prior.plots=FALSE)
+            good_genes = c(good_genes, i)
+        }, warning = function(war) {
+        }, error = function(err) {
+        }, finally = {
+        })
+    }
+    bad_genes = setdiff(dub_genes, good_genes)
+    return(bad_genes)
+    
+}
+
+# Filter out genes that collapse ComBat
+ComBatWrapper <- function (mydata, batch, modcombat, iter_n, log = F){
+    # Find cutoff that makes ComBat work
+    turnedOffGene <- rep(TRUE, length(rownames(mydata)))
+    filterCutoff = GetFilterCutoff(mydata, batch, modcombat, turnedOffGene, log)
+    print(paste('Cutoff to filter genes = ', filterCutoff, sep = ''))
+    
+    for (i in 1:iter_n){
+        print(paste('Iteration', i, sep = ''))
+        if (filterCutoff <= 2){
+            filter = apply(mydata, 1, function(x) length(x[x>5])>=filterCutoff)
+            filter[which(turnedOffGene==FALSE)] = FALSE
+            
+            if(log) {
+                filtered <- as.matrix( log2(mydata[filter,]+1) )
+            } else {
+                filtered <- as.matrix( mydata[filter,]+1 )
+            }
+            edata = ComBat(dat=filtered, batch=batch, mod=modcombat, par.prior=TRUE, prior.plots=FALSE)
+            return(edata)
+        }else{
+            filteredGene = GetTroubleGene(mydata, batch, modcombat, filterCutoff, turnedOffGene)
+            turnedOffGene [filteredGene] = FALSE
+            
+            # Find new cutoff
+            newfilterCutoff = GetFilterCutoff(mydata, batch, modcombat, turnedOffGene, log)
+            if(newfilterCutoff != filterCutoff){
+                filterCutoff = newfilterCutoff
+                print(paste('New cutoff to filter genes = ', filterCutoff, sep = ''))
+            }else{
+                filter = apply(mydata, 1, function(x) length(x[x>5])>=filterCutoff)
+                filter[which(turnedOffGene==FALSE)] = FALSE
+                
+                if(log) {
+                    filtered <- as.matrix( log2(mydata[filter,]+1) )
+                } else {
+                    filtered <- as.matrix( mydata[filter,]+1 )
+                }
+                
+                edata = ComBat(dat=filtered, batch=batch, mod=modcombat, par.prior=TRUE, prior.plots=FALSE)
+                return(edata)
+            }
+        }
+    }
+    filter = apply(mydata, 1, function(x) length(x[x>5])>=filterCutoff)
+    filter[which(turnedOffGene==FALSE)] = FALSE
+    
+    if(log) {
+        filtered <- as.matrix( log2(mydata[filter,]+1) )
+    } else {
+        filtered <- as.matrix( mydata[filter,]+1 )
+    }
+
+    edata = ComBat(dat=filtered, batch=batch, mod=modcombat, par.prior=TRUE, prior.plots=FALSE)
+    return(edata)
+}
+```
+
+
+
+```{r}
+# temp_meta = bulk_meta[bulk_meta$Source %in% c("TCGA", "SYSU", "GTEx"), ]
+# temp_meta$Source = as.factor(temp_meta$Source)
+# temp_meta$Disease = as.factor(temp_meta$Disease)
+# temp_meta$Stage = as.factor(temp_meta$Stage)
+
+temp_meta = bulk_meta
+temp_meta$Disease[temp_meta$Disease == "NL(AD)"] = "NL"
+
+modcombat = model.matrix(~Disease, data=temp_meta)
+
+temp_expr = as.data.frame(expr[, rownames(temp_meta)])
+
+combat_edata = ComBatWrapper(temp_expr, temp_meta$Source, modcombat, Iteration)
+```
+
+
+```{R}
+combat_sd = sort(apply(combat_edata, 1, sd), decreasing = T)
+combat_edata = combat_edata[names(combat_sd), ]
+res.pca = prcomp(t(combat_edata[1:500, ]))
+```
+
+
+```{r}
+autoplot(res.pca, data = bulk_meta, colour = "Source")
+autoplot(res.pca, data = bulk_meta, colour = "Disease")
+```
+
+
+```{r}
+saveRDS(combat_edata, full_path("09_bulk/RNA_seq/DEGs/data/All_expr_combat.rds"))
+```
+
+
+## DESeq2
+
+```{R eval=FALSE, include=FALSE}
+# expr <- readRDS(full_path("09_bulk/RNA_seq/DEGs/data/All_expr_combat.rds"))
+
+register(MulticoreParam(10))
+
+res = NULL
+
+extract_res = function(dds, stages, s, d, control = "Normal") {
+    res = NULL
+    for(i in stages) {
+        if (i == "Normal" || i == "NL" || i == "BSPN") {
+            next
+        }
+        
+        temp_res = as.data.frame(results(dds, contrast = c("Stage", i, control), alpha = 0.05))
+        temp_res$Disease = d
+        temp_res$Stage = i
+        temp_res$Source = s
+        temp_res$gene = rownames(temp_res)
+        res = rbind(res, temp_res)
+    }
+    return (res)
+}
+
+
+## TCGA & SYSU
+for(s in c("TCGA", "SYSU")) {
+    for (d in c("LUAD", "LUSC")) {
+        temp_meta = bulk_meta[
+            bulk_meta$Source %in% c(s, "GTEx") &
+                bulk_meta$Disease %in% c(d, "NL"), ]
+        temp_meta$Source = as.factor(temp_meta$Source)
+        temp_meta$Disease = as.factor(temp_meta$Disease)
+        
+        
+        temp_expr = round(expr[, rownames(temp_meta)])
+        temp_expr <- temp_expr[rowSums(temp_expr) > 10, ]
+        
+        dds <- DESeqDataSetFromMatrix(
+            countData = temp_expr,
+            colData = temp_meta,
+            design= ~ Disease,
+        )
+        
+        dds <- DESeq(dds, parallel=T)
+        
+        res = rbind(
+            res, 
+            extract_res(
+                dds, unique(temp_meta$Disease),
+                s, d
+        ))
+    }
+    
+}
+
+
+## In-house LUSC
+# for (d in c("LUSC", "LUAD")) {
+#     temp_meta = bulk_meta[bulk_meta$Source %in% c("In-house") & bulk_meta$Disease %in% c(d, "BSPN"), ]
+#     temp_meta$Stage[is.na(temp_meta$Stage)] = "BSPN"
+#     temp_meta$Source = as.factor(temp_meta$Source)
+#     temp_meta$Disease = as.factor(temp_meta$Disease)
+#     
+#     
+#     temp_expr = round(expr[, rownames(temp_meta)])
+#     temp_expr <- temp_expr[rowSums(temp_expr) > 1, ]
+#     
+#     dds <- DESeqDataSetFromMatrix(
+#         countData = temp_expr,
+#         colData = temp_meta,
+#         design= ~ Stage,
+#     )
+#     
+#     dds <- DESeq(dds, parallel=T)
+#     
+#     res = rbind(res, 
+#         extract_res(
+#             dds, unique(temp_meta$Stage),
+#             "In-house", d, "BSPN"
+#         ))
+# }
+
+
+## East Asians
+temp_meta = bulk_meta[bulk_meta$Source %in% c("East Asians"), ]
+temp_meta = na.omit(temp_meta)
+temp_meta$Stage[temp_meta$Disease == "NL(AD)"] = "NL"
+temp_meta$Source = as.factor(temp_meta$Source)
+temp_meta$Disease = as.factor(temp_meta$Disease)
+
+
+temp_expr = round(expr[, rownames(temp_meta)])
+temp_expr <- temp_expr[rowSums(temp_expr) > 10, ]
+
+dds <- DESeqDataSetFromMatrix(
+    countData = temp_expr,
+    colData = temp_meta,
+    design= ~ Disease,
+)
+
+dds <- DESeq(dds, parallel=T)
+
+res = rbind(res,
+            extract_res(
+                dds, unique(temp_meta$Disease), 
+                "East Asians", "LUAD", control = "NL"
+                ))
+
+
+saveRDS(dds, full_path("09_bulk/RNA_seq/DEGs/Res/DESeq2_disease.rds"))
+```
+
+
+## Make DESeqs plots
+```{R}
+res = readRDS(full_path("09_bulk/RNA_seq/DEGs/Res/DESeq2.rds"))
+```
+
+
+```{r}
+DT::datatable(res[res$gene == "AQP5", ])
+```
+
+```{R}
+temp_data = melt(as.matrix(combat_edata))
+
+temp_data$Disease = bulk_meta[temp_data$Var2, "Disease"]
+
+summary(res[res$gene == "AQP5", "log2FoldChange"])
+
+ggplot(temp_data[temp_data$Var1 == "AQP5", ], aes(x=Disease, y=log2(value + 1))) + 
+    geom_boxplot()
+```
+
+
+
+#### 检查有无数字错误
+```{R}
+temp = res %>%
+    group_by(Source, Disease, Stage) %>%
+    add_tally() %>%
+    dplyr::select(Source, Disease, Stage, n) %>%
+    unique() %>%
+    as.data.frame()
+
+
+ggplot(temp, aes(x=Stage, y=n, fill=Disease)) +
+    geom_bar(stat = "identity", position = position_dodge()) +
+    facet_grid(.~Source)
+```
+
+#### 检查有无数字错误
+```{R fig.height=12, fig.width=12}
+res$DE = "Not"
+res$DE[res$padj < 0.05 & res$log2FoldChange > 1] = "Up"
+res$DE[res$padj < 0.05 & res$log2FoldChange < -1] = "Down"
+
+temp = res %>%
+    group_by(Source, Disease, Stage, DE) %>%
+    add_tally() %>%
+    dplyr::select(Source, Disease, Stage, DE, n) %>%
+    unique() %>%
+    as.data.frame()
+
+temp = temp[temp$DE != "Not", ]
+# temp$n = log10(temp$n + 1)
+temp$n[temp$DE == "Down"] = -1 * temp$n[temp$DE == "Down"]
+
+
+plist = list()
+for(i in unique(temp$Source)) {
+    plist[[i]] = ggplot(temp[temp$Source == i, ], aes(x=Stage, y=n, fill=Disease)) +
+        geom_bar(stat = "identity", position = position_dodge()) +
+        labs(title = i) +
+        theme(legend.position = "bottom")
+}
+
+cowplot::plot_grid(plotlist = plist, ncol = 2)
+```
+
+
+### Check overlap of differnet sources by stages
+
+```{r}
+tf <- readRDS(full_path("12_TF/Teichmann_TFlist.Rds"))
+tf <- bitr(tf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+
+sf <- readRDS(full_path("12_TF/Han_Molecular_Cell.Rds"))
+sf <- bitr(sf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+```
+
+```{r}
+write.csv(res, full_path("09_bulk/RNA_seq/DEGs/Res/DESeq2.csv"))
+write.csv(tf, full_path("09_bulk/RNA_seq/DEGs/Res/TF.csv"))
+write.csv(sf, full_path("09_bulk/RNA_seq/DEGs/Res/SF.csv"))
+```
+
+```{r}
+upset_by <- function(res, group_by = "Source") {
+    listInput <- list(
+        TF=tf$SYMBOL,
+        SF=sf$SYMBOL
+    )
+    for(j in unique(res[, group_by])) {
+        listInput[[j]] = res$gene[res[, group_by] == j]
+    }
+    
+    # UpSet(make_comb_mat(listInput))
+    upset(fromList(listInput))
+}
+```
+
+
+#### LUAD
+
+##### Up
+```{r}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Stage == "I", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Stage == "II", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Stage == "III", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Stage == "IV", ])
+```
+
+
+##### Down
+```{r}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Stage == "I", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Stage == "II", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Stage == "III", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Stage == "IV", ])
+```
+
+#### LUSC
+```{r}
+upset_by(res[res$DE == "Up" & res$Disease == "LUSC" & res$Stage == "I", ])
+```
+
+
+```{r}
+upset_by(res[res$DE == "Up" & res$Disease == "LUSC" & res$Stage == "II", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Up" & res$Disease == "LUSC" & res$Stage == "III", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Up" & res$Disease == "LUSC" & res$Stage == "IV", ])
+```
+
+##### Down
+```{r}
+upset_by(res[res$DE == "Down" & res$Disease == "LUSC" & res$Stage == "I", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Down" & res$Disease == "LUSC" & res$Stage == "II", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Down" & res$Disease == "LUSC" & res$Stage == "III", ])
+```
+
+```{r}
+upset_by(res[res$DE == "Down" & res$Disease == "LUSC" & res$Stage == "IV", ])
+```
+
+
+### Compare DEGs from same source by stages
+#### In-house
+##### Up && LUAD
+```{R}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Source == "In-house", ], "Stage")
+```
+
+#### Down && LUAD
+```{R}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Source == "In-house", ], "Stage")
+```
+
+##### Up && LUSC
+```{R}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Source == "In-house", ], "Stage")
+```
+
+#### Down && LUSC
+```{R}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Source == "In-house", ], "Stage")
+```
+
+
+#### TCGA
+##### Up && LUAD
+```{R}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Source == "TCGA", ], "Stage")
+```
+
+#### Down && LUAD
+```{R}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Source == "TCGA", ], "Stage")
+```
+
+
+##### Up && LUSC
+```{R}
+upset_by(res[res$DE == "Up" & res$Disease == "LUSC" & res$Source == "TCGA", ], "Stage")
+```
+
+#### Down && LUSC
+```{R}
+upset_by(res[res$DE == "Down" & res$Disease == "LUSC" & res$Source == "TCGA", ], "Stage")
+```
+
+
+#### East Asians
+##### Up && LUAD
+```{R}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Source == "East Asians", ], "Stage")
+```
+
+#### Down && LUAD
+```{R}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Source == "East Asians", ], "Stage")
+```
+
+
+##### Up && LUSC
+```{R}
+upset_by(res[res$DE == "Up" & res$Disease == "LUSC" & res$Source == "East Asians", ], "Stage")
+```
+
+#### Down && LUSC
+```{R}
+upset_by(res[res$DE == "Down" & res$Disease == "LUSC" & res$Source == "East Asians", ], "Stage")
+```
+
+
+#### East Asians
+##### Up && LUAD
+```{R}
+upset_by(res[res$DE == "Up" & res$Disease == "LUAD" & res$Source == "East Asians", ], "Stage")
+```
+
+#### Down && LUAD
+```{R}
+upset_by(res[res$DE == "Down" & res$Disease == "LUAD" & res$Source == "East Asians", ], "Stage")
+```
+
+
+##### Up && LUSC
+```{R}
+upset_by(res[res$DE == "Up" & res$Disease == "LUSC" & res$Source == "East Asians", ], "Stage")
+```
+
+#### Down && LUSC
+```{R}
+upset_by(res[res$DE == "Down" & res$Disease == "LUSC" & res$Source == "East Asians", ], "Stage")
+```
+
+
+### Single Cell
+
+#### ATII
+```{r}
+atii <- readRDS(full_path("09_bulk/RNA_seq/DEGs/Res/ATII_markers.rds"))
+
+summary(atii$avg_logFC)
+
+atii$DE = "Not"
+atii$DE[atii$p_val_adj < 0.05 & atii$avg_logFC > 0.25] = "Up"
+atii$DE[atii$p_val_adj < 0.05 & atii$avg_logFC < -0.25] = "Down"
+
+temp = as.data.frame(atii) %>%
+    group_by(ident, DE) %>%
+    add_tally() %>%
+    dplyr::select(ident, DE, n) %>%
+    unique() %>%
+    as.data.frame()
+
+temp = temp[temp$DE != "Not", ]
+# temp$n = log10(temp$n + 1)
+temp$n[temp$DE == "Down"] = -1 * temp$n[temp$DE == "Down"]
+
+
+ggplot(temp, aes(x=ident, y=n, fill=ident)) +
+    geom_bar(stat = "identity", position = position_dodge()) +
+    theme(legend.position = "bottom")
+```
+
+
+```{R}
+upset_by(atii, "ident")
+```
+
+
+#### Basal
+```{r}
+basal <- readRDS(full_path("09_bulk/RNA_seq/DEGs/Res/Basal_markers.rds"))
+
+summary(basal$avg_logFC)
+
+basal$DE = "Not"
+basal$DE[basal$p_val_adj < 0.05 & basal$avg_logFC > 0.25] = "Up"
+basal$DE[basal$p_val_adj < 0.05 & basal$avg_logFC < -0.25] = "Down"
+
+temp = as.data.frame(basal) %>%
+    group_by(ident, DE) %>%
+    add_tally() %>%
+    dplyr::select(ident, DE, n) %>%
+    unique() %>%
+    as.data.frame()
+
+temp = temp[temp$DE != "Not", ]
+# temp$n = log10(temp$n + 1)
+temp$n[temp$DE == "Down"] = -1 * temp$n[temp$DE == "Down"]
+
+
+ggplot(temp, aes(x=ident, y=n, fill=ident)) +
+    geom_bar(stat = "identity", position = position_dodge()) +
+    theme(legend.position = "bottom")
+```
+
+```{R}
+upset_by(basal, "ident")
+```
+
+
+#### Basal vs all LUSC cell
+```{r}
+basal <- readRDS(full_path("09_bulk/RNA_seq/DEGs/Res/Basal_markers_all_LUSC.rds"))
+
+summary(basal$avg_logFC)
+
+basal$DE = "Not"
+basal$DE[basal$p_val_adj < 0.05 & basal$avg_logFC > 0.25] = "Up"
+basal$DE[basal$p_val_adj < 0.05 & basal$avg_logFC < -0.25] = "Up"
+
+temp = as.data.frame(basal) %>%
+    group_by(ident, DE) %>%
+    add_tally() %>%
+    dplyr::select(ident, DE, n) %>%
+    unique() %>%
+    as.data.frame()
+
+temp = temp[temp$DE != "Not", ]
+# temp$n = log10(temp$n + 1)
+temp$n[temp$DE == "Down"] = -1 * temp$n[temp$DE == "Down"]
+
+
+ggplot(temp, aes(x=ident, y=n, fill=ident)) +
+    geom_bar(stat = "identity", position = position_dodge()) +
+    theme(legend.position = "bottom")
+```
+
+
+```{R}
+upset_by(basal, "ident")
+```
+
+
+### Line plot of gene logFoldChange
+
+```{r}
+get_overlap_tf <- function(res, overlap.by = "Source", Stage=NULL, Disease=NULL, Source = NULL) {
+    
+    sel = res$padj < 0.05 & res$log2FoldChange > 1
+    
+    if (!is.null(Stage)) {
+        sel = sel & res$Stage == Stage
+    }
+    if (!is.null(Disease)) {
+        sel = sel & res$Disease == Disease
+    }
+    if (!is.null(Source)) {
+        sel = sel & res$Source == Source
+    }
+    temp_res = res[sel, ]
+
+    res_tf = tf$SYMBOL
+    
+    for (i in unique(temp_res[, overlap.by])) {
+        print(i)
+        temp = temp_res$gene[temp_res[, overlap.by] == i]
+        
+        if (!is.null(temp) && length(temp) > 0) {
+            res_tf = intersect(res_tf, temp)
+        }
+    }
+    
+    return(res_tf)
+}
+
+
+
+make_line_plot <- function(data, facet = "Stage") {
+    data$x = as.numeric(factor(data$Stage, levels=c("I", "II", "III", "IV")))
+    
+    p <- ggplot(
+        data, 
+        aes(x=Stage, y=log2FoldChange, color=gene)
+    ) 
+    if(facet == "Stage") {
+        p = p + facet_wrap(.~Group)
+    } else if (facet == "Source") {
+        p = p + facet_wrap(.~Source)
+    }
+    
+    p = p +
+        geom_point() + 
+        geom_line(aes(x=x)) +
+        theme(legend.position = "none")
+    
+    p
+}
+```
+
+#### LUAD I
+```{r}
+temp_res = res[res$Stage == "I" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+# temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+temp_res$Group = temp_res$Source
+make_line_plot(temp_res)
+```
+
+#### LUSC I
+```{r}
+temp_res = res[res$Stage == "I" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUSC", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+# temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUSC", ]
+temp_res$Group = temp_res$Source
+make_line_plot(temp_res)
+```
+
+
+#### LUAD II
+```{r}
+temp_res = res[res$Stage == "II" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+temp_res$Group = temp_res$Source
+make_line_plot(temp_res)
+```
+
+
+#### LUSC II
+```{r}
+temp_res = res[res$Stage == "II" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUSC", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+# temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUSC", ]
+temp_res$Group = temp_res$Source
+make_line_plot(temp_res)
+```
+
+
+#### LUAD III
+```{r}
+temp_res = res[res$Stage == "III" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+temp_res$Group = temp_res$Source
+make_line_plot(temp_res)
+```
+
+
+
+#### LUSC III
+```{r}
+temp_res = res[res$Stage == "III" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUSC", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+# temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUSC", ]
+temp_res$Group = temp_res$Source
+make_line_plot(temp_res)
+```
+
+
+#### LUAD IV
+```{r}
+temp_res = res[res$Stage == "IV" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Source == "TCGA"], temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+temp_res$Group = temp_res$Source
+make_line_plot(temp_res)
+```
+
+
+### Across stages by different sample
+
+#### In-house LUAD
+```{r}
+temp_res = res[res$Source == "In-house" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Stage == "I"], temp_res$gene[temp_res$Stage == "II"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "III"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+
+
+temp_res$Group = temp_res$Stage
+make_line_plot(temp_res, "Source")
+```
+
+
+#### In-house LUSC
+```{r}
+temp_res = res[res$Source == "In-house" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUSC", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Stage == "I"], temp_res$gene[temp_res$Stage == "II"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "III"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUSC", ]
+temp_res$Group = temp_res$Stage
+make_line_plot(temp_res, "Source")
+```
+
+
+#### TCGA LUAD
+```{r}
+temp_res = res[res$Source == "TCGA" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Stage == "I"], temp_res$gene[temp_res$Stage == "II"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "III"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "IV"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+temp_res$Group = temp_res$Stage
+make_line_plot(temp_res, "Source")
+```
+
+
+#### TCGA LUSC
+```{r}
+temp_res = res[res$Source == "TCGA" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUSC", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Stage == "I"], temp_res$gene[temp_res$Stage == "II"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "III"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "IV"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUSC", ]
+temp_res$Group = temp_res$Stage
+make_line_plot(temp_res, "Source")
+```
+
+
+#### East Asians LUAD
+```{r}
+temp_res = res[res$Source == "East Asians" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Stage == "I"], temp_res$gene[temp_res$Stage == "II"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "III"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "IV"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+temp_res$Group = temp_res$Stage
+make_line_plot(temp_res, "Source")
+```
+
+
+#### SYSU LUAD
+```{r}
+temp_res = res[res$Source == "SYSU" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Stage == "I"], temp_res$gene[temp_res$Stage == "II"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "III"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "IV"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+temp_res$Group = temp_res$Stage
+make_line_plot(temp_res, "Source")
+```
+
+
+
+#### East Asians LUAD
+```{r}
+temp_res = res[res$Source == "SYSU" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf = intersect(temp_res$gene[temp_res$Stage == "I"], temp_res$gene[temp_res$Stage == "II"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "III"])
+temp_tf = intersect(temp_tf, temp_res$gene[temp_res$Stage == "IV"])
+temp_tf = intersect(temp_tf, tf$SYMBOL)
+
+
+temp_res = res[res$gene %in% temp_tf & res$Disease == "LUAD", ]
+temp_res$Group = temp_res$Stage
+make_line_plot(temp_res, "Source")
+```
+
+### 所有来源，所有时期都高表达的TF
+
+#### Stage I
+```{r}
+temp_res = res[res$Stage == "I" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf_I = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf_I = intersect(temp_tf_I, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf_I = intersect(temp_tf_I, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf_I = intersect(temp_tf_I, tf$SYMBOL)
+temp_tf_I
+```
+
+#### Stage II
+```{r}
+temp_res = res[res$Stage == "II" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf_II = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf_II = intersect(temp_tf_II, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf_II = intersect(temp_tf_II, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf_II = intersect(temp_tf_II, tf$SYMBOL)
+temp_tf_II
+```
+
+#### Stage III
+```{r}
+temp_res = res[res$Stage == "III" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf_III = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf_III = intersect(temp_tf_III, temp_res$gene[temp_res$Source == "East Asians"])
+temp_tf_III = intersect(temp_tf_III, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf_III = intersect(temp_tf_III, tf$SYMBOL)
+temp_tf_III
+```
+
+#### Stage IV
+```{r}
+temp_res = res[res$Stage == "IV" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUAD", ]
+
+temp_tf_IV = intersect(temp_res$gene[temp_res$Source == "East Asians"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf_IV = intersect(temp_tf_IV, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf_IV = intersect(temp_tf_IV, tf$SYMBOL)
+temp_tf_IV
+```
+
+##### LUAD
+```{r}
+temp_tf = intersect(temp_tf_I, temp_tf_II)
+temp_tf = intersect(temp_tf, temp_tf_III)
+intersect(temp_tf, temp_tf_IV)
+```
+
+
+
+### 所有来源，所有时期都高表达的TF
+
+#### Stage I
+```{r}
+temp_res = res[res$Stage == "I" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUSC", ]
+
+temp_tf_I = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf_I = intersect(temp_tf_I, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf_I = intersect(temp_tf_I, tf$SYMBOL)
+temp_tf_I
+```
+
+#### Stage II
+```{r}
+temp_res = res[res$Stage == "II" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUSC", ]
+
+temp_tf_II = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf_II = intersect(temp_tf_II, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf_II = intersect(temp_tf_II, tf$SYMBOL)
+temp_tf_II
+```
+
+#### Stage III
+```{r}
+temp_res = res[res$Stage == "III" & res$padj < 0.05 & res$log2FoldChange > 1 & res$Disease == "LUSC", ]
+
+temp_tf_III = intersect(temp_res$gene[temp_res$Source == "In-house"], temp_res$gene[temp_res$Source == "TCGA"])
+temp_tf_III = intersect(temp_tf_III, temp_res$gene[temp_res$Source == "SYSU"])
+temp_tf_III = intersect(temp_tf_III, tf$SYMBOL)
+temp_tf_III
+```
+
+
+##### LUSC
+```{r}
+temp_tf = intersect(temp_tf_I, temp_tf_II)
+intersect(temp_tf, temp_tf_III)
+```
+
+
+## Make scRNA_seq stats
+```{R}
+tf <- read.csv(full_path("09_bulk/RNA_seq/DEGs/Res/TF.csv"), row.names = 1, stringsAsFactors = F)
+degs <- read.xlsx(full_path("09_bulk/RNA_seq/DEGs/Res/Overlap.xlsx"))
+
+
+wb = loadWorkbook(full_path("09_bulk/RNA_seq/DEGs/Res/AmpDel_genes_convert.xlsx"))
+sheet_names = sheets(wb)
+rm(wb)
+```
+
+```{r}
+merged_scrna_tf <- function(sc_path, bulk, sheets, tf) {
+    removed = read.xlsx(
+        full_path("09_bulk/RNA_seq/DEGs/Res/AmpDel_genes_removenegative.xlsx"), sheet = sheets
+    )
+    removed = removed[removed$Aberration == "Amp", ]
+    
+    converted = read.xlsx(
+        full_path("09_bulk/RNA_seq/DEGs/Res/AmpDel_genes_convert.xlsx"), sheet = sheets
+    )
+    converted = converted[converted$Aberration == "Amp", ]
+    
+    sc_data = readRDS(sc_path)
+    
+    sc_data = sc_data[sc_data$avg_logFC > 0.25 & sc_data$p_val_adj < 0.05, ]
+    
+    sc_data = sc_data %>% 
+        group_by(ident) %>%
+        add_tally() %>%
+        as.data.frame()
+    
+    colnames(sc_data)[colnames(sc_data) == "n"] = "degs_by_stage"
+    
+    sc_data$total_degs = length(unique(sc_data$gene))
+    
+    sc_data =  sc_data[sc_data$gene %in% tf$SYMBOL, ]
+    
+    sc_data$Categoriy = ifelse(sc_data$gene %in% bulk, "scRNA+bulk", "scRNA-only")
+    
+    removed = merge(sc_data, removed, by.x = "gene", by.y = "GeneSymbol", all.x = T)
+    converted = merge(sc_data, converted, by.x = "gene", by.y = "GeneSymbol", all.x = T)
+    
+    return(list(removed, converted))
+}
+```
+
+#### ATII LUAD
+```{r}
+removed = NULL
+converted = NULL
+
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/ATII_markers.rds"), 
+    degs$gene[degs$Disease == "LUAD"],
+    which(sheet_names == "LUAD_3"),
+    tf
+)
+
+temp[[1]]$Cell = "ATII"
+temp[[2]]$Cell = "ATII"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+
+#### NE LUAD
+```{r}
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/NE_markers_all_LUAD.rds"), 
+    degs$gene[degs$Disease == "LUAD"],
+    which(sheet_names == "LUAD_1"),
+    tf
+)
+
+temp[[1]]$Cell = "NE"
+temp[[2]]$Cell = "NE"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+
+#### Epi LUAD
+```{r}
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/Epi_markers_all_LUAD.rds"), 
+    degs$gene[degs$Disease == "LUAD"],
+    which(sheet_names == "LUAD_2"),
+    tf
+)
+
+temp[[1]]$Cell = "Epi"
+temp[[2]]$Cell = "Epi"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+
+#### Fib LUAD
+```{r}
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/Fib_markers_all_LUAD.rds"), 
+    degs$gene[degs$Disease == "LUAD"],
+    which(sheet_names == "LUAD_4"),
+    tf
+)
+
+temp[[1]]$Cell = "Fib"
+temp[[2]]$Cell = "Fib"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+```{r}
+stat_tfs <- function(data) {
+    data$is.significant = data$`q-value` < 0.05
+    
+    
+    data %>%
+        group_by(Cell) %>%    # the number of TFs each cells
+        add_tally() %>%
+        mutate(total = n) %>%
+        ungroup() %>%
+        group_by(Cell, Aberration, is.significant) %>%   # the number of aberrations of TFs
+        add_count(Aberration) %>%
+        mutate(total_aberration = n) %>%
+        ungroup() %>%
+        group_by(Cell, Categoriy, Aberration, is.significant) %>%   # the number of aberrations of TFs
+        add_count(Aberration) %>%
+        mutate(each_categoriy=n) %>%
+        ungroup() %>%
+        group_by(Cell, gene, Aberration) %>%  # the number of aberrations of each TFs
+        add_count(Aberration) %>%
+        mutate(each_tf = n) %>%
+        dplyr::select(gene, Cell, ident, Categoriy, Aberration, is.significant, total, total_aberration, each_categoriy, each_tf, degs_by_stage, total_degs) %>%
+        unique() %>%
+        as.data.frame()
+}
+```
+
+
+```{R}
+wb = createWorkbook()
+addWorksheet(wb, "LUAD_removed")
+writeData(wb, 1, removed)
+
+addWorksheet(wb, "LUAD_removed_stats")
+writeData(wb, 2, stat_tfs(removed))
+
+addWorksheet(wb, "LUAD_converted")
+writeData(wb, 3, converted)
+
+
+addWorksheet(wb, "LUAD_converted_stats")
+writeData(wb, 4, stat_tfs(converted))
+```
+
+
+#### ATII LUSC
+```{r}
+removed = NULL
+converted = NULL
+
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/ATII_markers_all_LUSC.rds"), 
+    degs$gene[degs$Disease == "LUSC"],
+    which(sheet_names == "LUSC_2"),
+    tf
+)
+
+temp[[1]]$Cell = "ATII"
+temp[[2]]$Cell = "ATII"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+#### Fib LUSC
+```{r}
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/Fib_markers_all_LUSC.rds"), 
+    degs$gene[degs$Disease == "LUSC"],
+    which(sheet_names == "LUSC_1"),
+    tf
+)
+
+temp[[1]]$Cell = "Fib"
+temp[[2]]$Cell = "Fib"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+
+#### Basal LUSC
+```{r}
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/Basal_markers_all_LUSC.rds"), 
+    degs$gene[degs$Disease == "LUSC"],
+    which(sheet_names == "LUSC_3"),
+    tf
+)
+
+temp[[1]]$Cell = "Basal"
+temp[[2]]$Cell = "Basal"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+
+#### Basal Fib hybrid LUSC
+```{r}
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/Basal_markers_all_LUSC.rds"), 
+    degs$gene[degs$Disease == "LUSC"],
+    which(sheet_names == "LUSC_4"),
+    tf
+)
+
+temp[[1]]$Cell = "Basal+Basal-Fib-hybrid"
+temp[[2]]$Cell = "Basal+Basal-Fib-hybrid"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+
+#### Fib LUSC
+```{r}
+temp = merged_scrna_tf(
+    full_path("09_bulk/RNA_seq/DEGs/Res/Fib_markers_all_LUSC.rds"), 
+    degs$gene[degs$Disease == "LUSC"],
+    which(sheet_names == "LUSC_4"),
+    tf
+)
+
+temp[[1]]$Cell = "Fib+Basal-Fib-hybrid"
+temp[[2]]$Cell = "Fib+Basal-Fib-hybrid"
+
+removed = rbind(removed, temp[[1]])
+converted = rbind(converted, temp[[2]])
+```
+
+
+```{R}
+
+addWorksheet(wb, "LUSC_removed")
+writeData(wb, 5, removed)
+addWorksheet(wb, "LUSC_removed_stats")
+writeData(wb, 6, stat_tfs(removed))
+
+addWorksheet(wb, "LUSC_converted")
+writeData(wb, 7, converted)
+addWorksheet(wb, "LUSC_converted_stats")
+writeData(wb, 8, stat_tfs(converted))
+
+saveWorkbook(wb, full_path("09_bulk/RNA_seq/DEGs/Res/scRNA_seq_TF.xlsx"), overwrite = T)
+```
+
+
+## Calculate Markers
+```{r}
+obj <- readRDS("02_rds/seurat_obj.rds")
+```
+
+
+```{R}
+meta = readRDS("11_CNV/meta.rds")
+```
+
+```{r}
+immu <- c( 
+    "B", "CD4", "CD8",
+    "DC", "Mast", "Mφ",
+    "NK", "Tregs", "Gran"
+)
+
+cells = unique(meta$cell_short)
+
+non_immu = cells[!cells %in% immu]
+```
+
+
+```{R}
+markers = NULL
+
+meta = meta[meta$cell_short %in% non_immu, ]
+print(unique(meta$res.0.8))
+for (i in unique(meta$res.0.8)) {
+    print(i)
+    temp = FindMarkers(
+        obj, 
+        ident.1 = rownames(meta)[meta$res.0.8 == i],
+        ident.2 = rownames(meta)[meta$res.0.8 != i]
+    )
+    
+    temp$res = i
+    
+    markers = rbind(markers, temp)
+}
+```
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

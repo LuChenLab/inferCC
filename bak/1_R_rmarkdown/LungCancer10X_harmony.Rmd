@@ -1,0 +1,2563 @@
+---
+title: "LungCancer10X_harmony"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+load_packages <- function() {
+    library(Matrix)
+    library(Seurat)
+    library(here)
+    library(gridExtra)
+    library(openxlsx)
+    library(ape)
+    library(dplyr)
+    library(grid)
+    library(ggpubr)
+    library(harmony)
+    library(reshape2)
+    library(pheatmap)
+    library("wesanderson")
+    library(tidyr)
+    library(clusterProfiler)
+    library(org.Hs.eg.db)
+    # library(DOSE)
+}
+
+suppressPackageStartupMessages(load_packages())
+
+
+cols = 3
+size = 10
+dpi = 600
+filenames = list()
+
+
+custom_colors <- c(
+    "#1B62A3",
+    "#9CB8DD",
+    "#EE6719",
+    "#F8A966",
+    "#278F36",
+    "#8CC873",
+    "#C70F1F",
+    "#EF7E82",
+    "#7D509A",
+    "#B59BC7",
+    "#76423A",
+    "#B48880",
+    "#CB60A1",
+    "#F1A3C5",
+    "#7E7F83",
+    "#BDC3C4",
+    "#ABB126",
+    "#D1D57A",
+    "#1DAFC3",
+    "#8BCFDA"
+)
+
+
+
+# Calculate the percentage of a vector above some threshold
+#
+# @param x          Vector of values
+# @param threshold  Threshold to use when calculating percentage
+#
+# @return           Returns the percentage of `x` values above the given
+#                   threshold
+#
+PercentAbove <- function(x, threshold){
+  return(length(x = x[x > threshold]) / length(x = x))
+}
+
+
+ModifiedDotPlot <- function(
+  object,
+  group.by,
+  markers,
+  cols.use = c("lightgrey", "blue"),
+  col.min = -2.5,
+  col.max = 2.5,
+  dot.min = 0,
+  dot.scale = 6,
+  scale.by = 'radius',
+  scale.min = NA,
+  scale.max = NA,
+  x.axis.rotate = FALSE
+) {
+  scale.func <- switch(
+    EXPR = scale.by,
+    'size' = scale_size,
+    'radius' = scale_radius,
+    stop("'scale.by' must be either 'size' or 'radius'")
+  )
+  if (!missing(x = group.by)) {
+    object <- SetAllIdent(object = object, id = group.by)
+  }
+  
+  genes.plot <- intersect(row.names(object@raw.data), markers$Markers)
+  data.to.plot <- data.frame(FetchData(object = object, vars.all = genes.plot))
+  colnames(x = data.to.plot) <- genes.plot
+  data.to.plot$cell <- rownames(x = data.to.plot)
+  data.to.plot$id <- object@ident
+  data.to.plot %>% gather(
+    key = genes.plot,
+    value = expression,
+    -c(cell, id)
+  ) -> data.to.plot
+  data.to.plot %>%
+    group_by(id, genes.plot) %>%
+    summarize(
+      avg.exp = mean(expm1(x = expression)),
+      pct.exp = PercentAbove(x = expression, threshold = 0)
+    ) -> data.to.plot
+  data.to.plot %>%
+    ungroup() %>%
+    group_by(genes.plot) %>%
+    mutate(avg.exp.scale = scale(x = avg.exp)) %>%
+    mutate(avg.exp.scale = MinMax(
+      data = avg.exp.scale,
+      max = col.max,
+      min = col.min
+    )) ->  data.to.plot
+  data.to.plot$genes.plot <- factor(
+    x = data.to.plot$genes.plot,
+    levels = rev(x = genes.plot)
+  )
+  # data.to.plot$genes.plot <- factor(
+  #   x = data.to.plot$genes.plot,
+  #   levels = rev(x = sub(pattern = "-", replacement = ".", x = genes.plot))
+  # )
+  data.to.plot$pct.exp[data.to.plot$pct.exp < dot.min] <- NA
+  data.to.plot$pct.exp <- data.to.plot$pct.exp * 100
+  data.to.plot <- merge(data.to.plot, markers, by.x = "genes.plot", by.y = "Markers")
+  
+  p <- ggplot(data = data.to.plot, aes(x = id, y = genes.plot, size = pct.exp, color = avg.exp.scale)) + 
+    geom_point() + 
+    # guides(
+    #     color=guide_legend(
+    #         ncol = 2,
+    #         title.position = "top"
+    #     ),
+    #     size=guide_legend(
+    #         ncol = 1
+    #     ),
+    #     alpha=guide_legend(
+    #         ncol = 1
+    #     )
+    # ) +
+    scale.func(range = c(0, dot.scale), limits = c(scale.min, scale.max)) +
+    facet_grid(Cells ~ ., scale = "free", space = "free")
+  
+  if (x.axis.rotate) {
+    p = p + theme(
+        legend.position = "none",
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+    )
+  } else {
+    p = p + theme(
+        legend.position = "none",
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(hjust = 1, vjust = 0.5)
+        # axis.title.y = element_text(angle = 90)
+    )
+  }
+  
+  
+  return(p)
+}
+
+
+
+
+# Set a default value if an object is null
+#
+# @param x An object to set if it's null
+# @param default The value to provide if x is null
+#
+# @return default if x is null, else x
+#
+SetIfNull <- function(x, default) {
+  if(is.null(x = x)){
+    return(default)
+  } else {
+    return(x)
+  }
+}
+
+
+# function to calculate freq or percentage by two select elements
+# :param object: seurat obj
+# :param first_ele: str, first select element, main elements
+# :param second_ele: str, second select element
+# :return dataframe of three columns, var1 -> first element, var2 -> second element, value -> percentage
+make_perc_plot <- function(object, first_ele, second_ele, percentage = FALSE) {
+    data <- object[, c("cluster_id", first_ele, second_ele)]
+
+    res = data.frame("var1"=NA, "var2"=NA, "value"=NA)
+    for (i in unique(data[, first_ele])) {
+        temp <- data[data[, first_ele] == i, ]
+
+        uniq_second_ele = unique(as.vector(data[, second_ele]))
+        temp_res = as.data.frame(matrix(NA, nrow = length(uniq_second_ele), ncol=3))
+
+        for (j in 1:length(uniq_second_ele)) {
+            temp_val <- sum(data[, second_ele] == uniq_second_ele[j] & data[, first_ele] == i)
+
+            if (percentage) {
+                temp_val <- temp_val / nrow(temp)
+            }
+
+            temp_res[j, ] <- c(i, uniq_second_ele[j], temp_val)
+        }
+
+        colnames(temp_res) <- colnames(res)
+
+        res <- rbind(temp_res, res)
+    }
+
+    res <- na.omit(res)
+    res <- res[res[,3] > 0,]
+    res[, 3] <- as.numeric(res[, 3])
+    return(res)
+    
+    # temp <- as.data.frame(meta %>% select(res.0.6, PatientID) %>% group_by(res.0.6, PatientID) %>% add_tally() %>% unique())
+    # 
+    # if(percentage) {
+    #     temp <- as.data.frame(temp %>% group_by(res.0.6) %>% mutate(freq = n / sum(n)) %>% unique())
+    #     
+    #     temp <- temp[, c(1, 2, 4)]
+    # } 
+    # 
+    # colnames(temp) <- c("var1", "var2", "value")
+    # return (temp)
+}
+
+
+
+# function to draw barplot and heatmap
+# :param data: Seurat obj@meta.data
+make_heatmap_of_cells <- function(data, title="Total") {
+    
+    # make bar plot
+    uniq_stage <- unique(data[, c("PatientID", "Stage")])
+    uniq_stage <- as.data.frame(table(uniq_stage$Stage))
+    
+    p1 <- ggplot(data = uniq_stage, aes(x=Var1, y=Freq)) + geom_bar(stat = "identity") + labs(x="Stage", y="Num.", title = title)
+    
+    # make heatmap
+    data <- make_perc_plot(data, first_ele = "cell_name", second_ele = "Stage")
+    data <- acast(data, var1~var2)
+    data[is.na(data)] <- 0
+    data <- data[, order(colnames(data))]
+    p2 <- pheatmap(log10(data + 1), cluster_cols = FALSE, silent = TRUE)
+    
+    grid.arrange(grobs = list(p1, p2[[4]]))
+}
+
+
+# function to draw serveral different bar plots
+# :param data: Seurat obj@meta.data
+# :param cell: str, specific cell name
+# :param cluster: label to specify which column is the cluster id
+make_combination_plots <- function(data, cell_name, cluster = "res.0.6") {
+    meta <- data[data$cell_name == cell_name,]
+    meta$PatientID <- as.character(meta$PatientID)
+    patient <- make_perc_plot(meta, first_ele = cluster, second_ele = "PatientID", percentage = TRUE)
+    disease <- make_perc_plot(meta, first_ele = cluster, second_ele = "Disease", percentage = TRUE)
+    cells <- make_perc_plot(meta, first_ele = cluster, second_ele = "cell_name")
+    phage <- meta[!is.na(meta$Phage) & meta$Phage != "", ]
+    phage <- make_perc_plot(phage, first_ele = cluster, second_ele = "Phage")
+    stage <- meta[!is.na(meta$Stage) & meta$Stage != "", ]
+    stage <- make_perc_plot(stage, first_ele = cluster, second_ele = "Stage")
+    
+
+    # make levels for order of plots
+    levels <- c()
+    for (i in sort(as.numeric(unique(meta[, cluster])), decreasing = TRUE)) {
+        levels <- c(levels, i)
+    }
+
+    
+    patient$var1 <- factor(patient$var1, levels)
+    p1 <- ggplot(patient, aes(x=var1, y=value, fill = var2)) +
+        geom_bar(stat = "identity", position = position_stack()) + 
+        coord_flip() +
+        labs(x=cell_name, y = "Fraction of cells") +
+        theme(
+            legend.position = "top", 
+            axis.title.y = element_text(angle = 90)
+            ) + 
+        guides(fill=guide_legend(
+            title="Patient", 
+            ncol = 4,
+            title.position = "top"
+            )) +
+        scale_fill_manual(values=wes_palette("Zissou1", length(unique(patient$var2)), type = "continuous"))
+ 
+    
+    disease$var1 <- factor(disease$var1, levels)
+    p2 <- ggplot(disease, aes(x=var1, y=value, fill = var2)) +
+        geom_bar(stat = "identity", position = position_stack()) + 
+        coord_flip() +
+        labs(x="", y = "Fraction of cells") +
+        theme(
+            legend.position = "top", 
+            axis.title.y = element_text(angle = 0),
+            legend.justification = "center"
+            ) + 
+        guides(fill=guide_legend(
+            title="Disease", 
+            nrow = 10,
+            title.position = "top"
+            )) +
+        scale_fill_manual(values=wes_palette("Darjeeling1", length(unique(disease$var2)), type = "continuous"))
+
+    
+    cells$var1 <- factor(cells$var1, levels)
+    cells$var2 <- ""
+    p3 <- ggplot(cells, aes(x=var1, y=log10(value + 1), fill = var2)) +
+        geom_bar(stat = "identity") + 
+        coord_flip() +
+        labs(x="", y = "log10(Number of cells + 1)") +
+        theme(legend.position = "top", axis.title.y = element_text(angle = 0)) + 
+        guides(fill=guide_legend(
+            title="", 
+            nrow = 10,
+            title.position = "top",
+            override.aes = list(size=0)
+            )) +
+        scale_fill_manual(values=wes_palette("GrandBudapest1", length(unique(cells$var2)), type = "continuous"))
+
+    meta$var1 <- meta[, cluster]
+    p4 <- ggplot(meta, aes(x = var1, y = log10(nGene + 1), fill = var1)) + 
+        geom_boxplot() + 
+        coord_flip() +
+        labs(x="", y = "log10(nGene + 1)") +
+        theme(legend.position = "top", axis.title.y = element_text(angle = 0)) + 
+        guides(fill=guide_legend(title="Clusters", nrow = 10, ncol=5, title.position = "top", override.aes = list(size = 0))) +
+        scale_fill_manual(values=wes_palette("Moonrise3", length(unique(meta$cluster_id)), type = "continuous"))
+    
+
+    p5 <- ggplot(phage, aes(x = var1, y = log10(value), fill = var2)) + 
+        geom_bar(stat = "identity", position = position_stack()) +
+        geom_text(aes(label=value), position = position_stack(vjust = 0.5)) +
+        coord_flip() + 
+        scale_fill_manual(values=wes_palette("Royal2", length(unique(phage$var2)), type = "continuous")) +
+        theme(legend.position = "top", axis.title.y = element_text(angle = 0)) + 
+        guides(fill=guide_legend(title="Phage", nrow = 10, ncol=5, title.position = "top")) +
+        labs(x="", y = "log10(num. of cells)")
+    
+    p6 <- ggplot(stage, aes(x = var1, y = log10(value), fill = var2)) + 
+        geom_bar(stat = "identity", position = position_stack()) +
+        geom_text(aes(label=value), position = position_stack(vjust = 0.5)) +
+        coord_flip() + 
+        scale_fill_manual(values=wes_palette("Cavalcanti1", length(unique(stage$var2)), type = "continuous")) +
+        theme(legend.position = "top", axis.title.y = element_text(angle = 0)) + 
+        guides(fill=guide_legend(title="Stage", nrow = 10, ncol=5, title.position = "top")) +
+        labs(x="", y = "log10(num. of cells)")
+    
+    p <- cbind(ggplotGrob(p1), ggplotGrob(p2), ggplotGrob(p5), ggplotGrob(p6), ggplotGrob(p3), ggplotGrob(p4), size = "last")
+    return(p)
+}
+
+random_select <- function(object, cluster = "res.0.6", sample_n = 0.5) {
+    clusters = unique(object@meta.data[, cluster])
+    
+    temp = object@meta.data[obj@meta.data[, cluster] == clusters[1], ]
+    
+    res = temp[sample(1:nrow(temp), nrow(temp) * sample_n),]
+    
+    for(i in clusters[2:length(clusters)]) {
+        temp = object@meta.data[obj@meta.data[, cluster] == i, ]
+        res = rbind(res, temp[sample(1:nrow(temp), nrow(temp) * sample_n),])
+    }
+    
+    return(res)
+}
+
+
+do_kegg <- function(eg, cluster=NA, pvalueCutoff = 0.05) {
+    kk <- enrichKEGG(gene     = eg$ENTREZID,
+                 organism     = 'hsa',
+                 pvalueCutoff = pvalueCutoff)
+    kk <- as.data.frame(kk)
+    
+    if (nrow(kk) == 0) {
+        return(kk)
+    }
+    kk$cluster <- cluster
+    return(kk)
+}
+
+
+do_go <- function(eg, cluster = NA, pvalueCutoff = 0.01, qvalueCutoff = 0.05) {
+    ego <- enrichGO(gene      = eg$ENTREZID,
+                keyType       = 'ENTREZID',
+                OrgDb         = org.Hs.eg.db,
+                ont           = "all",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = pvalueCutoff,
+                qvalueCutoff  = qvalueCutoff,
+                readable      = TRUE)
+
+        ego <- cbind(as.data.frame(ego))
+    
+    if (nrow(ego) == 0) {
+        return(ego)
+    }
+    
+    ego$cluster <- cluster
+    
+    return(ego)
+}
+
+
+do_do <- function(eg, cluster = NA, pvalueCutoff = 0.05, qvalueCutoff = 0.05, minGSSize = 5, maxGSSize = 500) {
+    do <- enrichDO(gene     = eg$ENTREZID,
+              ont           = "DO",
+              pvalueCutoff  = pvalueCutoff,
+              pAdjustMethod = "BH",
+              minGSSize     = minGSSize,
+              maxGSSize     = maxGSSize,
+              qvalueCutoff  = qvalueCutoff,
+              readable      = TRUE)
+    
+    do = as.data.frame(do)
+    
+    if (nrow(do) == 0) {
+        return(do)
+    }
+    do$cluster = cluster
+    
+    return(do)
+} 
+
+
+myGOslim <- function(x){
+  requireNamespace("topGO") || stop("package topGO is required")
+  groupGOTerms <- rvcheck::get_fun_from_pkg("topGO", "groupGOTerms")
+  annFUN.gene2GO <- rvcheck::get_fun_from_pkg("topGO", "annFUN.gene2GO")
+  if (!class(x) %in% c("gseaResult", "enrichResult")) {
+    stop("x should be output of gseGO or enrichGO...")
+  }
+  gene2GO <- inverseList(x@geneSets)
+  if (is(x, "gseaResult")) {
+    ont <- x@setType
+    allgenes <- x@geneList
+    core_genes <- unique(unlist(geneInCategory(x)))
+    allgenes[!names(allgenes) %in% core_genes] <- -1
+    allgenes[core_genes] <- 1
+  }
+  else {
+    ont <- x@ontology
+    universe <- x@universe
+    allgenes <- numeric(length(universe))
+    names(allgenes) <- universe
+    allgenes[x@gene] <- 1
+  }
+  selector <- function(scores) return(scores == 1)
+  if (!ont %in% c("BP", "MF", "CC")) {
+    stop("ontology should be one of 'BP', 'MF' or 'CC'...")
+  }
+  pvalue <- x@result$p.adjust
+  names(pvalue) <- x@result$ID
+  groupGOTerms()
+  GOdata <- new("topGOdata", description = "clusterProfiler enrichment results", 
+                ontology = ont, 
+                allGenes = allgenes, 
+                geneSel = selector, 
+                annot = annFUN.gene2GO, 
+                gene2GO = gene2GO)
+  result <- buildLevels(graph(GOdata))
+  return(result)
+}
+
+```
+
+
+
+
+### 读取原始counts
+```{r cars}
+raw_counts <- here("00_data_ingest", "00_raw_data", "raw_counts_clean.csv.gz")
+
+data <- fread(paste("zcat", raw_counts))
+
+# https://www.kaggle.com/cartographic/data-table-to-sparsematrix
+to_sparse <- function(d_table){
+
+  i_list <- lapply(d_table, function(x) which(x != 0))
+  counts <- unlist(lapply(i_list, length), use.names = F)
+
+  sparseMatrix(
+    i = unlist(i_list, use.names = F),
+    j = rep(1:ncol(d_table), counts),
+    x = unlist(lapply(d_table, function(x) x[x != 0]), use.names = F),
+    dims = dim(d_table),
+    dimnames = list(NULL, names(d_table)))
+}
+
+spareData <- to_sparse(data[ ,2:ncol(data)])
+rownames(spareData) <- data$V1
+
+data <- spareData
+rm(spareData)
+```
+
+
+
+
+### read meta info
+```{r}
+meta <- read.csv(here("00_data_ingest", "03_annotation_csv", "20190329_meta_info.csv"))
+meta <- meta[, 2:11]
+```
+
+
+
+
+### generate meta info with cells
+```{r}
+cells <- data.frame(SampleID=sapply(colnames(data), function(x){return(strsplit(x, "_")[[1]][1])}), Cells=colnames(data))
+
+meta <- merge(meta, cells, by = "SampleID")
+
+rownames(meta) <- meta$Cells
+
+rm(cells)
+```
+
+
+
+
+### Create Seurat obj
+```{r}
+data <- data[, meta$Cells]
+
+obj <- CreateSeuratObject(raw.data = data, project = "Patients_selected", meta.data = meta)
+```
+
+
+
+
+### modify the meta.data in seurat object
+```{r}
+for (i in colnames(obj@meta.data)) {
+    if (i %in% colnames(meta)) {
+         obj@meta.data[, i] <- meta[rownames(obj@meta.data), i]
+    }
+}
+```
+
+
+
+
+### set the batch and stage info
+```{r}
+obj@meta.data$batch = sapply(obj@meta.data$Batch, function(x) {if(x == 1) {return("First")} else if (x == 2) {return("Second")} else {return("NM")}})
+
+obj@meta.data$Stage = sapply(obj@meta.data$Stage, function(x) {gsub("[^IV]", "", x)})
+```
+
+```{r}
+saveRDS(obj, here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_base.rds"))
+```
+
+
+
+
+### Run harmony
+```{r}
+obj =  readRDS(here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_base.rds"))
+```
+
+
+
+#### First to perform pca in seurat
+```{r include=FALSE}
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@raw.data), value = TRUE)
+percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+
+# AddMetaData adds columns to object@meta.data, and is a great place to
+# stash QC stats
+obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+
+
+filenames[["vln"]] <- here("01_figures", "harmony", "VlnPlot.pdf")
+pdf(filename = filenames[["vln"]], width = 18, height = 6, res = dpi, units = "in")
+VlnPlot(object = obj, features.plot = c("nGene", "nUMI", "percent.mito"), nCol = 3)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["vln"]])
+```
+
+
+
+
+#### check the correlation between nUMI, uGene and percent.mito
+```{r fig.height=6, fig.width=12}
+filenames[["par"]] <- here("01_figures", "harmony", "GenePlot.pdf")
+
+pdf(filename = filenames[["par"]], width = 12, height = 6, res = dpi, units = "in")
+par(mfrow = c(1, 2))
+GenePlot(object = obj, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = obj, gene1 = "nUMI", gene2 = "nGene")
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["par"]])
+```
+
+
+
+
+#### normalization, scale and PCA
+```{r}
+obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = 100)
+```
+
+
+
+
+#### garbage collection and run Harmony
+```{r}
+gc()
+obj <- RunHarmony(obj, c("batch"))
+```
+
+
+#### make PCElbowPlot to select num. of PCs
+```{r include=FALSE}
+filenames[["pc"]] <- here("01_figures", "harmony", "PCElbowPlot.pdf")
+png(filename = filenames[["pc"]], width = 12, height = 6, res = dpi, units = "in")
+PCElbowPlot(obj, num.pc=100)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["pc"]])
+```
+
+
+
+
+#### plot the S.D. of harmony to select num. of harmony
+```{r include=FALSE}
+filenames[["harmony"]] <- here("01_figures", "harmony", "HarmonyPlot.png")
+
+temp <- as.data.frame(apply(obj@dr$harmony@cell.embeddings, 2, sd))
+colnames(temp) <- c("sd")
+temp$Harmony = 1:nrow(temp)
+
+p <- ggplot(temp, aes(x=Harmony, y=sd)) + geom_point() + ylab("Standard Dei of Harmony")
+ggsave(filenames[["harmony"]], plot = p, width = 12, height = 6, dpi = dpi, units = "in")
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["harmony"]])
+```
+
+
+
+## 分群感觉分的不是很开，调整参数重新分群看效果
+```{r}
+n.pcs = 50
+obj <- RunTSNE(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "harmony", reduction.name = "tsne")
+obj <- RunUMAP(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "harmony")
+obj <- FindClusters(object = obj, reduction.type = "harmony", dims.use = 1:n.pcs, resolution = 0.8, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+```
+
+
+
+
+#### save progress after calculations
+```{r}
+saveRDS(obj, here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_harmony_normal_vs_cancer.rds"))
+```
+
+
+
+
+## make dimplot to check the tsne and umap status
+```{r include=FALSE}
+p1 <- DimPlot(obj, reduction.use = "tsne", group.by = "res.0.8", no.legend = TRUE, do.label = TRUE, label.size = 5, do.return = TRUE, pt.size = 0.01)
+p2 <- DimPlot(obj, reduction.use = "tsne", group.by = "batch", no.legend = FALSE, do.label = FALSE, do.return = TRUE, pt.size = 0.01)
+
+p3 <- DimPlot(obj, reduction.use = "umap", group.by = "res.0.8", no.legend = TRUE, do.label = TRUE, label.size = 5, do.return = TRUE, pt.size = 0.01)
+p4 <- DimPlot(obj, reduction.use = "umap", group.by = "batch", no.legend = FALSE, do.label = FALSE, do.return = TRUE, pt.size = 0.01)
+
+
+temp = rownames(obj@meta.data[obj@meta.data$batch == "First",])
+p5 <- DimPlot(
+  obj, reduction.use = "tsne", 
+  group.by = "batch", no.legend = FALSE, 
+  do.label = FALSE, do.return = TRUE, 
+  pt.size = 0.01, 
+  cells.highlight=temp,
+  cols.highlight = rep("#F35E5A", length(temp)),
+  plot.title = "First"
+)
+
+p5.1 <- DimPlot(
+  obj, reduction.use = "umap", 
+  group.by = "batch", no.legend = FALSE, 
+  do.label = FALSE, do.return = TRUE, 
+  pt.size = 0.01, 
+  cells.highlight=temp,
+  cols.highlight = rep("#F35E5A", length(temp)),
+  plot.title = "First"
+)
+
+
+
+temp = rownames(obj@meta.data[obj@meta.data$batch == "Second",])
+p6 <- DimPlot(
+  obj, reduction.use = "tsne", 
+  group.by = "batch", 
+  no.legend = FALSE, 
+  do.label = FALSE, 
+  do.return = TRUE, 
+  pt.size = 0.01, 
+  cells.highlight=temp,
+  cols.highlight = rep("#4F86FF", length(temp)),
+  plot.title = "Second"
+)
+
+p6.1 <- DimPlot(
+  obj, reduction.use = "umap", 
+  group.by = "batch", 
+  no.legend = FALSE, 
+  do.label = FALSE, 
+  do.return = TRUE, 
+  pt.size = 0.01, 
+  cells.highlight=temp,
+  cols.highlight = rep("#4F86FF", length(temp)),
+  plot.title = "Second"
+)
+
+
+temp = rownames(obj@meta.data[obj@meta.data$batch == "NM",])
+p7 <- DimPlot(
+  obj, reduction.use = "tsne", 
+  group.by = "batch", 
+  no.legend = FALSE, 
+  do.label = FALSE, 
+  do.return = TRUE, 
+  pt.size = 0.01, 
+  cells.highlight=temp,
+  cols.highlight = rep("#28B739", length(temp)),
+  plot.title = "Nature medicine"
+)
+
+p7.1 <- DimPlot(
+  obj, reduction.use = "umap", 
+  group.by = "batch", 
+  no.legend = FALSE, 
+  do.label = FALSE, 
+  do.return = TRUE, 
+  pt.size = 0.01, 
+  cells.highlight=temp,
+  cols.highlight = rep("#28B739", length(temp)),
+  plot.title = "Nature medicine"
+)
+
+p <- ggarrange(p1, p2, p5, p6, p7, nrow=3, ncol=2)
+
+filenames[["harmony_tsne"]] <- here("01_figures", "harmony", "Harmony_tsne_harmony_25.png")
+ggsave(filenames[["harmony_tsne"]], plot = p, width = 12, height = 18, dpi = dpi, units = "in")
+```
+```{r}
+knitr::include_graphics(filenames[["harmony_tsne"]])
+```
+
+```{r include=FALSE}
+p <- ggarrange(p3, p4, p5.1, p6.1, p7.1, nrow=3, ncol=2)
+
+filenames[["harmony_umap"]] <- here("01_figures", "harmony", "Harmony_umap_harmony_25.png")
+ggsave(filenames[["harmony_umap"]], plot = p, width = 12, height = 18, dpi = dpi, units = "in")
+```
+```{r}
+knitr::include_graphics(filenames[["harmony_umap"]])
+```
+
+
+
+### make dot plot of gene markers
+
+# ```{r}
+# saveRDS(obj, here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_harmony_npcs_25.rds"), compress = "gzip")
+# ```
+
+
+---
+
+
+### make split dot plot by identified cell type
+
+```{r}
+# cell_names <- read.xlsx(here("00_data_ingest", "03_annotation_csv", "gene_markers.xlsx"), sheet = 4)
+
+cell_names <- data.frame(
+  cluster = 0:38,
+  cell = c(
+        "NK",    # 0
+        "CD4+ T cells",   # 1
+        "Exhaust T",    # 2
+        "Alveolar Macrophages",  # 3
+        "Alveolar Macrophages",  # 4
+        "Basal cells",    # 5
+        "Treg",    # 6
+        "Monocytes",    # 7
+        "Alveolar Macrophages",  # 8
+        "Pulmonary alveolar type II cells",    # 9
+        "B cells",    # 10
+        "Epithelial",    # 11
+        "Pulmonary alveolar type II cells",    # 12
+        "NK",   # 13
+        "Club cells",    # 14
+        "NK",   # 15
+        "CD4+ T cells",    # 16
+        "B cells",    # 17
+        "Pulmonary alveolar type II cells",    # 18
+        "Unknown",    # 19
+        "Enhaust T",    # 20
+        "Monocytes",    # 21
+        "Dendritic",    # 22
+        "Endothelial cells",    # 23
+        "Fibroblasts",    # 24
+        "Mast",    # 25
+        "Alveolar Macrophages",    # 26
+        "Unknown",    # 27
+        "Monocytes",    # 28
+        "Enhaust T",    # 29
+        "Plateletes",    # 30
+        "Basal cells",    # 31
+        "Erythroid-like and erythroid precursor cells",  # 32
+        "Fibroblasts",    # 33
+        "Erythroid-like and erythroid precursor cells",    # 34
+        "Erythroid-like and erythroid precursor cells",    # 35
+        "Pulmonary alveolar type I cells",    # 36
+        "B cells",    # 37
+        "Basal cells"    # 38
+  )
+)
+
+obj@meta.data$cluster_id <- obj@meta.data$res.0.6
+obj@meta.data$cell_name <- obj@meta.data$res.0.6
+
+for (i in 1:nrow(cell_names)) {
+  idx = obj@meta.data$res.0.6 == cell_names[i, 1]
+  
+  obj@meta.data$cluster_id[idx] <- rep(paste(cell_names[i, 2], cell_names[i, 1], sep = "_"), sum(idx))
+  
+  obj@meta.data$cell_name[idx] <- rep(as.character(cell_names[i, 2]), sum(idx))
+}
+
+head(obj@meta.data)
+```
+
+
+```{r fig.height=10, fig.width=12}
+temp <- as.data.frame(obj@meta.data %>% select(cluster_id, PatientID) %>% group_by(cluster_id) %>% add_tally() %>% unique() %>% group_by(cluster_id) %>% mutate(freq = n / sum(n))) 
+
+temp1 <- acast(temp, PatientID~cluster_id, value.var = "n")
+
+pheatmap(log10(temp1 + 1), display_numbers = TRUE, legend = FALSE, main = "Patient composition of each cluster (log10)", cluster_rows = F, cluster_cols = F)
+```
+
+```{r fig.height=10, fig.width=12}
+temp1 <- acast(temp, PatientID~cluster_id, value.var = "freq")
+
+pheatmap(temp1, display_numbers = TRUE, legend = FALSE, main = "Patient composition of each cluster (%)", cluster_rows = F, cluster_cols = F)
+```
+
+
+
+
+
+### add cell names to dot plot
+# ```{r include=FALSE}
+# p <- DotPlot(
+#   obj, 
+#   genes.plot = genes, 
+#   group.by = "cluster_id", 
+#   x.lab.rot = TRUE, 
+#   do.return = TRUE
+#   ) + 
+#   coord_flip() + 
+#   labs(title = "Harmony") + 
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# 
+# filenames[["dotplot_with_cell_name"]] <- here("01_figures", "harmony", "Harmony_dotplot_with_cell_name.png")
+# ggsave(filename = filenames[["dotplot_with_cell_name"]], plot = p, width = 10, height = 30, units = "in", dpi = dpi)
+# 
+# rm(p)
+# ```
+# ```{r}
+# knitr::include_graphics(filenames[["dotplot_with_cell_name"]])
+# ```
+
+
+```{r}
+saveRDS(obj, here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_harmony.rds"))
+
+obj <- readRDS(here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_harmony.rds"))
+```
+
+
+### functions to make facet marker plot
+```{r fig.height=50, fig.width=12}
+
+markers <- read.xlsx(here("00_data_ingest", "03_annotation_csv", "20190410_gene_markers.xlsx"), sheet = 5)
+
+# markers <- read.xlsx("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190410_gene_markers.xlsx", sheet = 5)
+
+cell_names <- read.xlsx(here("00_data_ingest", "03_annotation_csv", "20190410_gene_markers.xlsx"), sheet = 4)
+
+# cell_names <- read.xlsx("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190410_gene_markers.xlsx", sheet = 4)
+
+
+obj@meta.data$cluster_id <- obj@meta.data$res.0.6
+obj@meta.data$cell_name <- obj@meta.data$res.0.6
+
+for (i in 1:nrow(cell_names)) {
+  idx = obj@meta.data$res.0.6 == cell_names[i, 1]
+  
+  obj@meta.data$cluster_id[idx] <- rep(paste(cell_names[i, 2], cell_names[i, 1], sep = "_"), sum(idx))
+  
+  obj@meta.data$cell_name[idx] <- rep(as.character(cell_names[i, 2]), sum(idx))
+}
+
+
+# ModifiedDotPlot(obj, markers, group.by = "res.0.6")
+
+p <- ModifiedDotPlot(obj, markers, group.by = "res.0.6")
+filenames[["dotplot_with_color"]] <- here("01_figures", "harmony", "Harmony_dotplot_with_color.png")
+filenames[["dotplot_with_color"]] <- "/mnt/raid62/Lung_cancer_10x/01_figures/harmony/Harmony_dotplot_with_color.png"
+
+ggsave(filename = filenames[["dotplot_with_color"]], plot = p, width = 10, height = 40, units = "in", dpi = dpi)
+
+p <- ModifiedDotPlot(obj, markers, group.by = "cluster_id", x.axis.rotate = TRUE)
+filenames[["dotplot_with_color_cluster"]] <- here("01_figures", "harmony", "Harmony_dotplot_with_color_cluster.png")
+filenames[["dotplot_with_color_cluster"]] <- "/mnt/raid62/Lung_cancer_10x/01_figures/harmony/Harmony_dotplot_with_color_cluster.png"
+
+ggsave(filename = filenames[["dotplot_with_color_cluster"]], plot = p, width = 10, height = 40, units = "in", dpi = dpi)
+
+# p <- ModifiedDotPlot(obj, markers, group.by = "res.0.8", x.axis.rotate = TRUE)
+# filenames[["dotplot_with_color_name"]] <- here("01_figures", "harmony", "Harmony_dotplot_res08.png")
+# ggsave(filename = filenames[["dotplot_with_color_name"]], plot = p, width = 10, height = 40, units = "in", dpi = dpi)
+
+rm(p)
+```
+
+
+#### 将findcluster的resolution提高到0.8之后，重新识别细胞来看分布情况
+```{r}
+# cell_names <- data.frame(
+#   cluster = 0:43,
+#   cell = c(
+#     "CD4+ T cells",   # 0
+#     "Alveolar Macrophages",  # 1
+#     "CD8+ T cells",    # 2
+#     "NK",    # 3
+#     "Monocytes",    # 4
+#     "Exhaust T",    # 5
+#     "Basal cells",    # 6
+#     "Treg",    # 7
+#     "Granulocyte",    # 8
+#     "Monocytes-derived dendritic",    # 9
+#     "B cells",    # 10
+#     "Epithelial",    # 11
+#     "Pulmonary alveolar type II cells",    # 12
+#     "Club cells",    # 13
+#     "Pulmonary alveolar type I cells",    # 14
+#     "Pulmonary alveolar type I cells",    # 15
+#     "CD4+ T cells",    # 16
+#     "CD4+ T cells",    # 17
+#     "NK",    # 18
+#     "B cells",    # 19
+#     "Pulmonary alveolar type II cells",    # 20
+#     "Unknown",    # 21
+#     "Enhaust T",    # 22
+#     "Granulocytes",    # 23
+#     "Dendritic",    # 24
+#     "Endothelial cells",    # 25
+#     "Fibroblasts",    # 26
+#     "Mast",    # 27
+#     "Unknown",    # 28
+#     "Alveolar Macrophages",    # 29
+#     "Unknown",    # 30
+#     "CD8+ T cells",    # 31
+#     "Unknown",    # 32
+#     "Basal cells",    # 33
+#     "NK",    # 34
+#     "Fibroblasts",    # 35
+#     "Monocytes",    # 36
+#     "Unknown",    # 37
+#     "Club cells",    # 38
+#     "Plateletes",    # 39
+#     "B cells",    # 40
+#     "Basal cells",    # 41
+#     "Monocytes",    # 42
+#     "Epithelial"    # 43
+#   )
+# )
+# 
+# obj@meta.data$cluster_id <- obj@meta.data$res.0.8
+# obj@meta.data$cell_name <- obj@meta.data$res.0.8
+# 
+# for (i in 1:nrow(cell_names)) {
+#   idx = obj@meta.data$res.0.8 == cell_names[i, 1]
+#   
+#   obj@meta.data$cluster_id[idx] <- rep(paste(cell_names[i, 2], cell_names[i, 1], sep = "_"), sum(idx))
+#   
+#   obj@meta.data$cell_name[idx] <- rep(cell_names[i, 2], sum(idx))
+# }
+# 
+# 
+# p <- ModifiedDotPlot(obj, markers, group.by = "cluster_id", x.axis.rotate = TRUE)
+# filenames[["dotplot_with_color_name"]] <- here("01_figures", "harmony", "Harmony_dotplot_res08.png")
+# ggsave(filename = filenames[["dotplot_with_color_name"]], plot = p, width = 10, height = 40, units = "in", dpi = dpi)
+
+```
+
+
+
+
+### make cluster tree
+```{r include=FALSE}
+
+genes <- unique(markers$Markers)
+genes <- gsub("\t", "", genes)
+genes <- intersect(genes, rownames(obj@raw.data))
+
+obj <- BuildClusterTree(
+    object=obj,
+    genes.use = genes,
+    SNN.use = NULL,
+    do.plot = TRUE,
+    do.reorder = FALSE,
+    reorder.numeric = FALSE,
+    show.progress = TRUE
+)
+```
+
+```{R include=FALSE}
+tree <- obj@cluster.tree[[1]]
+
+
+num <- as.data.frame(obj@meta.data %>% dplyr::select(res.0.6) %>% group_by(res.0.6) %>% add_tally() %>% unique())
+
+temp <- merge(cell_names, num, by.x = "cluster", by.y = "res.0.6")
+temp$new_id <- apply(temp, 1, function(x){return(paste(x[1], x[2], x[3], sep = "-"))})
+tree$tip.label <- temp[temp$cluster == tree$tip.label, "new_id"]
+
+filenames[["clusterTree"]] <- here("01_figures", "harmony", "cluster_tree.png")
+png(filenames[["clusterTree"]], width = 20, height = 15)
+plot.phylo(x = tree)
+nodelabels()
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["clusterTree"]])
+```
+
+
+
+#### 按照识别到的每种细胞，去做各自的feature plots
+```{r include=FALSE}
+
+customize_Seurat_FeaturePlot <- function(p, alpha.use = 1, gradient.use = c("yellow", "red"), expression.threshold = 0, is.log1p.transformed = F) {
+  
+  #### Main function ####
+  main_function <- function(p = p, alpha.use = alpha.use, gradient.use = gradient.use, expression.threshold = expression.threshold, is.log1p.transformed = is.log1p.transformed) {
+    
+    # Order data by gene expresion level
+    p$data <- p$data[order(p$data$gene),]
+    
+    # Define lower limit of gene expression level
+    if (isTRUE(is.log1p.transformed)) {
+      expression.threshold <- expression.threshold
+    } else {
+      expression.threshold <- log1p(expression.threshold)
+    }
+    
+    # Compute maximum value in gene expression
+    max.exp <- max(p$data$gene)
+    
+    # Fill points using the gene expression levels
+    p$layers[[1]]$mapping$fill <- p$layers[[1]]$mapping$colour
+    
+    # Define transparency of points
+    p$layers[[1]]$mapping$alpha <- alpha.use
+    
+    # Change fill and colour gradient values
+    p <- p + scale_colour_gradientn(colours = gradient.use, guide = F, limits = c(expression.threshold, max.exp), na.value = "grey") +
+      scale_fill_gradientn(colours = gradient.use, name = expression(atop(Expression, (log))), limits = c(expression.threshold, max.exp), na.value = "grey") +
+      scale_alpha_continuous(range = alpha.use, guide = F)
+  }
+  
+  #### Execution of main function ####
+  # Apply main function on all features
+  p <- lapply(X = p, alpha.use = alpha.use, gradient.use = gradient.use, 
+              expression.threshold = expression.threshold, is.log1p.transformed = is.log1p.transformed,
+              FUN = main_function)
+  
+    return(p)
+}
+
+
+
+
+for(i in unique(cell_names$cell)) {
+  
+  if (i != "") {
+      print(i)
+      temp <- cell_names[cell_names$cell == i,]
+      temp1 <- markers[markers$Cells == i, "Markers"]
+      
+      temp1 <- intersect(temp1, row.names(obj@raw.data))
+      
+      temp_list = FeaturePlot(obj, features.plot = temp1, cols.use = c("grey", "blue"), reduction.use = "tsne", do.return = TRUE)
+      temp_list = customize_Seurat_FeaturePlot(temp_list, gradient.use = c("grey", "blue"))
+      
+      temp_list[["dotplot"]] = DotPlot(obj, genes.plot = temp1, group.by = "res.0.6", x.lab.rot = TRUE, do.return = TRUE) + coord_flip() + labs(title = i)
+      temp_list[["total"]] = DimPlot(obj, reduction.use = "tsne", group.by = "res.0.6", no.legend = TRUE, do.label = TRUE, do.return = TRUE, pt.size = 0.01)
+      temp_list[["hightlight"]] = DimPlot(obj, reduction.use = "tsne", no.legend = TRUE, do.label = FALSE, do.return = TRUE, cells.highlight = row.names(obj@meta.data[obj@meta.data$res.0.6 %in% temp$cluster, ]))
+      
+      key = paste("featureplots", i, sep = "_")
+      filenames[[key]] <- here("01_figures", "harmony", "feature_plots", paste(key, "png", sep = "."))
+      filenames[[key]] <- paste("/mnt/raid62/Lung_cancer_10x/01_figures/harmony/feature_plots", paste(key, "png", sep = "."), sep = "/")
+ 
+      png(filenames[[key]], width = 18, height = ceiling(length(temp_list) / 3) * 6, units = "in", res = dpi)
+      grid.arrange(grobs=temp_list, nrow = ceiling(length(temp_list) / 3), ncol = 3)
+      dev.off()
+
+  }
+}
+
+rm(temp)
+rm(temp1)
+rm(temp_list)
+
+```
+
+
+
+#### 每个marker 基因都做了一张feature plot
+```{r include=FALSE}
+    
+for(i in 1:nrow(markers)) {
+    
+    if (markers[i, 1] %in% rownames(obj@raw.data)) {
+        print(i)
+        
+        p = FeaturePlot(obj, features.plot = markers[i, 1], cols.use = c("grey", "blue"), reduction.use = "tsne", do.return = TRUE)
+        p <- customize_Seurat_FeaturePlot(p, gradient.use = c("grey", "blue"))
+        
+        key = paste("markers_featureplot", gsub("\\s", "_", markers[i, 2]), markers[i, 1], sep = "_")
+        filenames[[key]] <- here("01_figures", "harmony", "feature_plots", "each", paste(key, "png", sep = "."))
+        
+        filenames[[key]] <- paste("/mnt/raid62/Lung_cancer_10x/01_figures/harmony/feature_plots/each", paste(key, "png", sep = "."), sep = "/")
+        
+        ggsave(filenames[[key]], width = 6, height = 6, dpi = dpi, units = "in")
+    }
+}
+```
+
+
+
+
+
+---
+
+
+
+
+<!-- #### use different parameters to check if cells can be more separated -->
+<!-- ```{r} -->
+<!-- p1 <- DimPlot( -->
+<!--   obj, reduction.use = "tsne_50",  -->
+<!--   group.by = "res.0.6", no.legend = TRUE,  -->
+<!--   do.label = TRUE, label.size = 5,  -->
+<!--   do.return = TRUE, pt.size = 0.1, -->
+<!--   plot.title = "tSNE perplexity=50" -->
+<!-- ) -->
+
+<!-- p2 <- DimPlot( -->
+<!--   obj, reduction.use = "tsne_50",  -->
+<!--   group.by = "batch", no.legend = FALSE,  -->
+<!--   do.label = FALSE, do.return = TRUE,  -->
+<!--   pt.size = 0.1, plot.title = "tSNE perplexity=50" -->
+<!-- ) -->
+
+<!-- p3 <- DimPlot( -->
+<!--   obj, reduction.use = "knn_10",  -->
+<!--   group.by = "res.0.6",  -->
+<!--   no.legend = TRUE, do.label = TRUE,  -->
+<!--   label.size = 5, do.return = TRUE,  -->
+<!--   pt.size = 0.1, plot.title = "UMAP n_neighbors=10" -->
+<!-- ) -->
+
+<!-- p4 <- DimPlot( -->
+<!--   obj, reduction.use = "knn_10",  -->
+<!--   group.by = "batch", no.legend = FALSE, -->
+<!--   do.label = FALSE, do.return = TRUE,  -->
+<!--   pt.size = 0.1, plot.title = "UMAP n_neighbors=10" -->
+<!-- ) -->
+
+<!-- p <- ggarrange(p1, p2, p3, p4, nrow=2, ncol=2) -->
+
+<!-- filenames[["harmony_tsne_50_umap_10"]] <- here("01_figures", "harmony", "Harmony_tsne_50_umap_10.png") -->
+<!-- ggsave(filenames[["harmony_tsne_50_umap_10"]], plot = p, width = 12, height = 12, dpi = dpi, units = "in") -->
+<!-- ``` -->
+<!-- ```{r} -->
+<!-- knitr::include_graphics(filenames[["harmony_tsne_50_umap_10"]]) -->
+<!-- ``` -->
+
+
+
+
+<!-- #### using iteration to find out best perplexity of tSNE -->
+<!-- ```{r} -->
+<!-- for (i in seq(10, 60, 10)) { -->
+<!--   print(i) -->
+<!--   obj <- RunTSNE(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "harmony", reduction.name = paste("tsne", i, sep = "_"), perplexity=i) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- for (i in seq(10, 60, 10)) { -->
+<!--   p <- DimPlot(obj, group.by = "res.0.6", no.legend = TRUE, do.label = TRUE, do.return = TRUE, pt.size = 0.01, reduction.use = paste("tsne", i, sep = "_")) -->
+<!--   key = paste("Harmony_tsne", i, sep = "_") -->
+<!--   filenames[[key]] = here("01_figures", "harmony", paste(key, "png", sep = ".")) -->
+<!--   ggsave(filename = filenames[[key]], plot = p, width = 6, height = 6, dpi = dpi, units = "in") -->
+<!-- } -->
+<!-- ``` -->
+
+
+
+
+<!-- #### using iteration to find out best umap parameters -->
+<!-- ```{r} -->
+<!-- for (i in seq(10, 40, 5)) { -->
+<!--     print(i) -->
+<!--     obj <- RunUMAP(object = obj, dims.use = 1:n.pcs, do.fast = TRUE, reduction.use = "harmony", n_neighbors = i, reduction.name = paste("umap", i, sep = "_"), perplexity=i) -->
+<!-- } -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- for (i in seq(10, 40, 5)) { -->
+<!--   p <- DimPlot(obj, group.by = "res.0.6", no.legend = TRUE, do.label = TRUE, do.return = TRUE, pt.size = 0.01, reduction.use = paste("umap", i, sep = "_")) -->
+<!--   key = paste("Harmony_umap", i, sep = "_") -->
+<!--   filenames[[key]] = here("01_figures", "harmony", paste(key, "png", sep = ".")) -->
+<!--   ggsave(filename = filenames[[key]], plot = p, width = 6, height = 6, dpi = dpi, units = "in") -->
+<!-- } -->
+<!-- ``` -->
+
+
+
+---
+
+### make plot to check the cells componts
+
+
+#### 1. 简单看下每种细胞中不同Stage的细胞数量多少，便于后续筛选用于比对的细胞数
+
+
+
+```{r fig.height=12, fig.width=8}
+obj@meta.data$Stage[obj@meta.data$batch == "NM"] <- "Unkown"
+obj@meta.data$Stage[obj@meta.data$Stage == ""] <- "Benign"
+obj@meta.data$cell_name[obj@meta.data$cell_name == ""] <- "Unkown"
+```
+```{r include=FALSE}
+filenames[["overall"]] = here("01_figures", "harmony", "stats_overall_number.png")
+png(filenames[["overall"]], width = 8, height = 12)
+make_heatmap_of_cells(obj@meta.data)
+dev.off()
+```
+```{r}
+knitr::include_graphics(filenames[["overall"]])
+```
+
+
+
+
+#### 2. 统计下每中细胞所涉及到的cluster中不同的类别的细胞比例是多少
+
+
+
+
+```{r include=FALSE}
+for(cell_name in unique(obj@meta.data$cell_name)) {
+    p <- make_combination_plots(obj@meta.data, cell_name)
+    cell_name = gsub("\\s", "_", cell_name)
+    print(cell_name)
+    filenames[[paste("barplot", cell_name, sep = "_")]] <- here("01_figures", "harmony", "stats_barplots", paste(cell_name, ".png", sep = ""))
+    png(filenames[[paste("barplot", cell_name, sep = "_")]], width = 25, height = 15)
+    grid.newpage()
+    grid.draw(p)
+    dev.off()
+}
+
+```
+
+
+
+
+#### 3. dotplot查看不同cluster中不同患者的比例
+```{r}
+temp <- obj@meta.data[, c("res.0.6", "cell_name", "PatientID")]
+temp$cell_name <- apply(temp, 1, function(x){return(paste(x[2], x[1], sep = " - "))})
+
+temp <- as.data.frame(temp %>% select(cell_name, PatientID) %>% group_by(cell_name, PatientID) %>% add_tally() %>% unique() %>% group_by(cell_name) %>% mutate(freq = n / sum(n)))
+
+
+p <- ggplot(data = temp, aes(x = cell_name, y = PatientID, size = log10(n), color = freq)) + 
+    geom_point() +
+    labs(x = "cluster") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+filenames[["dotplot_overall"]] <- here("01_figures", "harmony", "dotplot_overall.png")
+ggsave(filename = filenames[["dotplot_overall"]], plot = p, width = 12, height = 12, units = "in", dpi = dpi)
+
+rm(temp)
+
+knitr::include_graphics(filenames[["dotplot_overall"]])
+```
+
+
+
+
+#### tsne不同Stage细胞的分布
+```{r}
+# gg_color_hue <- function(n) {
+#   hues = seq(15, 375, length = n + 1)
+#   hcl(h = hues, l = 65, c = 100)[1:n]
+# }
+
+temp <- unique(obj@meta.data$Stage)
+
+temp_list = list()
+temp_list[[1]] = DimPlot(obj, group.by = "res.0.6", no.legend = TRUE, do.label = TRUE, do.return = TRUE, pt.size = 0.01, reduction.use = "tsne")
+temp_list[[2]] = DimPlot(obj, group.by = "Stage", no.legend = T, do.label = F, do.return = TRUE, pt.size = 0.01, reduction.use = "tsne") + scale_color_manual(values=custom_colors)
+
+
+for (i in sort(temp)) {
+    temp_list[[1 + length(temp_list)]] <- DimPlot(
+        obj, reduction.use = "tsne", 
+        do.return = TRUE, 
+        cells.highlight = rownames(obj@meta.data[obj@meta.data$Stage == i, ]), 
+        cols.highlight = custom_colors[length(temp_list) - 1],
+        plot.title = i
+    )
+}
+
+filenames[["tsne_by_stage"]] <- "/mnt/raid62/Lung_cancer_10x/01_figures/harmony/tsne_by_stage.png" # here("01_figures", "harmony", "tsne_by_stage.png")
+p <- ggarrange(plotlist = temp_list, ncol = 3, nrow = ceiling(length(temp_list) / 3))
+
+ggsave(filename = filenames[["tsne_by_stage"]], plot = p, width = 18, height = ceiling(length(temp_list) / 3) * 6, dpi = dpi, units = "in")
+
+# rm(temp)
+# rm(temp1)
+# rm(temp_list)
+
+
+# knitr::include_graphics(filenames[["tsne_by_stage"]])
+```
+
+
+
+#### tsne不同组织类型的分布（癌症、癌旁、气管、淋巴）
+```{r}
+temp <- unique(obj@meta.data$Tissue)
+temp1 <- gg_color_hue(length(temp))
+
+temp_list = list()
+temp_list[[1]] = DimPlot(obj, group.by = "res.0.6", no.legend = TRUE, do.label = TRUE, do.return = TRUE, pt.size = 0.01, reduction.use = "tsne")
+temp_list[[2]] = DimPlot(obj, group.by = "Tissue", no.legend = TRUE, do.label = F, do.return = TRUE, pt.size = 0.01, reduction.use = "tsne") + scale_fill_manual(values=custom_colors)
+
+for (i in sort(temp)) {
+    temp_list[[1 + length(temp_list)]] <- DimPlot(
+        obj, reduction.use = "tsne", 
+        do.return = TRUE, 
+        cells.highlight = rownames(obj@meta.data[obj@meta.data$Tissue == i, ]), 
+        cols.highlight = temp1[length(temp_list) - 1],
+        plot.title = i
+    )
+}
+
+filenames[["tsne_by_tissue"]] <- here("01_figures", "harmony", "tsne_by_tissue.png")
+p <- ggarrange(plotlist = temp_list, ncol = 3, nrow = ceiling(length(temp_list) / 3))
+
+ggsave(filename = filenames[["tsne_by_tissue"]], dpi = dpi, width = 18, height = ceiling(length(temp_list) / 3) * 6)
+
+
+rm(temp)
+rm(temp1)
+rm(temp_list)
+
+knitr::include_graphics(filenames[["tsne_by_tissue"]])
+```
+
+
+
+
+#### dotplot and percentage plot查看不同cluster中不同组织类型的比例
+```{r}
+temp <- obj@meta.data[, c("res.0.6", "Tissue", "cluster_id")]
+
+temp <- as.data.frame(temp %>% dplyr::select(cluster_id, Tissue) %>% group_by(cluster_id, Tissue) %>% add_tally() %>% unique() %>% group_by(cluster_id) %>% mutate(freq = n / sum(n)))
+
+
+p <- ggplot(data = temp, aes(x = cluster_id, y = Tissue, size = log10(n), color = freq)) + 
+    geom_point() +
+    labs(x = "cluster") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+filenames[["dotplot_tissue"]] <- here("01_figures", "harmony", "dotplot_by_tissue.png")
+ggsave(filename = filenames[["dotplot_tissue"]], plot = p, width = 12, height = 8, units = "in", dpi = dpi)
+
+
+filenames[["bar_tissue"]] <- here("01_figures", "harmony", "percentage_barplot_by_tissue.png")
+p1 <- ggplot(data = temp, aes(x = cluster_id, y = freq, fill = Tissue)) + 
+    geom_bar(stat = "identity") +
+    labs(x = "", y = "") +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      legend.position = "none"
+      ) +
+    coord_flip()
+
+p2 <- ggplot(data = temp, aes(x = cluster_id, y = log10(n), fill = Tissue)) + 
+    geom_bar(stat = "identity") +
+    labs(x = "", y = "log10(num. of cells)") +
+    theme(
+      axis.text.y = element_blank()
+      ) +
+    coord_flip()
+
+pdf(filenames[["bar_tissue"]], width = 12, height = 8)
+grid.newpage()
+grid.draw(cbind(ggplotGrob(p1), ggplotGrob(p2), size = "last"))
+dev.off()
+
+rm(temp)
+
+
+knitr::include_graphics(filenames[["dotplot_tissue"]])
+```
+
+
+#### percentage bar plot 不同cluster中不同stage的比例
+```{r}
+obj@meta.data$Stage[obj@meta.data$batch == "NM"] <- "Unknown"
+obj@meta.data$Stage[obj@meta.data$Stage == ""] <- "Benign"
+
+
+temp <- obj@meta.data[, c("res.0.6", "Stage", "cluster_id")]
+
+temp <- as.data.frame(temp %>% dplyr::select(cluster_id, Stage) %>% group_by(cluster_id, Stage) %>% add_tally() %>% unique() %>% group_by(cluster_id) %>% mutate(freq = n / sum(n)))
+
+
+filenames[["bar_stage"]] <- here("01_figures", "harmony", "percentage_barplot_by_stage.pdf")
+p1 <- ggplot(data = temp, aes(x = cluster_id, y = freq, fill = Stage)) + 
+    geom_bar(stat = "identity") +
+    labs(x = "", y = "") +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      legend.position = "none"
+      ) +
+    coord_flip() + 
+    scale_fill_manual(values=custom_colors)
+
+p2 <- ggplot(data = temp, aes(x = cluster_id, y = log10(n), fill = Stage)) + 
+    geom_bar(stat = "identity") +
+    labs(x = "", y = "log10(num. of cells)") +
+    theme(
+      axis.text.y = element_blank()
+      ) +
+    coord_flip() + 
+    scale_fill_manual(values=custom_colors)
+
+pdf(filenames[["bar_stage"]], width = 12, height = 8)
+grid.newpage()
+grid.draw(cbind(ggplotGrob(p1), ggplotGrob(p2), size = "last"))
+dev.off()
+
+```
+
+
+#### 通过FindMarkers识别每个群的marker gene
+```{r}
+markers_each_cluster <- list()
+for (i in unique(obj@meta.data$res.0.6)) {
+  markers_each_cluster[[as.character(i)]] <- FindMarkers(object = obj, ident.1 = i, min.pct = 0.25)
+}
+
+saveRDS(markers_each_cluster, here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_markers_each_cluster.rds"))
+```
+
+
+```{r}
+library(DESeq2)
+
+meta <- random_select(obj, sample_n = 0.3)
+
+meta$group <- meta$res.0.6
+res = list()
+for (i in unique(meta$res.0.6)) {
+    print(i)
+    meta$group[meta$res.0.6 != i] <- "Group2"
+    meta$group[meta$res.0.6 == i] <- "Group1"
+    
+    meta$wellKey <- rownames(x = meta)
+    
+    countdata.test <- obj@data[, rownames(x = meta), drop = FALSE]
+    
+    p_val <- sapply(
+        X = 1:nrow(x = countdata.test),
+        FUN = function(x) {
+          return(wilcox.test(countdata.test[x, ] ~ meta[, "group"])$p.value)
+        }
+    )
+    
+    res[[i]] <- data.frame(p_val, row.names = rownames(x = countdata.test))
+}
+
+```
+
+
+
+##### edgeR
+```{r}
+
+res = list()
+for (i in unique(meta$res.0.6)) {
+    meta$group[meta$res.0.6 != i] <- "Group2"
+    meta$group[meta$res.0.6 == i] <- "Group1"
+    
+    y <- DGEList(counts=obj@raw.data[, rownames(meta)], group=meta$group)
+    keep <- rowSums(cpm(y)>1) >= 2
+    y <- y[keep, , keep.lib.sizes=FALSE]
+    y <- calcNormFactors(y)
+    y <- estimateDisp(y)
+    et <- exactTest(y)
+}
+```
+
+
+##### DESeq2
+```{r}
+gc()
+dds <- DESeqDataSetFromMatrix(countData = as.matrix(obj@raw.data[, rownames(meta)]), colData = meta, design = ~ deseq)
+
+dds <- estimateSizeFactors(object = dds)
+dds <- estimateDispersions(object = dds, fitType = "local")
+dds <- nbinomWaldTest(object = dds)
+res <- results(
+    object = dds,
+    contrast = c("group", "Group1", "Group2"),
+    alpha = 0.05
+)
+p_val <- res$pvalue
+genes.return <- rownames(x = res)
+to.return <- data.frame(p_val, row.names = genes.return)
+
+rm(temp)
+```
+
+
+##### scanpy
+```{r}
+scanpy <- read.csv(here("00_data_ingest/03_annotation_csv", "20190408_seurat_res06_scanpy_markers.csv"), header = T)
+
+scanpy <- scanpy[, 2:ncol(scanpy)]
+
+head(scanpy)
+```
+```{r}
+scanpy$cluster = as.character(scanpy$cluster)
+ggplot(scanpy, aes(x=scores, fill = cluster, group = cluster)) + geom_density()
+```
+
+```{r include=FALSE}
+for (i in unique(scanpy$cluster)) {
+    p <- DotPlot(obj, genes.plot = scanpy[scanpy$cluster == i, "names"], group.by = "res.0.6", x.lab.rot = TRUE, do.return = TRUE) + coord_flip()
+    ggsave(filename = here("01_figures", "harmony", "cluster_markers", paste("cluster_markers_dotplot_", i, ".pdf", sep = "")), plot = p, width = 12, height = 16, units = "in", dpi = dpi)
+}
+```
+
+通过clusterProfiler以调查每个cluster的富集情况
+```{r}
+cluster = unique(scanpy$cluster)
+eg <- bitr(scanpy[scanpy$cluster == cluster[1], "names"], fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+kegg <- do_kegg(eg, cluster[1])
+go <- do_go(eg, cluster[1])
+do <- do_do(eg, cluster[1])
+
+
+for (i in cluster[2:length(cluster)]) {
+    print(i)
+    eg <- bitr(as.character(scanpy[scanpy$cluster == i, "names"]), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+    
+    # temp <- do_kegg(eg, i)
+    # 
+    # if (nrow(temp) > 0) {
+    #     kegg <- rbind(kegg, temp)
+    # }
+    
+    temp <- do_go(eg, i)
+    
+    if (nrow(temp) > 0) {
+        go <- rbind(go, temp)
+    }
+    
+    # temp <- do_do(eg, i)
+    # if (nrow(temp) > 0) {
+    #     do <- rbind(do, temp)
+    # }
+}
+
+kegg <- unique(kegg)
+go <- unique(go)
+do <- unique(do)
+
+slim <- getOBOCollection(here("00_data_ingest/03_annotation_csv", "go-basic.obo"))
+
+new_go <- list()
+for (i in unique(go$ONTOLOGY)) {
+    
+    temp <- go[go$ONTOLOGY == i, ]
+    for (j in unique(temp$cluster)) {
+        print(paste(i, j))
+        
+        myCollection <- GOCollection(as.character(temp[temp$cluster == j, "ID"]))
+    
+        temp1 <- goSlim(myCollection, slim, i)
+        temp1$cluster <- j
+        temp1$ONTOLOGY <- i
+        new_go[[paste(i, j)]] <- temp1[temp1$Percent > 0, ]
+    }
+}
+
+new.go <- new_go[[1]]
+for(i in 2:length(new_go)) {
+    new.go <- rbind(new.go, new_go[[i]])
+}
+
+
+
+wb = createWorkbook()
+addWorksheet(wb, "KEGG")
+writeData(wb, 1, kegg)
+
+addWorksheet(wb, "GO")
+writeData(wb, 2, go)
+
+addWorksheet(wb, "DOSE")
+writeData(wb, 3, do)
+
+addWorksheet(wb, "GOSlim")
+writeData(wb, 4, new.go)
+
+saveWorkbook(wb, file = here("00_data_ingest/03_annotation_csv", "20190408_seurat_harmony_cluster_kk_go_do.xlsx"), overwrite = TRUE)
+
+saveRDS(list(kegg, go, do, new.go), here("00_data_ingest", "04_rds_generated", "20190408_seurat_harmony_cluster_kk_go_do.rds"))
+```
+
+```{r}
+temp <- readRDS(here("00_data_ingest", "04_rds_generated", "20190408_seurat_harmony_cluster_kk_go_do.rds"))
+
+kegg <- temp[[1]]
+go <- temp[[2]]
+do <- temp[[3]]
+new.go <- temp[[4]]
+```
+
+做KEGG图
+```{r include=FALSE}
+plot_kegg <- function(kegg, cell_names, facet = FALSE) {
+    kegg$GeneRatio <- sapply(kegg$GeneRatio, function(x) {
+        temp <- strsplit(x, "/")[[1]]
+        
+        return(as.numeric(temp[1]) / as.numeric(temp[2]))
+    })
+    
+    kegg <- merge(kegg, cell_names, by = "cluster")
+    
+    p <- ggplot(kegg, aes(x = GeneRatio, y = reorder(Description, GeneRatio), size = Count, color = p.adjust)) + 
+        geom_point() + labs(y = "Description", title = paste("cluster:", kegg[1, "cluster"], "-", kegg[1, "cell"])) +
+        scale_colour_gradientn(colours=rainbow(4))
+    
+    
+    if (facet) {
+        p = p + facet_wrap(cell~., ncol = 3, scales = "free") + labs(y = "Description")
+    }
+    return(p)
+}
+
+
+for (i in unique(kegg$cluster)) {
+    print(i)
+    ggsave(
+        filename = here("01_figures", "harmony", "kegg", paste(i, ".png", sep = "")), 
+        plot = plot_kegg(kegg[kegg$cluster == i, ], cell_names), width = 10, height = 10, limitsize = TRUE, dpi = dpi, units = "in"
+    )
+}
+
+# ggsave(
+#     filename = here("01_figures", "harmony", "kegg.tiff"), 
+#     plot = plot_kegg(kegg, cell_names, facet = T), width = 30, height = length(unique(kegg$cluster)), limitsize = FALSE, compression = "lzw", dpi = 600, units = "in"
+# )
+
+```
+
+
+做GO图
+```{r include=FALSE}
+plot_go <- function(kegg, cell_names) {
+    kegg$GeneRatio <- sapply(kegg$GeneRatio, function(x) {
+        temp <- strsplit(x, "/")[[1]]
+        
+        return(as.numeric(temp[1]) / as.numeric(temp[2]))
+    })
+    
+    kegg <- merge(kegg, cell_names, by = "cluster")
+    
+    p <- ggplot(kegg, aes(x = GeneRatio, y = reorder(Description, GeneRatio), size = Count, color = p.adjust)) + 
+        geom_point() + labs(y = "Description", title = paste("cluster:", kegg[1, "cluster"], "-", kegg[1, "cell"])) +
+        facet_wrap(ONTOLOGY~., ncol = 3, scales = "free") + labs(y = "Description") +
+        scale_colour_gradientn(colours=rainbow(4))
+
+    return(p)
+}
+
+
+for (i in unique(go$cluster)) {
+    print(i)
+    temp <- go[go$cluster == i, ]
+    temp1 <- table(temp$ONTOLOGY)
+    height <- max(temp1) / 3
+    ggsave(
+        filename = here("01_figures", "harmony", "go", paste(i, ".png", sep = "")), 
+        plot = plot_go(temp, cell_names), 
+        width = 10 * length(temp1), height = if(height > 50) 50 else height, 
+        limitsize = FALSE, 
+        dpi = 600, units = "in"
+    )
+}
+
+
+temp <- go[go$cluster == 35, ]
+temp1 <- table(temp$ONTOLOGY)
+height <- max(temp1) / 3
+ggsave(
+    filename = "/mnt/raid62/Lung_cancer_10x/01_figures/harmony/go/35.png", 
+    plot = plot_go(temp, cell_names), 
+    width = 10 * length(temp1), height = if(height > 50) 50 else height, 
+    limitsize = FALSE, 
+    dpi = 600, units = "in"
+)
+
+# ggsave(
+#     filename = here("01_figures", "harmony", "kegg.tiff"), 
+#     plot = plot_kegg(kegg, cell_names, facet = T), width = 30, height = length(unique(kegg$cluster)), limitsize = FALSE, compression = "lzw", dpi = 600, units = "in"
+# )
+```
+
+
+做GoSlim图
+```{r}
+
+plot_goslim <- function(kegg, cell_names) {
+    
+    kegg <- merge(kegg, cell_names, by = "cluster")
+    
+    p <- ggplot(temp, aes(x = Percent, y = reorder(Term, Percent), size = Count, color = Percent)) + 
+        geom_point() + labs(y = "Description", title = paste("cluster:", kegg[1, "cluster"], "-", kegg[1, "cell"])) +
+        facet_wrap(ONTOLOGY~., ncol = 3, scales = "free") + labs(y = "Description") +
+        scale_colour_gradientn(colours=rainbow(4))
+
+    return(p)
+}
+
+for (i in unique(new.go$cluster)) {
+    print(i)
+    temp <- new.go[new.go$cluster == i, ]
+    temp1 <- table(temp$ONTOLOGY)
+    
+    height <- max(temp1) / 3
+    ggsave(
+        filename = here("01_figures", "harmony", "goslim", paste(i, ".png", sep = "")),
+        plot = plot_goslim(temp, cell_names),
+        width = 10 * length(temp1), height = if(height > 50) 50 else height,
+        limitsize = FALSE, 
+        dpi = 600, units = "in"
+    )
+}
+```
+
+
+做DO图
+```{r}
+for (i in unique(do$cluster)) {
+    print(i)
+    temp <- do[do$cluster == i, ]
+    
+    if (nrow(temp) > 0) {
+        height <- nrow(temp) / 3
+        ggsave(
+            filename = here("01_figures", "harmony", "do", paste(i, ".png", sep = "")), 
+            plot = plot_kegg(temp, cell_names), 
+            width = 10,
+            height = if(height > 50) 50 else height,
+            limitsize = FALSE, 
+            dpi = 600, 
+            units = "in"
+        )
+    }
+}
+
+# ggsave(
+#     filename = here("01_figures", "harmony", "do.tiff"), 
+#     plot = plot_kegg(do, cell_names, facet = T), width = 30, height = length(unique(kegg$cluster)), limitsize = FALSE, compression = "lzw", dpi = 600, units = "in"
+# )
+```
+
+---
+
+
+
+#### 与Nature Medicine识别出的细胞类型做比对
+
+
+```{r}
+# 获取nature medicine识别的细胞类型
+load(here("RawData", "DietherLambrechts", "Allsamples.Cellview.Rds"))
+
+tsne.data$cell <- rownames(tsne.data)
+tsne.data$cell_id <- sapply(rownames(tsne.data), function(x) {return(strsplit(x, "_")[[1]][1])})
+tsne.data$sample <- sapply(rownames(tsne.data), function(x) {return(strsplit(x, "_")[[1]][2])})
+
+# 获取自己细胞中对应的类型
+meta <- obj@meta.data[obj@meta.data$batch == "NM", c("Cells", "cell_name", "res.0.6", "cluster_id", "PatientID")]
+
+meta$cell_id <- apply(meta, 1, function(x){
+  splited_id <- strsplit(as.character(x[1]), "[_-]")[[1]][2]
+  
+  patient_id <- gsub("DL00", "", x[4])
+  
+  return(paste(splited_id, patient_id, sep = "_"))
+})
+
+meta$sample <- sapply(meta$Cells, function(x) {
+  return(strsplit(as.character(x), "[-_]", perl = TRUE)[[1]][1])
+})
+
+meta$cell_id <- sapply(meta$Cells, function(x) {
+  return(strsplit(as.character(x), "[-_]", perl = TRUE)[[1]][2])
+})
+
+
+meta <- merge(meta, tsne.data, by = "cell_id", all = FALSE)
+
+rm(featuredata)
+rm(tsne.data)
+rm(log2cpm)
+```
+
+
+粗略统计下看看比例，NM识别的细胞在本课题识别细胞中的分布情况
+```{r include=FALSE}
+
+temp <- as.data.frame(meta %>% select(cluster_id, dbCluster) %>% group_by(cluster_id, dbCluster) %>% add_tally() %>% unique() %>% group_by(cluster_id) %>% mutate(freq = n / sum(n)))
+
+
+p1 <- ggplot(temp, aes(x = cluster_id, y = dbCluster, size = freq, color = log10(n))) + geom_point()
+
+
+pp1 <- pheatmap(
+  acast(temp, cluster_id~dbCluster, value.var = "freq"), 
+  display_numbers = TRUE, 
+  main = "The NM identified cells (%) in each clusters", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+pp2 <- pheatmap(
+  log10(acast(temp, cluster_id~dbCluster, value.var = "n")), 
+  display_numbers = TRUE, 
+  main = "The NM identified cells (log10) in each clsuters", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+
+temp <- as.data.frame(meta %>% select(cell_name, dbCluster) %>% group_by(cell_name, dbCluster) %>% add_tally() %>% unique() %>% group_by(cell_name) %>% mutate(freq = n / sum(n)))
+
+p2 <- ggplot(temp, aes(x = cell_name, y = dbCluster, size = freq, color = log10(n))) + geom_point() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+pp3 <- pheatmap(
+  acast(temp, cell_name~dbCluster, value.var = "freq"), 
+  display_numbers = TRUE, 
+  main = "The NM identified cells (%) in each cell types", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+pp4 <- pheatmap(
+  log10(acast(temp, cell_name~dbCluster, value.var = "n")), 
+  display_numbers = TRUE, 
+  main = "The NM identified cells (log10) in each cell types", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+
+filenames[["com_wi_nm"]] <- here("01_figures", "harmony", "compare_with_nm.pdf")
+p <- ggarrange(p1, p2, nrow = 1, ncol = 2)
+ggsave(filenames[["com_wi_nm"]], p, width = 24, height = 8, dpi = dpi, units = "in")
+
+
+filenames[["com_wi_nm_heat"]] <- here("01_figures", "harmony", "compare_with_nm_heatmap.pdf")
+pdf(filename = filenames[["com_wi_nm_heat"]], res = dpi, width = 20, height = 16, units = "in")
+grid.arrange(arrangeGrob(grobs= list(pp1[[4]], pp2[[4]], pp3[[4]], pp4[[4]]),ncol=2))
+dev.off()
+
+```
+
+
+反过来，本课题是别的细胞情况在NM中分布的情况
+```{r include=FALSE}
+temp <- as.data.frame(meta %>% select(cluster_id, dbCluster) %>% group_by(dbCluster, cluster_id) %>% add_tally() %>% unique() %>% group_by(dbCluster) %>% mutate(freq = n / sum(n)))
+
+p1 <- ggplot(temp, aes(x = cluster_id, y = dbCluster, size = freq, color = log10(n))) + geom_point()
+
+pp1 <- pheatmap(
+  acast(temp, cluster_id~dbCluster, value.var = "freq"), 
+  display_numbers = TRUE, 
+  main = "Each cluster (%) in NM identified cells", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+pp2 <- pheatmap(
+  log10(acast(temp, cluster_id~dbCluster, value.var = "n")), 
+  display_numbers = TRUE, 
+  main = "Each cluster (log10) in NM identified cells", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+temp <- as.data.frame(meta %>% select(cell_name, dbCluster) %>% group_by(dbCluster, cell_name) %>% add_tally() %>% unique() %>% group_by(dbCluster) %>% mutate(freq = n / sum(n)))
+
+p2 <- ggplot(temp, aes(x = cell_name, y = dbCluster, size = freq, color = log10(n))) + geom_point() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+pp3 <- pheatmap(
+  acast(temp, cell_name~dbCluster, value.var = "freq"), 
+  display_numbers = TRUE, 
+  main = "Cells (%) in NM identified cells", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+pp4 <- pheatmap(
+  log10(acast(temp, cell_name~dbCluster, value.var = "n")), 
+  display_numbers = TRUE, 
+  main = "Cells (log10) in NM identified cells", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+
+filenames[["com_wi_nm_us"]] <- here("01_figures", "harmony", "compare_with_nm_nm_in_us.pdf")
+p <- ggarrange(p1, p2, nrow = 1, ncol = 2)
+ggsave(filenames[["com_wi_nm_us"]], p, width = 24, height = 8, dpi = dpi, units = "in")
+
+
+filenames[["com_wi_nm_us_heat"]] <- here("01_figures", "harmony", "compare_with_nm_nm_in_us_heatmap.pdf")
+pdf(filename = filenames[["com_wi_nm_us_heat"]], res = dpi, width = 20, height = 16, units = "in")
+grid.arrange(arrangeGrob(grobs= list(pp1[[4]], pp2[[4]], pp3[[4]], pp4[[4]]),ncol=2))
+dev.off()
+```
+
+#### NM数据前后的与自己做的结果的比对，tsne图
+```{r fig.height=6, fig.width=10}
+
+temp <- unique(meta[, c("Cells", "dbCluster")])
+
+temp <- merge(obj@meta.data, temp, by = "Cells", all = TRUE)
+temp <- cbind(temp, obj@dr$tsne@cell.embeddings[as.character(temp$Cells), ])    # Note: the factors type
+
+
+temp_list <- list()
+
+temp_list[[1]] <- ggplot(temp, aes(x = tSNE_1, y = tSNE_2, color = dbCluster)) + 
+  geom_point(size = 0.1) + 
+  guides(colour = guide_legend(override.aes = list(size=10))) +
+  scale_color_manual(values=custom_colors, na.translate=TRUE, na.value = "grey")
+
+
+for (i in sort(unique(temp$dbCluster))) {
+  if (!is.na(i)) {
+    print(i)
+    
+    temp1 = temp
+    
+    temp1$dbCluster[temp1$dbCluster != i] <- NA
+    
+    temp_list[[length(temp_list) + 1]] <- ggplot(temp1, aes(x = tSNE_1, y = tSNE_2, color = dbCluster)) + 
+        geom_point(size = 0.1) + 
+        guides(colour = guide_legend(override.aes = list(size=10))) +
+        scale_color_manual(values=custom_colors[length(temp_list):length(custom_colors)], na.translate=TRUE, na.value = "grey")
+  }
+}
+
+filenames[["nm_in_tsne"]] <- here("01_figures", "harmony", "compare_with_nm_in_tsne.pdf")
+pdf(filename = filenames[["nm_in_tsne"]], res = dpi, width = 24, height = ceiling(length(temp_list) / 3) * 6, units = "in")
+ggarrange(plotlist = temp_list, nrow = ceiling(length(temp_list) / 3) , ncol = 3)
+dev.off()
+```
+
+
+
+---
+
+#### Perform seurat only for NM data
+
+```{r}
+data <- obj@raw.data[, rownames(obj@meta.data[obj@meta.data$batch == "NM",])]
+
+obj_nm <- CreateSeuratObject(data, meta.data = obj@meta.data[, 1:13], project = "NM")
+```
+
+
+```{r}
+obj_nm <- NormalizeData(object = obj_nm, normalization.method = "LogNormalize", scale.factor = 10000)
+
+obj_nm <- FindVariableGenes(object = obj_nm, mean.function = ExpMean, dispersion.function = LogVMR, do.plot = FALSE, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+hv.genes <- head(rownames(obj_nm@hvg.info), 1000)
+
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj_nm@data), value = TRUE)
+percent.mito <- Matrix::colSums(obj_nm@raw.data[mito.genes, ])/Matrix::colSums(obj_nm@raw.data)
+
+obj_nm <- AddMetaData(object = obj_nm, metadata = percent.mito, col.name = "percent.mito")
+
+VlnPlot(obj_nm, features = c("nGene", "nUMI", "percent.mito"))
+```
+
+```{r fig.height=6, fig.width=12}
+par(mfrow = c(1, 2))
+GenePlot(object = obj_nm, gene1 = "nUMI", gene2 = "percent.mito")
+GenePlot(object = obj_nm, gene1 = "nUMI", gene2 = "nGene")
+```
+
+```{r}
+obj_nm <- ScaleData(object = obj_nm, vars.to.regress = c("nUMI", "percent.mito"))
+```
+
+
+```{R fig.height=4, fig.width=12}
+obj_nm <- RunPCA(object = obj_nm, pc.genes = hv.genes, pcs.compute = 100, do.print = FALSE)
+
+PCElbowPlot(object = obj_nm, num.pc = 100)
+```
+
+```{r}
+obj_nm <- JackStraw(object = obj_nm, num.replicate = 100, display.progress = TRUE)
+```
+
+```{r}
+JackStrawPlot(object = obj_nm, PCs = 1:20)
+```
+
+```{r fig.height=30, fig.width=18}
+PCHeatmap(obj_nm, pc.use = c(25:40), cells.use = 500, do.balanced = TRUE)
+```
+
+```{r}
+obj_nm <- FindClusters(object = obj_nm, reduction.type = "pca", dims.use = 1:27, resolution = 0.6, print.output = 0, save.SNN = TRUE)
+
+obj_nm <- RunTSNE(object = obj_nm, dims.use = 1:27, do.fast = TRUE)
+```
+
+
+```{r fig.height=6, fig.width=6}
+DimPlot(obj_nm, reduction.use = "tsne", group.by = "res.0.6", no.legend = TRUE, do.label = TRUE, label.size = 5, do.return = TRUE, pt.size = 0.01)
+```
+
+```{r fig.height=40, fig.width=12}
+ModifiedDotPlot(obj_nm, markers, group.by = "res.0.6", x.axis.rotate = TRUE)
+```
+
+
+手动指定细胞类型
+```{r}
+cell_names_nm <- data.frame(
+  cluster = 0:30,
+  cell = c(
+    "Alveolar Macrophages",
+    "CD8+ T cells",
+    "Treg",
+    "Exhaust T",
+    "Alveolar Macrophages",
+    "Tumor EC",
+    "Treg",
+    "Endothelial cells",
+    "Pulmonary alveolar type I cells",
+    "Pulmonary alveolar type II cells",
+    "Unkown",
+    "NK",
+    "Exhaust T",
+    "Dendritic",
+    "CD4+ T cells",
+    "Fibroblast",
+    "Granucytos",
+    "NK",
+    "Platelets",
+    "Exhaust T",
+    "B cells",
+    "B cells",
+    "Mast",
+    "Alveolar Macrophages",
+    "Pulmonary alveolar type I cells",
+    "Exhaust T",
+    "Pulmonary alveolar type II cells",
+    "Basal cells",
+    "Erythroid-like and erythroid precursor cells",
+    "Epithelial",
+    "NK"
+  )
+)
+```
+
+
+
+将细胞类型整合到meta info中
+```{r}
+obj_nm@meta.data$cluster_id <- obj_nm@meta.data$res.0.6
+obj_nm@meta.data$cell_name <- obj_nm@meta.data$res.0.6
+
+for (i in 1:nrow(cell_names_nm)) {
+  idx = obj_nm@meta.data$res.0.6 == cell_names_nm[i, 1]
+  
+  obj_nm@meta.data$cluster_id[idx] <- rep(paste(cell_names_nm[i, 2], cell_names_nm[i, 1], sep = "_"), sum(idx))
+  
+  obj_nm@meta.data$cell_name[idx] <- rep(as.character(cell_names_nm[i, 2]), sum(idx))
+}
+
+head(obj_nm@meta.data)
+```
+
+
+
+```{r fig.height=40, fig.width=12}
+ModifiedDotPlot(obj_nm, markers, group.by = "cluster_id", x.axis.rotate = TRUE)
+```
+
+
+
+```{r}
+# 获取nature medicine识别的细胞类型
+load(here("RawData", "DietherLambrechts", "Allsamples.Cellview.Rds"))
+
+tsne.data$cell <- rownames(tsne.data)
+tsne.data$cell_id <- sapply(rownames(tsne.data), function(x) {return(strsplit(x, "_")[[1]][1])})
+tsne.data$sample <- sapply(rownames(tsne.data), function(x) {return(strsplit(x, "_")[[1]][2])})
+
+# 获取自己细胞中对应的类型
+meta <- obj_nm@meta.data[, c("Cells", "cell_name", "res.0.6", "cluster_id", "PatientID")]
+
+meta$cell_id <- apply(meta, 1, function(x){
+  splited_id <- strsplit(as.character(x[1]), "[_-]")[[1]][2]
+  
+  patient_id <- gsub("DL00", "", x[4])
+  
+  return(paste(splited_id, patient_id, sep = "_"))
+})
+
+meta$sample <- sapply(meta$Cells, function(x) {
+  return(strsplit(as.character(x), "[-_]", perl = TRUE)[[1]][1])
+})
+
+meta$cell_id <- sapply(meta$Cells, function(x) {
+  return(strsplit(as.character(x), "[-_]", perl = TRUE)[[1]][2])
+})
+
+
+meta <- merge(meta, tsne.data, by = "cell_id", all = FALSE)
+
+rm(featuredata)
+rm(tsne.data)
+rm(log2cpm)
+```
+
+
+
+```{r fig.height=18, fig.width=24}
+temp <- unique(meta[, c("Cells", "dbCluster")])
+
+temp <- merge(obj_nm@meta.data, temp, by = "Cells", all = TRUE)
+temp <- cbind(temp, obj_nm@dr$tsne@cell.embeddings[as.character(temp$Cells), ])    # Note: the factors type
+
+
+temp_list <- list()
+
+temp_list[[1]] <- ggplot(temp, aes(x = tSNE_1, y = tSNE_2, color = dbCluster)) + 
+  geom_point(size = 0.1) + 
+  guides(colour = guide_legend(override.aes = list(size=10))) +
+  scale_color_manual(values=custom_colors, na.translate=TRUE, na.value = "grey")
+
+
+for (i in sort(unique(temp$dbCluster))) {
+  if (!is.na(i)) {
+    print(i)
+    
+    temp1 = temp
+    
+    temp1$dbCluster[temp1$dbCluster != i] <- NA
+    
+    temp_list[[length(temp_list) + 1]] <- ggplot(temp1, aes(x = tSNE_1, y = tSNE_2, color = dbCluster)) + 
+        geom_point(size = 0.1) + 
+        guides(colour = guide_legend(override.aes = list(size=10))) +
+        scale_color_manual(values=custom_colors[length(temp_list):length(custom_colors)], na.translate=TRUE, na.value = "grey")
+  }
+}
+
+filenames[["nm_in_tsne"]] <- here("01_figures", "harmony", "compare_with_nm_in_tsne_without_batch_correction.pdf")
+pdf(filename = filenames[["nm_in_tsne"]], res = dpi, width = 24, height = ceiling(length(temp_list) / 3) * 6, units = "in")
+ggarrange(plotlist = temp_list, nrow = ceiling(length(temp_list) / 3) , ncol = 3)
+dev.off()
+```
+
+
+热图看一下，现在识别的群与NM的群之间的比例关系
+```{r fig.height=16, fig.width=20, include=FALSE}
+temp <- as.data.frame(meta %>% select(cluster_id, dbCluster) %>% group_by(dbCluster, cluster_id) %>% add_tally() %>% unique() %>% group_by(dbCluster) %>% mutate(freq = n / sum(n)))
+
+# p1 <- ggplot(temp, aes(x = cluster_id, y = dbCluster, size = freq, color = log10(n))) + geom_point()
+
+pp1 <- pheatmap(
+  acast(temp, cluster_id~dbCluster, value.var = "freq"), 
+  display_numbers = TRUE, 
+  main = "Each cluster (%) in NM identified cells", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+pp2 <- pheatmap(
+  log10(acast(temp, cluster_id~dbCluster, value.var = "n")), 
+  display_numbers = TRUE, 
+  main = "Each cluster (log10) in NM identified cells", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+temp <- as.data.frame(meta %>% select(cell_name, dbCluster) %>% group_by(dbCluster, cell_name) %>% add_tally() %>% unique() %>% group_by(dbCluster) %>% mutate(freq = n / sum(n)))
+
+# p2 <- ggplot(temp, aes(x = cell_name, y = dbCluster, size = freq, color = log10(n))) + geom_point() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+pp3 <- pheatmap(
+  acast(temp, cell_name~dbCluster, value.var = "freq"), 
+  display_numbers = TRUE, 
+  main = "Cells (%) in NM identified cells", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+pp4 <- pheatmap(
+  log10(acast(temp, cell_name~dbCluster, value.var = "n")), 
+  display_numbers = TRUE, 
+  main = "Cells (log10) in NM identified cells", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+
+# filenames[["com_wi_nm_us"]] <- here("01_figures", "harmony", "compare_with_nm_nm_in_us.pdf")
+# p <- ggarrange(p1, p2, nrow = 1, ncol = 2)
+# ggsave(filenames[["com_wi_nm_us"]], p, width = 24, height = 8, dpi = dpi, units = "in")
+
+
+filenames[["com_wi_nm_us_heat"]] <- here("01_figures", "harmony", "compare_with_nm_in_us_heatmap_without_batch_correction_.pdf")
+pdf(filename = filenames[["com_wi_nm_us_heat"]], res = dpi, width = 20, height = 16, units = "in")
+grid.arrange(arrangeGrob(grobs= list(pp1[[4]], pp2[[4]], pp3[[4]], pp4[[4]]),ncol=2))
+dev.off()
+```
+
+
+热图看一下，批次矫正前后，混合前后识别的群的关系
+```{r fig.height=8, fig.width=8, include=FALSE}
+temp <- obj_nm@meta.data
+
+temp$after <- obj@meta.data[as.character(temp$Cells), "cell_name"]
+
+head(temp)
+
+
+temp1 <- as.data.frame(temp %>% select(cluster_id, after) %>% group_by(after, cluster_id) %>% add_tally() %>% unique() %>% group_by(after) %>% mutate(freq = n / sum(n)))
+
+pp1 <- pheatmap(
+  acast(temp1, cluster_id~after, value.var = "freq"), 
+  display_numbers = TRUE, 
+  main = "Overlaps (%) between with and without batch correction", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+pp2 <- pheatmap(
+  log10(acast(temp1, cluster_id~after, value.var = "n")), 
+  display_numbers = TRUE, 
+  main = "Overlaps (log10) between with and without batch correction", 
+  legend = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE
+)
+
+
+filenames[["com_wi_nm_us_heat"]] <- here("01_figures", "harmony", "compare_nm_heatmap_with_without_batch_correction_.pdf")
+pdf(filename = filenames[["com_wi_nm_us_heat"]], res = dpi, width = 20, height = 8, units = "in")
+grid.arrange(arrangeGrob(grobs= list(pp1[[4]], pp2[[4]]),ncol=2))
+dev.off()
+```
+
+
+---
+
+#### 测试25个harmony的结果
+
+```{r}
+cell_names <- data.frame(
+  cluster = 0:29,
+  cell = c(
+    "CD4+ T cells",
+    "Monocytes",
+    "NK",
+    "Exhaust T",
+    "Monocytes",
+    "NK",
+    "Basal cells",
+    "Granucytes",
+    "Treg",
+    "Pulmonary alveolar type II cells",
+    "B cells",
+    "Entihelial",
+    "Pulmonary alveolar type I cells",
+    "Dendritic",
+    "Club cells",
+    "Mix",
+    "Pulmonary alveolar type II cells",
+    "B cells",
+    "Pulmonary alveolar type I cells",
+    "NK",
+    "Exhaust T",
+    "Endothial",
+    "Mast",
+    "Fibroblasts",
+    "Monocytes",
+    "Platelets",
+    "Fibroblasts",
+    "CD8+ T cells",
+    "B cells",
+    "Basal cells"
+  )
+)
+
+obj@meta.data$cluster_id <- obj@meta.data$res.0.6
+obj@meta.data$cell_name <- obj@meta.data$res.0.6
+
+for (i in 1:nrow(cell_names)) {
+  idx = obj@meta.data$res.0.6 == cell_names[i, 1]
+  
+  obj@meta.data$cluster_id[idx] <- rep(paste(cell_names[i, 2], cell_names[i, 1], sep = "_"), sum(idx))
+  
+  obj@meta.data$cell_name[idx] <- rep(cell_names[i, 2], sum(idx))
+}
+
+
+p <- ModifiedDotPlot(obj, markers, group.by = "cluster_id", x.axis.rotate = TRUE)
+filenames[["dotplot_with_color_name"]] <- here("01_figures", "harmony", "Harmony_dotplot_25_res0.6.pdf")
+ggsave(filename = filenames[["dotplot_with_color_name"]], plot = p, width = 10, height = 40, units = "in", dpi = dpi)
+
+```
+
+```{r}
+
+```
+
+
+---
+
+#### Compare different batch correction methods
+
+```{r}
+combat = read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/00_raw_data/03_tsne_cluster_csvs/combat.csv", row.names = 1)
+
+bbknn = read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/00_raw_data/03_tsne_cluster_csvs/bbknn.csv", row.names = 1)
+
+harmony = read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/00_raw_data/03_tsne_cluster_csvs/harmony.csv", row.names = 1)
+
+sctransform = read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/00_raw_data/03_tsne_cluster_csvs/sctransform.csv", row.names = 1)
+```
+
+
+```{r fig.height=24, fig.width=30}
+
+plot_dim <- function(data, pt.size = 0.01, title="") {
+  data$cluster = as.character(data$cluster)
+  # data$batch = factor(data$batch, levels = c("First", "Second", "NM"))
+  data$batch = as.character(data$batch)
+
+  colors = c("#99cc99", "#66ccff", "#cc55ff")
+  
+  plots = list()
+  
+  plots[["a1"]] = ggplot(data, aes(x=tSNE_1, y=tSNE_2, color=cluster)) + 
+    geom_point(size=pt.size) + 
+    labs(title=paste(title, "cluster"))
+  
+  plots[["a2"]] = ggplot(data, aes(x=tSNE_1, y=tSNE_2, color=batch)) + 
+    geom_point(size=pt.size) + 
+    labs(title=paste(title)) + 
+    scale_color_manual(values=c("#99cc99", "#cc55ff", "#66ccff"))
+  
+  batch = unique(data$batch)
+  for (i in 1:length(batch)) {
+    temp = data
+    idx = temp$batch != batch[i] & !is.na(temp$batch)
+    temp[idx, "batch"] <- rep("AA", times = sum(idx))
+    
+    print(temp %>% group_by(batch) %>% count())
+    
+    plots[[paste0("a", i+2)]] = ggplot(temp, aes(x=tSNE_1, y=tSNE_2, color=batch)) + 
+      geom_point(size=pt.size) + 
+      labs(title=paste(title, batch[i])) + 
+      scale_color_manual(values=c("#999999", colors[i]))
+  }
+  
+  return(ggarrange(plotlist = plots, nrow = 1, ncol = length(plots), legend = "none")) 
+}
+
+p1 <- plot_dim(combat, title = "ComBat")
+p2 <- plot_dim(bbknn, title = "bbknn")
+p3 <- plot_dim(harmony, title = "Harmony")
+p4 <- plot_dim(sctransform, title = "sctransform")
+
+
+p <- ggarrange(plotlist = list(p1, p2, p3, p4), ncol = 1, nrow = 4)
+
+filenames[["4tsne"]] <- here("01_figures", "four_batch_tsne.pdf")
+ggsave(filename = filenames[["4tsne"]], plot = p, width = 30, height = 24, units = "in", dpi = dpi)
+```
+
+```{r fig.height=6, fig.width=30}
+p3
+```
+
+
+## 计算每个cluster中三个来源的细胞的比例，然后计算index
+```{r}
+temp <-combat %>% select(batch, cluster) %>% group_by(cluster, batch) %>% count() %>% group_by(cluster) %>% mutate(freq = n / sum(n))
+
+temp$cluster <- as.character(temp$cluster)
+
+p1 <- ggplot(temp, aes(x = cluster, y = batch, color = freq, size = log10(n))) + geom_point() + ylab("ComBat")
+```
+
+
+```{r}
+temp <- bbknn %>% select(batch, cluster) %>% group_by(cluster, batch) %>% count() %>% group_by(cluster) %>% mutate(freq = n / sum(n))
+
+temp$cluster <- as.character(temp$cluster)
+
+p2 <- ggplot(temp, aes(x = cluster, y = batch, color = freq, size = log10(n))) + geom_point() + ylab("bbknn")
+```
+
+
+```{r}
+temp <- harmony %>% select(batch, cluster) %>% group_by(cluster, batch) %>% count() %>% group_by(cluster) %>% mutate(freq = n / sum(n))
+
+temp$cluster <- as.character(temp$cluster)
+
+p3 <- ggplot(temp, aes(x = cluster, y = batch, color = freq, size = log10(n))) + geom_point() + ylab("Harmony")
+```
+
+```{r}
+temp <- sctransform %>% select(batch, cluster) %>% group_by(cluster, batch) %>% count() %>% group_by(cluster) %>% mutate(freq = n / sum(n))
+
+temp$cluster <- as.character(temp$cluster)
+
+p4 <- ggplot(temp, aes(x = cluster, y = batch, color = freq, size = log10(n))) + geom_point() + ylab("sctransform")
+```
+
+```{r fig.height=20, fig.width=12}
+filenames[["4perc"]] <- here("01_figures", "four_batch_percentage_each_cluster.pdf")
+ggsave(
+  filename = filenames[["4perc"]],
+  plot = ggarrange(p1, p2, p3, p4, nrow = 4, ncol = 1),
+  width = 12, height = 20,
+  dpi = dpi
+  )
+
+```
+
+
+```{r fig.height=18, fig.width=18}
+
+FeaturePlot(
+    obj,
+    cols.use = c("lightgrey", "blue"),
+    features.plot = c(
+        "PSCA",   # early transit amplifying上皮细胞
+        "AZGP1",  # Neuroendocrine cell
+        "CPE",    # Neuroendocrine cell
+        "TFF2",   # Airway global cell
+        "TUBB2B",  # Neuroendocrine cell
+        "CD8A",
+        "CD8B",
+        "GZMK",
+        "CD4"
+    )
+)
+```
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

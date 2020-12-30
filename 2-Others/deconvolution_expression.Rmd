@@ -1,0 +1,579 @@
+---
+title: "Deconvolution_expression"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "LungCancer10x/03_each_cells/ATII_Basal/"
+knitr::opts_knit$set(root.dir = root.dir)
+```
+
+
+```{R include=FALSE}
+options(stringsAsFactors = F)
+library(ComplexHeatmap)
+library(circlize)
+library(stringr)
+library(wesanderson)
+library(dplyr)
+library(reshape2)
+library(Seurat)
+library(doMC)
+library(openxlsx)
+```
+
+### Deconvolution expression 
+
+```{r}
+# expr <- readRDS(paste0(root.dir, "../../02_rds/all_cell_expr.rds"))
+
+meta <- read.csv(paste0(root.dir, "../../02_rds/meta_after_singleR.csv"), row.names = 1, stringsAsFactors = F)
+meta$cell_short = meta$cell_name1
+meta <- meta[meta$cell_short != "" & !is.na(meta$cell_short), ]
+meta$cell_short[meta$cell_short == "Mφ"] = "Mo"
+
+nm_meta <- read.xlsx(paste0(root.dir, "../../02_rds/NM_meta.xlsx"))
+rownames(nm_meta) <- nm_meta$SampleID
+
+meta[meta$Batch == 3, "Stage"] <- nm_meta[meta$SampleID[meta$Batch == 3], "Stage"]
+meta[meta$Batch == 3, "Disease"] <- nm_meta[meta$SampleID[meta$Batch == 3], "Disease"]
+
+
+## Read data
+bulk <- read.xlsx(paste0(root.dir, "../../09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+gene_pos <- read.table(paste0(root.dir, "../../09_bulk/RNA_seq/gene_pos.txt"), header = F, row.names = 5)
+gene_pos$V6 <- make.unique(as.character(gene_pos$V6))
+rownames(bulk) <- gene_pos[rownames(bulk), "V6"]
+
+bulk_meta <- read.xlsx(paste0(root.dir, "../../09_bulk/RNATAC50commonSample-1119.xlsx"))
+bulk_meta <- bulk_meta[!is.na(bulk_meta$SampleID), ]
+rownames(bulk_meta) <- bulk_meta$SampleID
+bulk_meta$Stage <- sapply(bulk_meta$Stage, function(x) {
+    str_replace_all(x, "[^IV]", "")
+})
+
+atii <- read.csv(paste0(root.dir, "ATII_mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+basal <- read.csv(paste0(root.dir, "Basal_mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+```
+
+
+```{r}
+calculate_gene_percentage <- function(expr, meta, random_seed = 1, n = 3000) {
+    set.seed(random_seed)
+    
+    meta$Cells = rownames(meta)
+    cells <- meta %>%
+        sample_n(n) %>%
+        dplyr::select(Cells, cell_short) %>%
+        as.data.frame()
+    
+    ## prepare gene expression matrix
+    temp <- melt(as.matrix(expr[,  which(colnames(expr) %in% cells$Cells)]))
+    
+    temp$Disease = as.character(meta[as.character(temp$Var2), "Disease"])
+    temp$Cell = as.character(meta[as.character(temp$Var2), "cell_short"])
+    temp$Stage = as.character(meta[as.character(temp$Var2), "Stage"])
+    
+    # temp <- temp[temp$value > 0, ]
+    
+    ## normalize gene expression by cell type, disease and stage
+    temp <- temp %>%
+        group_by(Disease, Cell, Stage) %>%
+        add_tally() %>%
+        group_by(Disease, Cell, Stage, Var1) %>%
+        mutate(value = mean(value))
+    
+    temp <- temp[, colnames(temp) != "Var2"]
+    temp <- unique(temp)
+    
+    ## calculate gene expression composition
+    temp <- temp %>%
+        group_by(Var1, Disease, Stage) %>%
+        mutate(perc = value / sum(value)) %>%
+        as.data.frame()
+    
+    return(temp)
+}
+
+
+gene_perc <- read.table(paste0(root.dir, "../../12_final_plots/Customize/raw_mea_by_cell_disease_stage.tsv"), header = T, sep = "\t")
+gene_perc <- melt(gene_perc, id = "gene")
+gene_perc$Disease <- sapply(gene_perc$variable, function(x) {
+    str_split(x, "\\.")[[1]][1]
+})
+gene_perc$Stage <- sapply(gene_perc$variable, function(x) {
+    str_split(x, "\\.")[[1]][2]
+})
+gene_perc$Cell <- sapply(gene_perc$variable, function(x) {
+    str_split(x, "\\.")[[1]][3]
+})
+```
+
+
+```{r}
+clean_expr <- function(expr) {
+    expr[is.na(expr)] <- 0
+    max_val = max(apply(expr[, 2:ncol(expr)], 2, function(col) { max(as.numeric(col[!is.infinite(col)])) }))
+
+    for(i in 1:ncol(expr)) {
+        expr[, i][is.infinite(expr[, i])] < max_val + 1
+    }
+
+    expr[, apply(expr, 2, function(col) { sd(col) > 0 })]
+    expr
+}
+
+
+dcast_expr <- function(expr) {
+    expr <- dcast(expr, Var1~Var2, value.var = "value", fun.aggregate = mean)
+    expr <- expr[!is.na(expr$Var1), ]
+    rownames(expr) <- as.character(expr$Var1)
+    expr <- expr[, colnames(expr) != "Var1"]
+    clean_expr(expr)
+}
+
+normalize_expr <- function(expr) {
+    expr <- as.data.frame(expr)
+    expr$value = as.numeric(as.character(expr$value))
+    
+    res=foreach(i = unique(expr$Var2), .combine = "rbind") %dopar% {
+        temp = expr[expr$Var2 == i, ]
+        temp$value = temp$value / sum(temp$value, na.rm = T)
+        temp
+    }
+    
+    res
+}
+
+
+convert_decon_expression_matrix <- function(bulk, bulk_meta, est, genes, gene_perc, disease, cell) {
+    registerDoMC(20)
+    library(tictoc)
+    res = list()
+    genes = as.character(genes)
+
+    ## process gene expression by cell percentage
+    tic("Process cell")
+    expr <- bulk[genes, str_detect(colnames(bulk), disease)]
+    expr <- melt(as.matrix(expr))
+    expr$Stage <- bulk_meta[as.character(expr$Var2), "Stage"]
+    
+    expr <- expr[expr$Var2 %in% rownames(est), ]
+    
+    expr$Cell_perc <- est[as.character(expr$Var2), cell]
+    expr <- expr[expr$Cell_perc > 0, ]
+    expr$value <- expr$value / expr$Cell_perc
+    
+    toc()
+    res[[1]] = dcast_expr(expr)
+    
+    ## normalization
+    tic("Normalize")
+    expr <- normalize_expr(expr)
+    res[[2]] = dcast_expr(expr)
+    toc()
+    
+    ## process gene expression by gene percentage
+    tic("Process by gene")
+    gene_perc <- gene_perc[gene_perc$Cell == cell, ]
+    rownames(gene_perc) <- paste(gene_perc$gene, gene_perc$Disease, gene_perc$Stage)
+    
+    expr <- foreach(i = unique(expr$Var2), .combine = "rbind") %dopar% {
+        temp = expr[expr$Var2 == i, ]
+        
+        temp$gene_perc <- apply(temp, 1, function(row) {
+            if (str_detect(row[2], "TCGA")) {
+                paste(row[1], str_split(row[2], "\\.")[[1]][8], row[4])
+            } else {
+                paste(row[1], str_replace_all(row[2], "\\d+", ""), row[4])
+            }
+            
+        })
+        
+        temp$gene_perc <- gene_perc[temp$gene_perc, "value"]
+        temp <- temp[temp$gene_perc > 0, ]
+        temp <- na.omit(temp)
+        temp$value <- as.numeric(temp$value) / as.numeric(temp$gene_perc)
+        temp
+    }
+
+    toc()
+    res[[3]] = dcast_expr(expr)
+
+    # normalization
+    tic("Process by gene")
+    expr <- normalize_expr(expr)
+    toc()
+    ## cast
+    expr <- dcast(expr, Var1~Var2, value.var = "value", fun.aggregate = mean)
+    expr <- expr[!is.na(expr$Var1), ]
+    rownames(expr) <- as.character(expr$Var1)
+    expr <- expr[, colnames(expr) != "Var1"]
+
+    ## scale
+    expr[is.na(expr)] <- 0
+    max_val = max(apply(expr[, 2:ncol(expr)], 2, function(col) { max(as.numeric(col[!is.infinite(col)])) }))
+
+    for(i in 1:ncol(expr)) {
+        expr[, i][is.infinite(expr[, i])] < max_val + 1
+    }
+
+    expr[, apply(expr, 2, function(col) { sd(col) > 0 })]
+    
+    res[[4]] = expr
+    res
+}
+```
+
+```{r}
+dec <- readRDS(paste0(root.dir, "../../09_bulk/RNA_seq/MuSic/bulk.rds"))
+est <- dec$Est.prop.weighted
+
+# gene_perc <- calculate_gene_percentage(expr, meta, n = 5000)
+```
+
+
+### Basal
+```{r}
+res = convert_decon_expression_matrix(bulk, bulk_meta, est, basal$gene, gene_perc, "LUSC", "Basal")
+
+for(i in 1:4) {
+    print(i)
+    temp_scale = na.omit(t(scale(t(res[[i]]))))
+    
+    h <- Heatmap(
+        temp_scale, 
+        name = "Expr",
+        # col = colorRamp2(c(-4, 0, 4), c("purple", "black", "yellow")),
+        show_row_names = F,
+        cluster_rows = T,
+        row_split = basal[rownames( temp_scale), "Clt"],
+        column_split = bulk_meta[colnames(temp_scale), "Stage"],
+        border = T
+    )
+    
+    draw(h)
+}
+
+
+
+# pdf("03_each_cells/ATII_Basal/Basal_mfuzz_dec.pdf", width = 6, height = 4)
+
+# dev.off()
+```
+
+
+### ATII
+```{r}
+res = convert_decon_expression_matrix(bulk, bulk_meta, est, atii$gene, gene_perc, "LUAD", "ATII")
+
+for(i in 1:4) {
+    print(i)
+    temp_scale = na.omit(t(scale(t(res[[i]]))))
+    
+    h <- Heatmap(
+        temp_scale, 
+        name = "Expr",
+        # col = colorRamp2(c(-4, 0, 4), c("purple", "black", "yellow")),
+        show_row_names = F,
+        cluster_rows = T,
+        row_split = atii[rownames( temp_scale), "Clt"],
+        column_split = bulk_meta[colnames(temp_scale), "Stage"],
+        border = T
+    )
+    
+    draw(h)
+}
+```
+
+
+---
+
+## TCGA
+
+```{r}
+tcga <- read.csv("../../TCGA/Lung.csv", row.names = 1, stringsAsFactors = F)
+
+
+### read bulk
+tcga_meta <- data.frame(
+    Disease = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][8] }),
+    Stage = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][9] })
+)
+
+rownames(tcga_meta) <- colnames(tcga)
+tcga_meta <- tcga_meta[tcga_meta$Stage != "", ]
+
+
+tcga_dec <- readRDS(paste0(root.dir, "../../09_bulk/RNA_seq/MuSic/tcga.rds"))
+tcga_est <- tcga_dec$Est.prop.weighted
+```
+
+
+### Basal
+```{r}
+res = convert_decon_expression_matrix(tcga, tcga_meta, tcga_est, basal$gene, gene_perc, "LUSC", "Basal")
+
+
+for(i in 1:4) {
+    print(i)
+    temp_scale = na.omit(t(scale(t(res[[i]]))))
+    
+    h <- Heatmap(
+        temp_scale, 
+        name = "Expr",
+        # col = colorRamp2(c(-4, 0, 4), c("purple", "black", "yellow")),
+        show_row_names = F,
+        show_column_names = F,
+        cluster_rows = F,
+        cluster_columns = F,
+        row_split = basal[rownames( temp_scale), "Clt"],
+        column_split = tcga_meta[colnames(temp_scale), "Stage"],
+        border = T
+    )
+    
+    draw(h)
+}
+
+
+# pdf("03_each_cells/ATII_Basal/Basal_mfuzz_dec.pdf", width = 6, height = 4)
+
+# dev.off()
+```
+
+
+### ATII
+```{r}
+res = convert_decon_expression_matrix(tcga, tcga_meta, tcga_est, atii$gene, gene_perc, "LUAD", "ATII")
+
+for(i in 1:4) {
+    print(i)
+    temp_scale = na.omit(t(scale(t(res[[i]]))))
+    
+    h <- Heatmap(
+        temp_scale, 
+        name = "Expr",
+        # col = colorRamp2(c(-4, 0, 4), c("purple", "black", "yellow")),
+        show_row_names = F,
+        show_column_names = F,
+        cluster_rows = T,
+        cluster_columns = T,
+        row_split = atii[rownames( temp_scale), "Clt"],
+        column_split = tcga_meta[colnames(temp_scale), "Stage"],
+        border = T
+    )
+    
+    draw(h)
+}
+```
+
+
+---
+
+```{r}
+res = convert_decon_expression_matrix(bulk, bulk_meta, est, rownames(bulk), gene_perc, "LUSC", "Basal")
+```
+
+```{r}
+tcga_res = convert_decon_expression_matrix(tcga, tcga_meta, tcga_est, rownames(bulk), gene_perc, "LUSC", "Basal")
+```
+
+
+```{R}
+saveRDS(res, paste0(root.dir, "converted_genes/Basal.rds"))
+saveRDS(tcga_res, paste0(root.dir, "converted_genes/Basal_tcga.rds"))
+```
+
+
+```{R}
+res <- readRDS(paste0(root.dir, "converted_genes/Basal.rds"))
+tcga_res <- readRDS(paste0(root.dir, "converted_genes/Basal_tcga.rds"))
+```
+
+
+```{r}
+temp_scale = na.omit(t(scale(t(res[[4]]))))
+h <- Heatmap(
+    temp_scale, 
+    name = "Expr",
+    # col = colorRamp2(c(-4, 0, 4), c("purple", "black", "yellow")),
+    show_row_names = F,
+    show_column_names = T,
+    cluster_rows = T,
+    cluster_columns = F,
+    column_split = bulk_meta[colnames(temp_scale), "Stage"],
+    border = T,
+    row_split = 5
+)
+
+draw(h)
+```
+
+```{r}
+format_gene_orders <- function(orders, genes) {
+    res = NULL
+    for(i in 1:length(orders)) {
+        res = rbind(
+            res,
+            data.frame(
+                gene =  genes[orders[[i]]],
+                Clt = rep(i, length(orders[[i]])),
+                row.names = genes[orders[[i]]]
+            )
+        )
+    }
+    
+    res
+}
+
+genes <- format_gene_orders(row_order(h), row.names(temp_scale))
+```
+
+```{r}
+tcga_scale = na.omit(t(scale(t(tcga_res[[4]][genes$gene, ]))))
+Heatmap(
+    tcga_scale, 
+    name = "Expr",
+    # col = colorRamp2(c(-4, 0, 4), c("purple", "black", "yellow")),
+    show_row_names = F,
+    show_column_names = F,
+    cluster_rows = F,
+    cluster_columns = F,
+    column_split = tcga_meta[colnames(tcga_scale), "Stage"],
+    border = T,
+    row_split = genes[rownames(tcga_scale), "Clt"]
+)
+```
+
+
+```{r}
+make_upset_plot <- function(mfuzz, clt) {
+    library(UpSetR)
+    lt = list()
+    
+    for(i in unique(mfuzz$Clt)) {
+        lt[[i]] <- mfuzz$gene[mfuzz$Clt == i]
+    }
+    
+    for(i in unique(clt$Clt)) {
+        lt[[paste0("D.", i)]] <- clt$gene[clt$Clt == i]
+    }
+    
+    print(names(lt))
+    upset(fromList(lt), order.by = "freq", sets = names(lt))
+}
+
+
+make_upset_plot(basal, genes)
+```
+
+
+---
+
+
+```{r}
+res = convert_decon_expression_matrix(bulk, bulk_meta, est, rownames(bulk), gene_perc, "LUAD", "ATII")
+```
+
+```{r}
+tcga_res = convert_decon_expression_matrix(tcga, tcga_meta, tcga_est, rownames(bulk), gene_perc, "LUAD", "ATII")
+```
+
+```{R}
+saveRDS(res, paste0(root.dir, "converted_genes/ATII.rds"))
+saveRDS(tcga_res, paste0(root.dir, "converted_genes/ATII_tcga.rds"))
+```
+
+
+```{R}
+res <- readRDS(paste0(root.dir, "converted_genes/ATII.rds"))
+tcga_res <- readRDS(paste0(root.dir, "converted_genes/ATII_tcga.rds"))
+```
+
+
+```{r}
+temp_scale = na.omit(t(scale(t(res[[4]]))))
+h <- Heatmap(
+    temp_scale, 
+    name = "Expr",
+    # col = colorRamp2(c(-4, 0, 4), c("purple", "black", "yellow")),
+    show_row_names = F,
+    show_column_names = T,
+    cluster_rows = T,
+    cluster_columns = F,
+    column_split = bulk_meta[colnames(temp_scale), "Stage"],
+    border = T,
+    row_split = 3
+)
+
+draw(h)
+```
+
+```{r}
+genes = format_gene_orders(row_order(h), rownames(temp_scale))
+```
+
+```{r}
+tcga_scale = na.omit(t(scale(t(tcga_res[[4]][genes$gene, ]))))
+Heatmap(
+    tcga_scale, 
+    name = "Expr",
+    # col = colorRamp2(c(-4, 0, 4), c("purple", "black", "yellow")),
+    show_row_names = F,
+    show_column_names = F,
+    cluster_rows = F,
+    cluster_columns = F,
+    column_split = tcga_meta[colnames(tcga_scale), "Stage"],
+    border = T,
+    row_split = genes[rownames(tcga_scale), "Clt"]
+)
+```
+
+```{R}
+make_upset_plot(atii, genes)
+```
+
+```{r}
+atii_obj <- readRDS(paste0(root.dir, "ATII.rds"))
+```
+
+
+```{R}
+Heatmap(
+    atii_obj@scale.data[intersect(genes$gene, rownames(atii_obj@scale.data)), ],
+    col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")),
+    border = T,
+    cluster_rows = F,
+    cluster_columns = F,
+    show_row_names = F,
+    show_column_names = F,
+    column_split = atii_obj@meta.data[colnames(atii_obj@scale.data), "Stage"],
+    row_split = genes[intersect(genes$gene, rownames(atii_obj@scale.data)), "Clt"]
+)
+```
+
+```{R}
+new_genes <- rbind(
+    genes[genes$Clt == 1 & genes$gene %in% atii$gene[atii$Clt == "M.I"], ],
+    genes[genes$Clt == 2 & genes$gene %in% atii$gene[atii$Clt == "M.II"], ],
+    genes[genes$Clt == 2 & genes$gene %in% atii$gene[atii$Clt == "M.IV"], ],
+    genes[genes$Clt == 3 & genes$gene %in% atii$gene[atii$Clt == "M.II"], ]
+)
+
+
+Heatmap(
+    atii_obj@scale.data[intersect(new_genes$gene, rownames(atii_obj@scale.data)), ],
+    col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")),
+    border = T,
+    cluster_rows = F,
+    cluster_columns = F,
+    show_row_names = F,
+    show_column_names = F,
+    column_split = atii_obj@meta.data[colnames(atii_obj@scale.data), "Stage"],
+    row_split = new_genes[intersect(new_genes$gene, rownames(atii_obj@scale.data)), "Clt"]
+)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

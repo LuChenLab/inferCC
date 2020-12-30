@@ -1,0 +1,3532 @@
+---
+title: "Deconvolution"
+author: "Zhang Yiming"
+date: "2020/2/7"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "LungCancer10x/"
+
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+## Load packages
+
+```{r cars, include=FALSE}
+library(MuSiC)
+library(xbioc)
+library(dplyr)
+library(openxlsx)
+library(stringr)
+library(ComplexHeatmap)
+library(circlize)
+library("FactoMineR")
+library("factoextra")
+library(ggfortify)
+library(umap)
+library(Rtsne)
+library(reshape2)
+library(wesanderson)
+library(TCGAbiolinks)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(umap)
+library(Rtsne)
+library(tsidx)
+library(ggpubr)
+library(ggrastr)
+library(ggsci)
+
+
+options(stringsAsFactor = F)
+
+extrafont::loadfonts()
+```
+
+## Functions
+
+### Variables
+```{r pressure, echo=FALSE}
+axis_size = 18
+axis_title_size = 20
+title_size = 25
+legend.position="right"
+legend_text_size = 15
+legend_title_size = 20
+
+my_theme <- ggplot2::theme(
+    aspect.ratio=1,
+    plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+    legend.position = legend.position,
+    axis.text = element_text(size = axis_size),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = axis_size),
+    axis.title = element_text(size = axis_title_size),
+    legend.text = element_text(size = legend_text_size),
+    legend.title = element_text(size = legend_title_size),
+    panel.grid = element_blank()
+)
+
+col_fun = colorRamp2(c(-3, 0, 3), c("blue", "white", "red"))
+
+
+immu <- c( 
+    "B", "CD4", "CD8",
+    "DC", "Mast", "Mφ",
+    "NK", "Tregs", "Gran"
+)
+
+
+luad_cli <- readRDS(full.path("TCGA/LUAD_clinical.rds"))
+rownames(luad_cli) <- luad_cli$submitter_id
+
+lusc_cli <- readRDS(full.path("TCGA/LUSC_clinical.rds"))
+rownames(lusc_cli) <- lusc_cli$submitter_id
+
+Stage = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "Normal"="#73BDFF")
+Disease = c( 
+    "LUAD" = "#0084D1",  "NL(AD)"="#FECC1B",  "NL"="#778793", 
+    "BSPN"="#C93311",  "NL(SC)"="#778793",  "LUSC"="#A0C807"
+)
+Source = as.character(wes_palette("Moonrise3"))
+names(Source) = c("In-house",  "East Asians","GTEx", "TCGA", "SYSU")
+Source["CHOICE"] = Source["SYSU"]
+
+force = FALSE
+```
+
+### heatmap of correlation
+
+```{r echo=FALSE}
+make_heatmap_merged <- function(
+    data, meta, 
+    row_split=NULL, column_split=NULL,
+    cluster_rows = T, cluster_columns = T,
+    show_source=TRUE,
+    column_title = NULL
+    ) {
+    col_fun <- colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+    
+    if (show_source) {
+        colors = list(Stage = Stage, Disease = Disease, Source = Source)
+        
+        ra <- rowAnnotation(
+            Disease = meta[rownames(data), "Disease"], Stage = meta[rownames(data), "Stage"], Source = meta[rownames(data), "Source"],
+            col = colors, show_annotation_name = F, show_legend = T,
+            annotation_name_gp = gpar(fontfamily = "Arial Unicode MS"),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+        
+        ba <- HeatmapAnnotation(
+            Disease = meta[colnames(data), "Disease"], Stage = meta[colnames(data), "Stage"],  Source = meta[colnames(data), "Source"],
+            col = colors, show_annotation_name = T, show_legend = F,
+            annotation_name_gp = gpar(fontfamily = "Arial Unicode MS"),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    } else {
+        colors = list(Stage = Stage, Disease = Disease)
+        
+        ra <- rowAnnotation(
+            Disease = meta[rownames(data), "Disease"], Stage = meta[rownames(data), "Stage"],
+            col = colors, show_annotation_name = F, show_legend = T,
+            annotation_name_gp = gpar(fontfamily = "Arial Unicode MS"),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+        
+        ba <- HeatmapAnnotation(
+            Disease = meta[colnames(data), "Disease"], Stage = meta[colnames(data), "Stage"],
+            col = colors, show_annotation_name = T, show_legend = F,
+            annotation_name_gp = gpar(fontfamily = "Arial Unicode MS"),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+    
+
+    Heatmap(
+        data,
+        name = "Corr",
+        col = col_fun,
+        right_annotation = ra,
+        # bottom_annotation = ba,
+        show_row_names = F,
+        show_column_names = F,
+        row_split = row_split,
+        column_split = column_split,
+        cluster_rows = cluster_rows,
+        cluster_columns = cluster_columns,
+        border = T,
+        column_title = column_title,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        ),
+        use_raster = T
+    )
+}
+```
+
+
+
+```{r echo=FALSE, fig.height=8, fig.width=8}
+immu = c(
+    "B", "CD4", "CD8", "DC",
+    "Gran", "Mast", "Mo", "NK",
+    "Tregs", "Mφ"
+)
+
+
+### using cutree and max number of samples as label
+make_heatmap_number_merged <- function(
+    data, meta, 
+    scale_dot_size=0.9, 
+    row_split=NULL, column_split=NULL,
+    cluster_rows = T, cluster_columns = T,
+    show_row_names = F, show_column_names = T,
+    show_source=T, only_non_immu = FALSE, 
+    only_immu = FALSE, no_disease = F, only_stage = F
+) {
+    
+    if (only_non_immu) {
+        data = data[, !colnames(data) %in% immu]
+    } else if (only_immu) {
+        data = data[, colnames(data) %in% immu]
+    }
+    
+    col_fun <- colorRamp2(c(0, 0.5, 1), c("blue", "white", "red"))
+    
+    if(show_source) {
+        colors = list(Stage = Stage, Disease = Disease, Source = Source)
+        
+        ra <- rowAnnotation(
+            Disease = meta[rownames(data), "Disease"], 
+            Stage = meta[rownames(data), "Stage"], 
+            Source = meta[rownames(data), "Source"],
+            col = colors, show_annotation_name = F, show_legend = T,
+            annotation_name_gp = gpar(fontfamily = "Arial Unicode MS"),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+    if (no_disease) {
+        colors = list(Stage = Stage, Disease = Disease, Source = Source)
+        
+        ra <- rowAnnotation(
+            Stage = meta[rownames(data), "Stage"], 
+            Source = meta[rownames(data), "Source"],
+            col = colors, show_annotation_name = F, show_legend = T,
+            annotation_name_gp = gpar(fontfamily = "Arial Unicode MS"),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    } 
+    
+    if (only_stage) {
+        colors = list(Stage = Stage)
+        
+        ra <- rowAnnotation(
+            Stage = meta[rownames(data), "Stage"],
+            col = colors, show_annotation_name = F, show_legend = T,
+            annotation_name_gp = gpar(fontfamily = "Arial Unicode MS"),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+    
+    if (!show_source && !no_disease && !only_stage) {
+        colors = list(Stage = Stage, Disease = Disease)
+        
+        ra <- rowAnnotation(
+            Disease = meta[rownames(data), "Disease"], 
+            Stage = meta[rownames(data), "Stage"],
+            col = colors, show_annotation_name = F, show_legend = T,
+            annotation_name_gp = gpar(fontfamily = "Arial Unicode MS"),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+    
+    Heatmap(
+        data,
+        name = "Weight",
+        col = col_fun,
+        right_annotation = ra,
+        # bottom_annotation = ba,
+        show_row_names = show_row_names,
+        show_column_names = show_column_names,
+        row_split = row_split,
+        column_split = column_split,
+        cluster_rows = cluster_rows,
+        cluster_columns = cluster_columns,
+        border = T,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        ),
+        use_raster = T
+    )
+    
+}
+
+
+make_piechart_of_stages_each_group <- function(tree, meta, ncol = 2) {
+    temp = tree
+    temp$Stage = meta[rownames(temp), "Stage"]
+    
+    temp <- temp %>%
+        group_by(Stage, Clt) %>%
+        add_tally() %>%
+        select(Clt, Stage, n) %>%
+        unique() %>%
+        group_by(Clt) %>%
+        mutate(label = paste0(Stage, "(", round(n / sum(n) * 100, digits = 2), "%)")) %>%
+        as.data.frame()
+    
+    plist = list()
+    for (i in sort(unique(temp$Clt))) {
+        plist[[length(plist) + 1]] <- ggpie(
+            temp[temp$Clt == i, ],
+            "n", 
+            label = "label", 
+            fill = "Stage", 
+            color = "white",
+            palette = Stage,
+            title = i,
+            lab.pos = "in",
+            font.family = "Arial Unicode MS"
+        ) + theme(legend.position = "none")
+    }
+    
+    cowplot::plot_grid(plotlist = plist, ncol = ncol)
+}
+
+
+make_piechart_of_stages_by_h <- function(h, meta, ncol) {
+    # meta$Disease[meta$Disease %in% c("NL(SC)", "NL(AD)","NL")] = "NL"
+    # meta <- meta[!is.na(meta$Stage), ]
+    mtx = h@matrix
+
+    o <- row_order(h)
+    tree = NULL
+    for (i in 1:length(o)) {
+        temp = data.frame(
+            Clt = rep(i, length(o[[i]])), 
+            SampleID = rownames(mtx)[o[[i]]]
+        )
+        tree <- rbind(tree, temp)
+    }
+    
+    rownames(tree) <- tree$SampleID
+    tree = tree[tree$SampleID %in% rownames(meta), ]
+    
+    tree$Disease = meta[rownames(tree), "Disease"]
+    
+    temp <- tree %>%
+        group_by(Disease, Clt) %>%
+        add_tally() %>%
+        dplyr::select(Clt, Disease, n) %>%
+        unique() %>%
+        group_by(Clt) %>%
+        mutate(label = paste0(Disease, "(", round(n / sum(n) * 100, digits = 2), "%)")) %>%
+        as.data.frame()
+    
+    plist = list()
+    for (i in sort(unique(temp$Clt))) {
+        plist[[length(plist) + 1]] <- ggpie(
+            temp[temp$Clt == i, ],
+            "n", 
+            label = "label", 
+            fill = "Disease", 
+            color = "white",
+            palette = Disease,
+            title = i,
+            lab.pos = "in",
+            font.family = "Arial Unicode MS"
+        ) + theme(
+            legend.position = "none", 
+            plot.margin = unit(c(0, 0, 0, 0), "cm")
+        )
+    }
+    
+    cowplot::plot_grid(plotlist = plist, ncol = ncol)
+}
+```
+
+
+## Load markers
+```{r echo=FALSE}
+markers = read.xlsx(full.path("20190701_gene_markers.xlsx"), sheet = 3)
+markers <- na.omit(markers[, 1:2])
+markers <- unique(markers)
+
+markers <- markers[markers$Cells %in% c(
+    "Alveolar II", "B cells", "Basal", "CD4+",                    
+    "CD8+", "Ciliated", "Club",
+    "Dendritic", "Endothelial", "Epithelial", 
+    "Fibroblasts", "Granulocyte",
+    "Mast", "Monocytes", "Neuroendocrine", "NK",
+    "T cells", "Treg"   
+), ]
+
+
+short_names <- c(
+    "APII"="ATII",
+    "Alveolar II"="ATII",
+    "Basal"="Basal",
+    "B cells"="B",
+    "CD4+"="CD4",
+    "CD4"="CD4",
+    "CD8+"="CD8",
+    "CD8"="CD8",
+    "Ciliated"="Cilia",
+    "Club"="Club",
+    "DC"="DC",
+    "Dendritic"="DC",
+    "Endothelial"="EC",
+    "Epithelial"="Epi",
+    "Exhaust T"="Exh T",
+    "Fibroblasts"="Fib",
+    "Granulocyte"="Gran",
+    "Mast"="Mast",
+    "Mascrophages"="Mφ",
+    "Macrophages"="Mφ",
+    "Monocytes"="Mo",
+    "Neuroendocrine"="NE",
+    "NK"="NK",
+    "Treg"="Tregs",
+    "Tregs"="Tregs",
+    "T cells"="T"
+)
+
+
+markers$Cells <- sapply(markers$Cells, function(x) {
+    short_names[[x]]
+})
+
+markers <- markers[order(as.character(markers$Cells)), ]
+
+markers_num <- markers %>%
+    group_by(Cells) %>%
+    add_tally() %>%
+    select(Cells, n) %>%
+    unique()
+
+ggplot(markers_num, aes(x=Cells, y=n, label = n)) +
+    geom_bar(stat = "identity", fill="white") +
+    geom_text()
+```
+
+
+## Load single cell expression
+```{r echo=FALSE}
+# Load single cell meta info
+meta <- read.csv(full.path("02_rds/meta_after_singleR.csv"), row.names = 1, stringsAsFactors = F)
+nm_meta <- read.xlsx(full.path("02_rds/NM_meta.xlsx"))
+rownames(nm_meta) <- nm_meta$SampleID
+
+
+meta[meta$Batch == 3, "Stage"] <- nm_meta[meta$SampleID[meta$Batch == 3], "Stage"]
+meta[meta$Batch == 3, "Disease"] <- nm_meta[meta$SampleID[meta$Batch == 3], "Disease"]
+
+
+meta$cell_short[meta$cell_short == "Mφ"] = "Mo"
+meta$Disease = as.character(meta$Disease)
+meta$Disease <- sapply(meta$Disease, function(x) {
+    disease = c(
+        "LUAD"="AD",
+        "LUSC"="SC",
+        "LUAD_Normal"="NL(AD)",
+        "LUSC_Normal"="NL(SC)",
+        "LULC"="LC",
+        "LULC_Normal"="NL(LC)",
+        "Pleiomorphic"="UPS",
+        "Pleiomorphic Normal"="NL(UPS)"
+    )
+    
+    as.character(disease[x])
+})
+
+
+meta <- meta[meta$Disease %in% c("AD", "SC", "NL(AD)", "NL(SC)"), ]
+
+
+cell_types = sort(as.character(unique(meta$cell_short)))
+# cell_color = wes_palette("Moonrise3", length(cell_types), type = "continuous")
+cell_color = c(
+    wes_palette("Darjeeling1"), 
+    wes_palette("Moonrise3"),
+    wes_palette("Darjeeling2"),
+    wes_palette("Moonrise1")
+)[1:length(cell_types)]
+
+names(cell_color) = cell_types
+
+
+if (file.exists(full.path("09_bulk/RNA_seq/MuSic/sc_set.rds"))) {
+    sc_set <- readRDS(full.path("09_bulk/RNA_seq/MuSic/sc_set.rds"))
+} else {
+    expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+
+    sc_set <- ExpressionSet(as.matrix(expr[, rownames(meta)]), phenoData = AnnotatedDataFrame(meta))
+
+
+    saveRDS(sc_set, full.path("09_bulk/RNA_seq/MuSic/sc_set.rds"))
+    rm(expr)
+    gc()
+}
+```
+
+
+## Test on tsidx
+```{r echo=FALSE}
+if (file.exists(full.path("02_rds/tsi.rds"))) {
+    tsi <- readRDS(full.path("02_rds/tsi.rds"))
+} else {
+    expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+    meta$cell_short <- as.factor(meta$cell_short)
+    gc()
+    tsi <- tsDataSetFromMatrix(
+        expr[, rownames(meta)], 
+        meta, 
+        ~ cell_short, 
+        type = "expression",
+        convMethod = "log2", 
+        minimum=1, 
+        maximum=8.1238146178618, 
+        mindiff=3,
+        IbMethod = "mingap", 
+        tidy = FALSE, 
+        breaks = NULL
+    )
+    gc()
+    
+    saveRDS(tsi, full.path("02_rds/tsi.rds"))
+}
+```
+
+```{r}
+plotTau(tsi)
+```
+
+```{r}
+plotHeatmap(tsi, TauMin = 0.9, Ib = 1, rowScale = TRUE, mainPrefix = "Test1", show_colnames=F)
+```
+
+
+```{r}
+tau = as.data.frame(tsi@tsData$Tau)
+temp_genes = rownames(tau)[tau$Tau > 0.9]
+
+
+temp_expr <- as.data.frame(melt(as.matrix(tsi@rawData )[temp_genes, rownames(meta)]))
+temp_expr$cell <- meta[temp_expr$Var2, "cell_short"]
+
+temp_expr <- temp_expr %>%
+    group_by(cell) %>%
+    add_tally() %>%
+    group_by(cell, Var1) %>%
+    mutate(n1 = sum(value > 0)) %>%
+    filter(value > 0) %>%
+    group_by(cell, Var1) %>%
+    mutate(m = mean(value)) %>%
+    select(Var1, cell, n, n1, m) %>%
+    unique() %>%
+    as.data.frame()
+
+temp_expr$freq <- (temp_expr$n1 / temp_expr$n) * 100
+```
+
+
+表达量均值
+```{r}
+temp_mtx <- dcast(temp_expr, Var1~cell, fun.aggregate = mean, fill = 0, value.var = "m")
+rownames(temp_mtx) <- temp_mtx$Var1
+temp_mtx <- temp_mtx[, colnames(temp_mtx) != "Var1"]
+temp_mtx$FC <- apply(temp_mtx, 1, function(row) {
+    row = sort(row, decreasing = T)
+    
+    if (abs(row[2] - 0) < 1e-9) {
+        return (10000)
+    } else {
+        return(log2(row[1] / row[2]))
+    }
+})
+
+temp_mtx$Group <- apply(temp_mtx, 1, function(row) {
+    colnames(temp_mtx)[row == max(row)]
+})
+
+plot(density(temp_mtx$FC))
+```
+
+统计每个基因在对应细胞和其他细胞中的表达比例
+```{R}
+temp_mtx$freq <- sapply(rownames(temp_mtx), function(x) {
+    cell = temp_mtx[x, "Group"]
+    
+    return(temp_expr[temp_expr$Var1 == x & temp_expr$cell == cell, "freq"])
+})
+
+temp_mtx$other_freq <- sapply(rownames(temp_mtx), function(x) {
+    cell = temp_mtx[x, "Group"]
+    
+    return(mean(temp_expr[temp_expr$Var1 == x & temp_expr$cell != cell, "freq"]))
+})
+
+temp_mtx <- as.data.frame(temp_mtx)
+temp_mtx$freq <- as.numeric(as.character(temp_mtx$freq))
+temp_mtx$other_freq <- as.numeric(as.character(temp_mtx$other_freq))
+
+temp_mtx <- na.omit(temp_mtx)
+
+plot(density(temp_mtx$freq))
+plot(density(temp_mtx$other_freq))
+```
+
+
+```{r}
+table(as.character(temp_mtx$Group)[temp_mtx$freq > 0.005 & temp_mtx$other_freq < 0.001])
+```
+
+
+
+```{r}
+temp_mtx <- temp_mtx[order(as.character(temp_mtx$Group)), ]
+temp_mtx <- temp_mtx[temp_mtx$freq > 0.005 & temp_mtx$other_freq < 0.001, ]
+
+temp_mtx$Markers <- as.character(rownames(temp_mtx))
+temp_mtx$Group <- as.character(temp_mtx$Group)
+
+temp_mtx <- temp_mtx %>%
+    group_by(Group) %>%
+    top_n(5, wt = freq) %>%
+    as.data.frame()
+```
+
+```{r echo=FALSE}
+temp_mtx <- temp_mtx[, c("Markers", "Group")]
+colnames(temp_mtx)[2] = "Cells"
+
+markers <- rbind(markers, temp_mtx)
+markers <- unique(markers[order(as.character(markers$Cells)), ])
+
+rm(tsi)
+gc()
+```
+
+
+
+### check expression of markers
+```{r fig.height=4, fig.width=6}
+set.seed(42)
+for (i in unique(sc_set@phenoData@data$Disease)) {
+    temp_meta = sc_set@phenoData@data[sc_set@phenoData@data$Disease == i, ]
+    temp_meta <- temp_meta[order(temp_meta$cell_short), ]
+    
+    temp_meta1 = NULL
+    for(j in unique(temp_meta$cell_short)) {
+        temp_meta2 <- temp_meta[temp_meta$cell_short == j, ]
+        if (nrow(temp_meta2) > 10) {
+            temp_meta2 <- temp_meta2[sample(1:nrow(temp_meta2), 10), ]
+            
+        }
+        temp_meta1 <- rbind(temp_meta1, temp_meta2)
+    }
+    
+    temp_meta = temp_meta1
+    rm(temp_meta1)
+    rm(temp_meta2)
+
+    temp_expr <- sc_set@assayData$exprs[as.character(markers$Markers), rownames(temp_meta)]
+    
+    # top anno
+    la = HeatmapAnnotation(
+        cell = temp_meta$cell_short,
+        col = list(cell=cell_color),
+        show_legend = T,
+        show_annotation_name = F,
+        annotation_legend_param = list(
+            labels_gp = gpar(fontsize = 15),
+            title_gp = gpar(fontsize = 20)
+            # grid_height = unit(2, "cm")
+        )
+    )
+    
+    pdf(full.path(paste0("09_bulk/RNA_seq/MuSic/marker_heatmap_", i, ".pdf")), width = 6, height = 4)
+    draw(Heatmap(
+        as.matrix(t(scale(t(temp_expr)))),
+        name = "Expr",
+        col = col_fun,
+        top_annotation = la,
+        cluster_rows = F,
+        cluster_columns = F,
+        show_row_names = F,
+        show_column_names = F,
+        row_split = as.character(markers$Cells),
+        column_split = temp_meta$cell_short,
+        row_title_gp = gpar(fontsize = 0),
+        column_title = i,
+        border=T
+    ))
+    dev.off()
+}
+```
+
+
+```{r}
+markers <- as.data.frame(markers)
+for (i in colnames(markers)) {
+    markers[, i] <- as.character(markers[, i])
+}
+
+write.csv(markers, full.path("09_bulk/RNA_seq/MuSic/merged_markers.csv"))
+markers <- read.csv(full.path("09_bulk/RNA_seq/MuSic/merged_markers.csv"), row.names = 1, stringsAsFactors = F)
+
+markers_num <- markers %>%
+    group_by(Cells) %>%
+    add_tally() %>%
+    select(Cells, n) %>%
+    unique()
+
+ggplot(markers_num, aes(x=Cells, y=n, label = n)) +
+    geom_bar(stat = "identity", fill="white") +
+    geom_text()
+```
+
+
+## Inhouse bulk
+```{r echo=FALSE}
+if (!force && file.exists(full.path("09_bulk/RNA_seq/MuSic/bulk.rds"))) {
+    bulk_dec <- readRDS(full.path("09_bulk/RNA_seq/MuSic/bulk.rds"))
+    bulk_meta <- read.xlsx(full.path("09_bulk/RNATAC50commonSample-1119.xlsx"))
+    bulk_meta <- bulk_meta[!is.na(bulk_meta$SampleID), ]
+    rownames(bulk_meta) <- bulk_meta$SampleID
+    bulk_meta$Stage <- str_replace(bulk_meta$Stage, "[^IV]", "")
+} else {
+    bulk <- read.xlsx(full.path("09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+    gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"), header = F, row.names = 5)
+    gene_pos$V6 <- make.unique(as.character(gene_pos$V6))
+    rownames(bulk) <- gene_pos[rownames(bulk), "V6"]
+    
+    
+    bulk_meta <- read.xlsx(full.path("09_bulk/RNATAC50commonSample-1119.xlsx"))
+    bulk_meta <- bulk_meta[!is.na(bulk_meta$SampleID), ]
+    rownames(bulk_meta) <- bulk_meta$SampleID
+    bulk_meta$Stage <- str_replace(bulk_meta$Stage, "[^IV]", "")
+    
+    bulk_set <- ExpressionSet(as.matrix(bulk), phenoData = AnnotatedDataFrame(bulk_meta[colnames(bulk), ]))
+    
+    bulk_dec = music_prop(
+        bulk.eset = bulk_set, 
+        sc.eset = sc_set, 
+        clusters = 'cell_short',
+        samples = 'SampleID', 
+        markers = markers$Markers,
+        verbose = F
+    )
+    
+    saveRDS(bulk_dec, full.path("09_bulk/RNA_seq/MuSic/bulk.rds"))
+    
+    rm(bulk_set)
+    rm(bulk)
+    rm(gene_pos)
+}
+
+bulk_est <- bulk_dec$Est.prop.weighted
+```
+
+
+## TCGA
+```{r include=FALSE, echo=FALSE}
+if (!force && file.exists(full.path("09_bulk/RNA_seq/MuSic/tcga.rds"))) {
+    tcga_dec <- readRDS(full.path("09_bulk/RNA_seq/MuSic/tcga.rds"))
+    tcga_est <- tcga_dec$Est.prop.weighted
+    
+    tcga_meta <- data.frame(
+    Disease = sapply(rownames(tcga_est), function(x) { str_split(x, "\\.")[[1]][8] }),
+    Stage = sapply(rownames(tcga_est), function(x) { str_split(x, "\\.")[[1]][9] }),
+    row.names = rownames(tcga_est)
+)
+
+    
+} else {
+    tcga <- read.csv(full.path("TCGA/Lung.csv"), row.names = 1, stringsAsFactors = F)
+
+
+    ### read bulk
+    tcga_meta <- data.frame(
+        Disease = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][8] }),
+        Stage = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][9] })
+    )
+    
+    rownames(tcga_meta) <- colnames(tcga)
+    tcga_meta <- tcga_meta[tcga_meta$Stage != "", ]
+    
+    
+    bulk_set <- ExpressionSet(
+        as.matrix(tcga[, rownames(tcga_meta)]), 
+        phenoData = AnnotatedDataFrame(tcga_meta)
+    )
+    
+    
+    tcga_dec = music_prop(
+        bulk.eset = bulk_set, 
+        sc.eset = sc_set, 
+        clusters = 'cell_short',
+        samples = 'SampleID', 
+        markers = markers$Markers,
+        verbose = T
+    )
+    
+    
+    saveRDS(tcga_dec, full.path("09_bulk/RNA_seq/MuSic/tcga.rds"))
+    rm(bulk_set)
+    gc()
+}
+
+tcga_est <- tcga_dec$Est.prop.weighted
+```
+
+
+## East asian
+
+```{r echo=FALSE}
+read_east_asian <- function() {
+    tumor <- read.table(full.path("09_bulk/East_Asians/GIS031/GSK_RSEM_expCounts/GSK_RSEM_rerun_expCounts_172_Tumor.tsv"), header = T)
+    tumor <- tumor[!is.na(tumor$Gene.symbol), ]
+    rownames(tumor) <- make.unique(as.character(tumor$Gene.symbol))
+    tumor <- tumor[, str_detect(colnames(tumor), "A\\d+")]
+    colnames(tumor) <- paste(colnames(tumor), "Tumor", sep = "_")
+    
+    east <- read.table(full.path("09_bulk/East_Asians/GIS031/GSK_RSEM_expCounts/GSK_RSEM_rerun_expCounts_88_Normal.tsv"), header = T)
+    east <- east[!is.na(east$Gene.symbol), ]
+    rownames(east) <- make.unique(as.character(east$Gene.symbol))
+    east <- east[, str_detect(colnames(east), "A\\d+")]
+    colnames(east) <- paste(colnames(east), "Normal", sep = "_")
+    
+    for (i in colnames(tumor)) {
+        east[, i] <- tumor[rownames(east), i]
+    }
+    
+    east
+}
+
+
+read_east_meta <- function() {
+    east_meta <- read.table(full.path("09_bulk/East_Asians/GIS031/GIS031.clinical.patient.txt"), header = T, sep = "\t")
+    temp <- east_meta
+    temp$PATIENT_ID <- paste(temp$PATIENT_ID, "Tumor", sep = "_")
+    
+    east_meta$PATIENT_ID <- paste(east_meta$PATIENT_ID, "Normal", sep = "_")
+    
+    east_meta <- rbind(east_meta, temp)
+    rownames(east_meta) <- east_meta$PATIENT_ID
+    east_meta
+}
+
+if (!force && file.exists(full.path("09_bulk/RNA_seq/MuSic/east.rds"))) {
+    east_dec <- readRDS(full.path("09_bulk/RNA_seq/MuSic/east.rds"))
+    east_meta <- read_east_meta()
+    
+} else {
+    east <- read_east_asian()
+    east_meta <- read_east_meta()
+    
+    east_set <- ExpressionSet(as.matrix(east), phenoData = AnnotatedDataFrame(east_meta[colnames(east), ]))
+    
+    
+    east_dec = music_prop(
+        bulk.eset = east_set, 
+        sc.eset = sc_set, 
+        clusters = 'cell_short',
+        samples = 'SampleID', 
+        markers = markers$Markers,
+        verbose = F
+    )
+    
+    
+    saveRDS(east_dec, full.path("09_bulk/RNA_seq/MuSic/east.rds"))
+    rm(east_set)
+}
+
+east_est <- east_dec$Est.prop.weighted
+```
+
+
+## GTEx
+```{r echo=FALSE}
+gtex_meta <- read.table(full.path("09_bulk/GTEx/meta.txt"), sep = "\t")
+rownames(gtex_meta) <- gtex_meta$V1
+
+
+if (!force && file.exists(full.path("09_bulk/RNA_seq/MuSic/gtex.rds"))) {
+    gtex_dec <- readRDS(full.path("09_bulk/RNA_seq/MuSic/gtex.rds"))
+} else {
+    if(file.exists(full.path("09_bulk/GTEx/gtex_lung.rds"))) {
+        gtex <- readRDS(full.path("09_bulk/GTEx/gtex_lung.rds"))
+    } else {
+        gtex <- read.table(full.path("09_bulk/GTEx/All_Tissue_Site_Details.combined.reads.gct"), sep = "\t", header = T)
+        row.names(gtex) <- make.unique(as.character(gtex$Description))
+        
+        sel_cells = sapply(gtex_meta$V1, function(x) {
+            str_replace_all(x, "-", ".")
+        })
+        
+        gtex <- gtex[, intersect(sel_cells, colnames(gtex))]
+        colnames(gtex) <- sapply(colnames(gtex), function(x) {
+            str_replace_all(x, "\\.", "-")
+        })
+        
+        saveRDS(gtex, full.path("09_bulk/GTEx/gtex_lung.rds"))
+    }
+
+    
+    gtex_set <- ExpressionSet(as.matrix(gtex), phenoData = AnnotatedDataFrame(gtex_meta[colnames(gtex), ]))
+
+
+    gtex_dec = music_prop(
+        bulk.eset = gtex_set, 
+        sc.eset = sc_set, 
+        clusters = 'cell_short',
+        samples = 'SampleID', 
+        markers = markers$Markers,
+        verbose = F
+    )
+    
+    saveRDS(gtex_dec, full.path("09_bulk/RNA_seq/MuSic/gtex.rds"))
+}
+
+gtex_est <- gtex_dec$Est.prop.weighted
+gtex_meta <- data.frame(
+    Stage = rep("Normal", nrow(gtex_est)),
+    Disease = rep("NL", nrow(gtex_est)),
+    Source = rep("GTEx", nrow(gtex_est)),
+    row.names = rownames(gtex_est)
+)
+```
+
+
+## SYSU
+
+```{r}
+sysu <- read.xlsx(full.path("SYSU/CHOICE_Study_Tumor_Adjacent_RNA-seq_Data.xlsx"), rowNames = T)
+
+sysu_meta <- data.frame(
+    Disease=sapply(colnames(sysu), function(x) {
+        x = str_split(x, "_")[[1]][2]
+        
+        if (x == "ad") {
+            return("LUAD")
+        } else if (x == "sq") {
+            return("LUSC")
+        } else {
+            return("Mix")
+        }
+    }),
+    Stage=sapply(colnames(sysu), function(x) {
+        str_split(x, "_")[[1]][4]
+    }),
+    Source=rep("SYSU", ncol(sysu)),
+    row.names = colnames(sysu)
+)
+
+sysu_meta <- sysu_meta[sysu_meta$Disease %in% c("LUAD", "LUSC"), ]
+sysu_meta$Disease <- as.character(sysu_meta$Disease)
+
+
+if (!force && file.exists(full.path("09_bulk/RNA_seq/MuSic/gtex.rds"))) {
+    sysu_dec <- readRDS(full.path("09_bulk/RNA_seq/MuSic/sysu.rds"))
+} else {
+    sysu_set <- ExpressionSet(as.matrix(sysu[, rownames(sysu_meta)]), phenoData = AnnotatedDataFrame(sysu_meta))
+
+    sysu_dec = music_prop(
+        bulk.eset = sysu_set, 
+        sc.eset = sc_set, 
+        clusters = 'cell_short',
+        samples = 'SampleID', 
+        markers = markers$Markers,
+        verbose = F
+    )
+    
+    saveRDS(sysu_dec, full.path("09_bulk/RNA_seq/MuSic/sysu.rds"))
+}
+
+sysu_est <- sysu_dec$Est.prop.weighted
+rm(sysu)
+```
+
+
+
+## Merged all Est and meta info
+```{r echo=FALSE}
+# Merge est
+rnames <- intersect(sort(colnames(bulk_est)), sort(colnames(east_est)))
+rnames <- intersect(colnames(gtex_est), rnames)
+rnames <- intersect(colnames(tcga_est), rnames)
+rnames <- intersect(colnames(sysu_est), rnames)
+
+merged_est <- cbind(t(bulk_est)[rnames, ], t(east_est)[rnames, ])
+merged_est <- cbind(merged_est[rnames, ], t(gtex_est)[rnames, ])
+merged_est <- cbind(merged_est[rnames, ], t(tcga_est)[rnames, ])
+merged_est <- cbind(merged_est[rnames, ], t(sysu_est)[rnames, ])
+
+# Merge meta info
+meta <- bulk_meta[, "Stage", drop=F]
+meta$Disease <- sapply(rownames(meta), function(x) { str_replace_all(x, "\\d+", "") })
+meta$Source <- "In-house"
+
+temp_meta <- east_meta[, "STAGE", drop = F]
+temp_meta$Disease <- sapply(rownames(temp_meta), function(x) {
+    temp = str_split(x, "_")[[1]]
+    ifelse(temp[2] == "Normal", "NL(AD)", "LUAD")
+})
+colnames(temp_meta)[1] <- "Stage"
+temp_meta$Source = "East Asians"
+
+meta <- rbind(meta, temp_meta)
+
+temp_meta <- data.frame(
+    Stage = rep("Normal", nrow(gtex_est)),
+    Disease = rep("NL", nrow(gtex_est)),
+    Source = rep("GTEx", nrow(gtex_est)),
+    row.names = rownames(gtex_est)
+)
+
+# tcga_meta <- tcga_meta[tcga_meta$Stage != "", ]
+tcga_meta$Source = "TCGA"
+
+meta <- rbind(meta, temp_meta)
+meta <- rbind(meta, tcga_meta)
+meta <- rbind(meta, sysu_meta)
+meta <- meta[colnames(merged_est), ]
+
+
+rm(temp_meta)
+rm(sc_set)
+gc()
+
+write.csv(merged_est, full.path("09_bulk/RNA_seq/MuSic/All_est.csv"))
+write.csv(meta, full.path("09_bulk/RNA_seq/MuSic/All_est_meta.csv"))
+
+
+saveRDS(merged_est, full.path("09_bulk/RNA_seq/MuSic/All_est.rds"))
+saveRDS(meta, full.path("09_bulk/RNA_seq/MuSic/All_est_meta.rds"))
+```
+
+```{R}
+merged_est <- readRDS(full.path("09_bulk/RNA_seq/MuSic/All_est.rds"))
+meta <- readRDS(full.path("09_bulk/RNA_seq/MuSic/All_est_meta.rds"))
+```
+
+
+# Plots
+## Boxplot of all est score
+
+```{r fig.height=10, fig.width=12}
+temp_est <- melt(as.matrix(merged_est))
+colnames(temp_est) <- c("CellType", "Sample", "value")
+temp_est$Source <- as.character(meta[temp_est$Sample, "Source"])
+temp_est$Disease <- as.character(meta[temp_est$Sample, "Disease"])
+temp_est$Type <- ifelse(temp_est$CellType %in% immu, "Immune", "Non-immune") 
+
+temp_est$CellType <- factor(temp_est$CellType, levels = sort(unique(as.character(temp_est$CellType))))
+temp_est <- temp_est[temp_est$Disease != "BSPN", ]
+
+p <- ggplot(temp_est, aes(x=CellType, y = value, color = Disease)) +
+    geom_boxplot() +
+    facet_grid(Source~Type, scales = "free_x", space = "free") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 20),
+        axis.text.y = element_text(size = 15),
+        strip.text = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        legend.position = "top",
+        panel.grid = element_blank()
+    ) +
+    labs(x = "", y = "") +
+    scale_color_manual(values = Disease)
+
+p
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/merged_boxplot.pdf"),
+    plot = p,
+    width = 12,
+    height = 10
+)
+```
+
+### line plot of all est score
+
+```{r}
+temp_est <- melt(as.matrix(merged_est))
+colnames(temp_est) <- c("CellType", "Sample", "value")
+temp_est$Source <- as.character(meta[temp_est$Sample, "Source"])
+temp_est$Disease <- as.character(meta[temp_est$Sample, "Disease"])
+temp_est$Type <- ifelse(temp_est$CellType %in% immu, "Immune", "Non-immune") 
+
+temp_est$CellType <- factor(temp_est$CellType, levels = sort(unique(as.character(temp_est$CellType))))
+temp_est <- temp_est[temp_est$Disease != "BSPN", ]
+
+temp_est <- temp_est %>%
+    group_by(CellType, Source, Disease) %>%
+    mutate(mean = mean(value), median = median(value)) %>%
+    dplyr::select(CellType, Source, Disease, Type, mean, median) %>%
+    unique() %>%
+    as.data.frame()
+```
+
+
+```{r fig.height=12, fig.width=8}
+make_line_plot_of_est <- function(data, method = "pearson", by = "mean", x=10, show_cor=TRUE, legend.position="right", show_by = T) {
+    data$Disease[data$Disease == "NL(AD)"] = "NL"
+    
+    data$y = data[, by]
+    
+    immune = sort(c( "Gran", "B","Mast", "DC", "CD4", "CD8", "NK", "Mφ", "Tregs"))
+    non_immune = sort(unique(as.character(data$CellType)))
+    non_immune = non_immune[!non_immune %in% immune]
+    
+    data$CellType = factor(data$CellType, levels = c(non_immune, immune))
+    
+    a = c(rep("#90D0E0", length(non_immune)), rep("#E9B0B7", length(immune)))
+    
+    plist = list()
+    for(i in unique(data$Disease)) {
+        temp = data[data$Disease == i, ]
+        temp$CellType = factor(temp$CellType, levels = c(non_immune, immune))
+        temp$x = as.numeric(temp$CellType)
+        
+        sources = unique(temp$Source)
+        
+        if (show_by) {
+            y_title = paste0(i, "(", by, ")")
+        } else {
+            y_title = i
+        }
+
+        plist[[i]] = ggplot(temp, aes(x=CellType, y = y, color = Source)) +
+            geom_point() +
+            geom_line(aes(x=x)) +
+            labs(x = "", y = y_title, color = "") +
+            scale_color_manual(values = Source) +
+            theme_bw(base_family = "Arial Unicode MS") +
+            theme(
+                plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+                legend.position = legend.position,
+                axis.text = element_text(size = axis_size),
+                axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = axis_size, colour = a),
+                axis.title = element_text(size = axis_title_size),
+                legend.text = element_text(size = legend_text_size),
+                legend.title = element_text(size = legend_title_size),
+                panel.grid = element_blank(),
+                legend.background = element_blank()
+            )
+        
+        if (length(sources) > 1) {
+            for (j in 2:length(sources)) {
+     
+                cor_res = cor.test(
+                    temp[temp$Source == sources[1], "y"],
+                    temp[temp$Source == sources[j], "y"],
+                    method = method
+                )
+                
+                if (show_cor) {
+                    plist[[i]] = plist[[i]] + 
+                    annotate(
+                        geom="text", x=x, y= j / 5, size = 5,
+                        label=paste0(sources[1], " - ", sources[j], ": r=", round(cor_res$estimate, 2), "; p=", round(cor_res$p.value, 2))
+                    )
+                }
+            }
+            
+        }
+        
+    }
+    
+    return(cowplot::plot_grid(plotlist = plist, ncol = 1))
+        
+}
+```
+
+
+By Mean
+
+```{r fig.height=8, fig.width=6}
+temp_est$CellType = as.character(temp_est$CellType)
+temp_est$CellType[temp_est$CellType == "ATII"] = "AT2"
+temp_est$CellType[temp_est$CellType == "Mo"] = "Mφ"
+
+p <- make_line_plot_of_est(temp_est[!temp_est$Source %in% c("SYSU", "CHOICE"), ], by = "mean", show_cor = T, legend.position = c(0.8, 0.8), x=6, show_by = F)
+
+print(p)
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/Est_line_mean_with_cor.pdf"),
+    plot = p, device = cairo_pdf,
+    width = 8, height = 12
+)
+```
+
+
+By Median
+
+```{r fig.height=12, fig.width=8}
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/Est_line_median_cor.pdf"),
+    plot = make_line_plot_of_est(temp_est, by = "median", show_cor = T, legend.position = c(0.8, 0.7)),
+    width = 8, height = 12
+)
+```
+
+
+```{r fig.height=12, fig.width=8}
+temp = temp_est[temp_est$Type != "Immune", ]
+temp$x = as.numeric(factor(as.character(temp$CellType)))
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/Est_line_mean_non_immune_cor.pdf"),
+    plot = make_line_plot_of_est(temp, x=5, show_cor = T, legend.position = c(0.85, 0.7)),
+    width = 8, height = 12
+)
+```
+
+
+```{r fig.height=12, fig.width=8}
+temp = temp_est[temp_est$Type != "Immune", ]
+temp$x = as.numeric(factor(as.character(temp$CellType)))
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/Est_line_median_non_immune_cor.pdf"),
+    plot = make_line_plot_of_est(temp, x=5, show_cor = T, by = "median", legend.position = c(0.85, 0.7)),
+    width = 8, height = 12
+)
+```
+
+
+## Correlation plots
+
+
+```{R}
+meta <- meta[meta$Disease != "BSPN", ]
+merged_est <- merged_est[, rownames(meta)]
+
+rownames(merged_est)[rownames(merged_est) == "ATII"] = "AT2"
+rownames(merged_est)[rownames(merged_est) == "Mo"] = "Mφ"
+
+meta <- readRDS(full.path("09_bulk/RNA_seq/MuSic/All_est_meta.rds"))
+meta$Source[meta$Source == "SYSU"] = "CHOICE"
+```
+
+
+### All samples
+
+#### All cells
+```{r eval=FALSE, fig.height=4, fig.width=6}
+h <- make_heatmap_merged(
+    data=cor(merged_est), 
+    meta=meta, 
+    column_title = "All cell types",
+    row_split = 6,
+    column_split = 6
+)
+
+draw(h)
+
+
+# pdf(full.path("09_bulk", "RNA_seq", "MuSic", "merged_heatmap_all_sample.pdf"), width = 6, height = 4)
+draw(h)
+# dev.off()
+
+
+# ggsave(
+#     filename = full.path("09_bulk", "RNA_seq", "MuSic", "merged_heatmap_all_sample_piechart.pdf"),
+#     plot = make_piechart_of_stages_by_h(h, meta, 3),
+#     width = 6,
+#     height = 4
+# )
+
+# h <- make_heatmap_merged(data=cor(merged_est, method = "spearman"), meta=meta, column_title = "All cell types (Spearman)" )
+# 
+# draw(h)
+# 
+# pdf(full.path("09_bulk", "RNA_seq", "MuSic", "merged_heatmap_all_sample_spearman.pdf"), width = 6, height = 4)
+# draw(h)
+# dev.off()
+```
+
+
+
+#### Only immune
+```{r eval=FALSE, fig.height=4, fig.width=6}
+temp_cor = cor(merged_est[rownames(merged_est) %in% immu, ])
+temp_cor[is.na(temp_cor)] <- 0
+h <- make_heatmap_merged(data=temp_cor, meta=meta, column_title = "Immune" )
+
+draw(h)
+
+
+pdf(full.path("09_bulk", "RNA_seq", "MuSic", "merged_heatmap_immune.pdf"), width = 6, height = 4)
+draw(h)
+dev.off()
+
+
+# temp_cor = cor(merged_est[rownames(merged_est) %in% immu, ], method = "spearman")
+# temp_cor[is.na(temp_cor)] <- 0
+# h <- make_heatmap_merged(data=temp_cor, meta=meta, column_title = "Immune (Spearman)")
+
+# draw(h)
+# 
+# pdf(full.path("09_bulk", "RNA_seq", "MuSic", "merged_heatmap_immune_spearman.pdf"), width = 6, height = 4)
+# draw(h)
+# dev.off()
+```
+
+#### Only non-immune
+```{r eval=FALSE, fig.height=4, fig.width=6}
+temp_cor = cor(merged_est[!rownames(merged_est) %in% immu, ])
+temp_cor[is.na(temp_cor)] <- 0
+h <- make_heatmap_merged(
+    data=temp_cor, meta=meta, 
+    column_title = "Non-immune", 
+    row_split = 6, column_split = 6
+)
+
+draw(h)
+
+
+pdf(full.path("09_bulk", "RNA_seq", "MuSic", "merged_heatmap_non_immune.pdf"), width = 6, height = 4)
+draw(h)
+dev.off()
+
+
+ggsave(
+    filename = full.path("09_bulk", "RNA_seq", "MuSic", "merged_heatmap_non_immune_piechart.pdf"),
+    plot = make_piechart_of_stages_by_h(h, meta, 3),
+    width = 6,
+    height = 4
+)
+
+
+# temp_cor = cor(merged_est[!rownames(merged_est) %in% immu, ], method = "spearman")
+# temp_cor[is.na(temp_cor)] <- 0
+# h <- make_heatmap_merged(data=temp_cor, meta=meta, column_title = "Non-Immune (Spearman)")
+
+# draw(h)
+
+# pdf(full.path("09_bulk", "RNA_seq", "MuSic", "merged_heatmap_non_immune_spearman.pdf"), width = 6, height = 4)
+# draw(h)
+# dev.off()
+```
+
+### corr by different source
+
+#### All cell type
+```{r fig.height=4, fig.width=5}
+
+dir.create(full.path("09_bulk", "RNA_seq", "MuSic", "Corr"), showWarnings = F, recursive = T)
+
+splits <- c(
+    "In-house"=4,
+    "TCGA"=3,
+    "East Asians"=2,
+    "GTEx"=2,
+    "SYSU"=2
+)
+
+
+for (i in unique(meta$Source)) {
+    print(i)
+    
+    temp_cor = cor(merged_est[, rownames(meta)[meta$Source == i]])
+    temp_cor[is.na(temp_cor)] <- 0
+    
+    h <- make_heatmap_merged(
+        data=temp_cor, meta=meta, 
+        show_source = F, column_title = i,
+        row_split = splits[[i]], 
+        column_split = splits[[i]]
+    )
+
+    pdf(full.path("09_bulk", "RNA_seq", "MuSic", "Corr", paste0(str_replace_all(i, "[ -]", "_"), ".pdf")), width = 6, height = 4)
+    draw(h)
+    dev.off()
+    
+    ncol = ifelse(splits[[2]] %% 2 == 0, 2, 3)
+    nrow = ceiling(splits[[2]] / ncol)
+    p <- make_piechart_of_stages_by_h(h, meta, ncol)
+    # print(p)
+
+    ggsave(
+        filename = full.path(
+            "09_bulk", "RNA_seq", "MuSic", "Corr",
+            paste0(str_replace_all(i, "[ -]", "_"), "_piechart.pdf")),
+        plot = p,
+        width = 3 * ncol,
+        height = 3 * nrow
+    )
+    
+    
+    # temp_cor = cor(merged_est[, rownames(meta)[meta$Source == i]], method = "spearman")
+    # temp_cor[is.na(temp_cor)] <- 0
+    # 
+    # pdf(full.path("09_bulk", "RNA_seq", "MuSic", "Corr", paste0(str_replace_all(i, "[ -]", "_"), "_spearman.pdf")), width = 6, height = 4)
+    # draw(make_heatmap_merged(data=temp_cor, meta=meta, show_source = F, column_title = paste(i, "(spearman)")))
+    # dev.off()
+}
+```
+
+### Test 
+```{r fig.height=4, fig.width=5}
+
+dir.create(full.path("09_bulk", "RNA_seq", "MuSic", "Corr_scaled"), showWarnings = F, recursive = T)
+
+splits <- c(
+    "In-house"=4,
+    "TCGA"=3,
+    "East Asians"=2,
+    "GTEx"=2,
+    "SYSU"=2
+)
+
+immu = c(
+    "B", "CD4", "CD8", "DC",
+    "Gran", "Mast", "Mo", "NK",
+    "Tregs"
+)
+
+non_immu = rownames(merged_est)[!rownames(merged_est) %in% immu]
+
+for (i in unique(meta$Source)) {
+    print(i)
+    
+    temp_est = merged_est[, rownames(meta)[meta$Source == i]]
+    
+    temp_est[non_immu, ] = temp_est[non_immu, ] * (1 / apply(temp_est[non_immu, ], 2, sum))
+    # temp_est[immu, ] = temp_est[immu, ] * (1 / apply(temp_est[immu, ], 2, sum))
+
+    temp_cor = cor(temp_est)
+    temp_cor[is.na(temp_cor)] <- 0
+    
+    h <- make_heatmap_merged(
+        data=temp_cor, meta=meta, 
+        show_source = F, column_title = i,
+        row_split = splits[[i]], 
+        column_split = splits[[i]]
+    )
+
+    pdf(full.path("09_bulk", "RNA_seq", "MuSic", "Corr_scaled", paste0(str_replace_all(i, "[ -]", "_"), ".pdf")), width = 5, height = 4)
+    draw(h)
+    dev.off()
+    
+    ncol = ifelse(splits[[i]] %% 2 == 0, 2, 3)
+    nrow = ceiling(splits[[i]] / ncol)
+    
+    print(ncol)
+    p <- make_piechart_of_stages_by_h(h, meta, ncol)
+    # print(p)
+
+    ggsave(
+        filename = full.path(
+            "09_bulk", "RNA_seq", "MuSic", "Corr_scaled",
+            paste0(str_replace_all(i, "[ -]", "_"), "_piechart.pdf")),
+        plot = p,
+        width = 3 * ncol,
+        height = 3 * nrow
+    )
+    
+    # ncol = ifelse(splits[[2]] %% 2 == 0, 2, 3)
+    # nrow = ceiling(splits[[2]] / ncol)
+    # p <- make_piechart_of_stages_by_h(h, meta, ncol)
+    # # print(p)
+    # 
+    # ggsave(
+    #     filename = full.path(
+    #         "09_bulk", "RNA_seq", "MuSic", "Corr",
+    #         paste0(str_replace_all(i, "[ -]", "_"), "_piechart.pdf")),
+    #     plot = p,
+    #     width = 3 * ncol,
+    #     height = 3 * nrow
+    # )
+    # 
+    
+    # temp_cor = cor(merged_est[, rownames(meta)[meta$Source == i]], method = "spearman")
+    # temp_cor[is.na(temp_cor)] <- 0
+    # 
+    # pdf(full.path("09_bulk", "RNA_seq", "MuSic", "Corr", paste0(str_replace_all(i, "[ -]", "_"), "_spearman.pdf")), width = 6, height = 4)
+    # draw(make_heatmap_merged(data=temp_cor, meta=meta, show_source = F, column_title = paste(i, "(spearman)")))
+    # dev.off()
+}
+```
+
+
+
+#### Only immune
+```{r fig.height=4, fig.width=5}
+
+dir.create(full.path("09_bulk", "RNA_seq", "MuSic", "Corr", "immune"), showWarnings = F, recursive = T)
+
+for (i in unique(meta$Source)) {
+    print(i)
+    
+    temp_cor = cor(merged_est[rownames(merged_est) %in% immu, rownames(meta)[meta$Source == i]])
+    temp_cor[is.na(temp_cor)] <- 0
+
+    pdf(full.path(
+        "09_bulk", "RNA_seq", "MuSic", "Corr", "immune",
+        paste0(str_replace_all(i, "[ -]", "_"), ".pdf")), width = 6, height = 4)
+    draw(make_heatmap_merged(data=temp_cor, meta=meta, show_source = F, column_title = paste(i, "(Immune)")))
+    dev.off()
+    
+    
+    # temp_cor = cor(merged_est[rownames(merged_est) %in% immu, rownames(meta)[meta$Source == i]], method = "spearman")
+    # temp_cor[is.na(temp_cor)] <- 0
+    # 
+    # pdf(full.path(
+    #     "09_bulk", "RNA_seq", "MuSic", "Corr", "immune",
+    #     paste0(str_replace_all(i, "[ -]", "_"), "_spearman.pdf")), width = 6, height = 4)
+    # draw(make_heatmap_merged(data=temp_cor, meta=meta, show_source = F, column_title = paste(i, "(Imune spearman)")))
+    # dev.off()
+}
+```
+
+
+
+#### Only non-immune
+```{r fig.height=4, fig.width=5}
+
+dir.create(full.path("09_bulk", "RNA_seq", "MuSic", "Corr", "non_immune"), showWarnings = F, recursive = T)
+
+
+splits <- c(
+    "In-house"=4,
+    "TCGA"=3,
+    "East Asians"=2,
+    "GTEx"=2,
+    "SYSU"=2
+)
+
+
+for (i in unique(meta$Source)) {
+    print(i)
+    
+    temp_cor = cor(merged_est[!rownames(merged_est) %in% immu, rownames(meta)[meta$Source == i]])
+    temp_cor[is.na(temp_cor)] <- 0
+    
+    
+    h <- make_heatmap_merged(
+        data=temp_cor, meta=meta, 
+        show_source = F, 
+        column_title = paste(i, "(Non-immune)"),
+        row_split = splits[[i]], 
+        column_split = splits[[i]]
+    )
+
+    pdf(full.path(
+        "09_bulk", "RNA_seq", "MuSic", "Corr", "non_immune",
+        paste0(str_replace_all(i, "[ -]", "_"), ".pdf")), width = 6, height = 4)
+    draw(h)
+    dev.off()
+    
+    
+    ncol = ifelse(splits[[2]] %% 2 == 0, 2, 3)
+    nrow = ceiling(splits[[2]] / ncol)
+    p <- make_piechart_of_stages_by_h(h, meta, ncol)
+    # print(p)
+    
+    ggsave(
+        filename = full.path(
+            "09_bulk", "RNA_seq", "MuSic", "Corr", "non_immune", 
+            paste0(str_replace_all(i, "[ -]", "_"), "_piechart.pdf")),
+        plot = p,
+        width = 3 * ncol,
+        height = 3 * nrow
+    )
+
+    
+    # temp_cor = cor(merged_est[!rownames(merged_est) %in% immu, rownames(meta)[meta$Source == i]], method = "spearman")
+    # temp_cor[is.na(temp_cor)] <- 0
+    # 
+    # pdf(full.path(
+    #     "09_bulk", "RNA_seq", "MuSic", "Corr", "non_immune",
+    #     paste0(str_replace_all(i, "[ -]", "_"), "_spearman.pdf")), width = 6, height = 4)
+    # draw(make_heatmap_merged(data=temp_cor, meta=meta, show_source = F, column_title = paste(i, "(Non-immune spearman)")))
+    # dev.off()
+}
+```
+
+## Cluster samples
+
+```{r}
+best_ncluster <- function(data, method="wss") {
+    # "silhouette", "wss",  "gap_stat"
+    
+    fviz_nbclust(data, kmeans, method = "wss") +
+        geom_vline(xintercept = 4, linetype = 2)+
+        labs(subtitle = "Elbow method")
+}
+
+
+kmean_cluster <- function(data, k=4, seed=42) {
+    set.seed(seed)
+    
+    temp_kmeans <- kmeans(data, k)
+    temp_tree <- as.data.frame(temp_kmeans$cluster)
+    colnames(temp_tree) <- "Clt"
+    temp_tree
+}
+```
+
+
+### All samples
+```{r echo=FALSE}
+temp_est = t(merged_est)
+
+
+# best_ncluster(temp_est)
+
+temp_tree = kmean_cluster(temp_est[, !colnames(temp_est) %in% immu], k=4)
+
+make_heatmap_number_merged(
+    temp_est, meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F, cluster_columns = T,
+    show_column_names = T, only_non_immu = T
+)
+
+temp_tree = kmean_cluster(temp_est[, colnames(temp_est) %in% immu], k=4)
+make_heatmap_number_merged(
+    temp_est, meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F, cluster_columns = T,
+    show_column_names = T, only_immu = T
+)
+```
+
+
+### All LUAD
+```{r echo=FALSE, fig.height=4, fig.width=5}
+temp_est = t(merged_est)
+temp_est = temp_est[rownames(meta)[meta$Disease == "LUAD"], ]
+# best_ncluster(temp_est)
+
+temp_tree = kmean_cluster(temp_est[, !colnames(temp_est) %in% immu], k=4)
+final_tree = temp_tree
+
+cairo_pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/LUAD_weight.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est, meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F, cluster_columns = T,
+    show_column_names = T, only_non_immu = T,
+    show_source = F, no_disease = T
+)
+dev.off()
+
+temp_tree = kmean_cluster(temp_est[, colnames(temp_est) %in% immu], k=4)
+make_heatmap_number_merged(
+    temp_est, meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F, cluster_columns = T,
+    show_column_names = T, only_immu = T
+)
+```
+
+
+### All LUSC
+```{r echo=FALSE}
+temp_est = t(merged_est)
+temp_est = temp_est[rownames(meta)[meta$Disease == "LUSC"], ]
+# best_ncluster(temp_est)
+
+temp_tree = kmean_cluster(temp_est[, !colnames(temp_est) %in% immu], k=4)
+
+
+temp_tree1 = kmean_cluster(temp_est[rownames(temp_tree)[temp_tree$Clt == 1], !colnames(temp_est) %in% immu], k=2)
+
+# pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/LUSC_weight.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est[rownames(temp_tree1), ], meta, 
+    row_split = temp_tree1[, "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F, cluster_columns = T,
+    show_column_names = T, only_non_immu = T,
+    show_source = F, no_disease = T
+)
+# dev.off()
+
+
+temp_tree[rownames(temp_tree1)[temp_tree1$Clt == 1], "Clt"] = 5
+final_tree = rbind(final_tree, temp_tree)
+final_tree$Disease <- meta[rownames(final_tree), "Disease"]
+final_tree$Stage <- meta[rownames(final_tree), "Stage"]
+final_tree$Source <- meta[rownames(final_tree), "Source"]
+
+write.csv(final_tree, full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"))
+
+
+cairo_pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/LUSC_weight.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est, meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F, cluster_columns = T,
+    show_column_names = T, only_non_immu = T,
+    show_source = F, no_disease = T
+)
+dev.off()
+
+
+temp_tree = kmean_cluster(temp_est[, colnames(temp_est) %in% immu], k=4)
+make_heatmap_number_merged(
+    temp_est, meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F, cluster_columns = T,
+    show_column_names = T, only_immu = T
+)
+```
+
+
+
+## Percentage of final_tree
+
+```{r fig.height=6, fig.width=4}
+final_tree <- read.csv(
+    full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), 
+    row.names = 1, stringsAsFactors = F
+)
+
+
+temp = final_tree %>%
+    group_by(Disease, Source, Clt) %>%
+    add_tally() %>%
+    dplyr::select(Clt, Disease, Source, n) %>%
+    unique() %>%
+    group_by(Disease, Source) %>%
+    mutate(p = n / sum(n) * 100) %>%
+    as.data.frame()
+    
+
+temp$Clt = sapply(paste(temp$Disease, temp$Clt), function(x) {
+    clts = c(
+        "LUAD 1"="NE-high", "LUAD 2"="Epi-high", "LUAD 3"="ATII-high", "LUAD 4"="Fib-high",
+        "LUSC 1"="Fib-high", "LUSC 2"="ATII-high", "LUSC 3"="Basal-high", 
+        "LUSC 4"="Basal-Fib hybrid", "LUSC 5"="Hybrid"
+    )
+    
+    clts[[x]]
+})
+
+
+# final_tree$Clt = sapply(paste(final_tree$Disease, final_tree$Clt), function(x) {
+#     clts = c(
+#         "LUAD 1"="NE-high", "LUAD 2"="Epi-high", "LUAD 3"="ATII-high", "LUAD 4"="Fib-high",
+#         "LUSC 1"="Fib-high", "LUSC 2"="ATII-high", "LUSC 3"="Basal-high", 
+#         "LUSC 4"="Basal-Fib hybrid", "LUSC 5"="Hybrid"
+#     )
+#     
+#     clts[[x]]
+# })
+# 
+# final_tree %>%
+#     group_by(Clt, Disease) %>%
+#     add_tally() %>%
+#     dplyr::select(Clt, Disease, n) %>%
+#     unique() %>%
+#     group_by(Disease) %>%
+#     mutate(p = n / sum(n) * 100) %>%
+#     as.data.frame()
+
+# cols = c(
+#     as.character(wes_palette("Moonrise3")),
+#     as.character(wes_palette("Darjeeling2"))
+# )
+
+p <- ggplot(temp, aes(x=Source, y=p, fill=Clt, label = n)) +
+    geom_bar(stat = "identity", width = 0.8) +
+    geom_text(position = position_stack(vjust = 0.5), size = 5) +
+    facet_grid(Disease~., scales = "free") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        panel.grid = element_blank(),
+        legend.position = "bottom",
+        legend.background = element_blank(),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1, vjust = 1),
+    ) +
+    labs(fill = "", y= "", x="") +
+    scale_fill_locuszoom() +
+    guides(fill = guide_legend(nrow = 3))
+    # scale_fill_manual(values = cols)
+
+p
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/bulk_percentage_bar.pdf"),
+    plot = p, width = 4, height = 6, device = cairo_pdf
+)
+```
+
+
+### Inhouse
+
+#### LUAD
+```{r echo=FALSE}
+temp_est = t(merged_est[, rownames(meta[meta$Source == "In-house" & meta$Disease == "LUAD", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est, k = 5)
+temp_tree$Disease = "LUAD"
+temp_tree$Source = "In-house"
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/In_house_LUAD.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est, meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F, cluster_columns = T,
+    show_column_names = T, only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+
+# make_heatmap_number_merged(
+#     temp_est, meta, 
+#     row_split = temp_tree[rownames(temp_est), "Clt"], 
+#     # column_split = rownames(temp_tree),
+#     cluster_rows = F, cluster_columns = T,
+#     show_column_names = T, only_immu = T
+# )
+```
+
+#### LUSC
+```{r echo=FALSE}
+temp_est = t(merged_est[, rownames(meta[meta$Source == "In-house" & meta$Disease == "LUSC", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est, k = 5)
+temp_tree$Disease = "LUSC"
+temp_tree$Source = "In-house"
+# final_tree = rbind(final_tree, temp_tree)
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/In_house_LUSC.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T, only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+```
+
+
+
+### TCGA
+
+#### LUAD
+```{r echo=FALSE}
+
+final_tree <- read.csv(full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), row.names = 1, stringsAsFactors = F)
+
+temp_est = t(merged_est[, rownames(meta[meta$Source == "TCGA" & meta$Disease == "LUAD", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est, k = 6)
+temp_tree$Disease = "LUAD"
+temp_tree$Source = "TCGA"
+
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/TCGA_LUAD.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T,
+    only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+
+# Survival
+# temp_tree$ID <- sapply(rownames(temp_tree), function(x) {
+#     temp = str_split(x, "\\.")[[1]]
+#     paste(temp[1], temp[2], temp[3], sep = "-")
+# })
+
+clinical = luad_cli
+
+for (i in unique(final_tree$Clt[final_tree$Disease == "LUAD"])) {
+    if (i == "ID") {
+        next
+    }
+    
+    clinical$group = "Others"
+    temp_clinical = rownames(final_tree)[final_tree$Clt == i & final_tree$Source == "TCGA" & final_tree$Disease == "LUAD"]
+    temp_clinical = sapply(temp_clinical,function(x) {
+        x = str_split(x, "\\.")[[1]][1:3]
+        paste(x, collapse = "-")
+    })
+    clinical[temp_clinical, "group"] = i
+
+    p <- TCGAanalyze_survival(
+        clinical,
+        "group",
+        filename = NULL,
+        risk.table = F,
+        conf.int = F,
+        ncensor.plot = T,
+        # labels = unique(clinical$group),
+        color = c("red", "blue"),
+        conf.int.style = "step"  # customize style of confidence intervals
+    )
+    p <- p$plot
+    p <- p + 
+        labs(title = i) +
+        ggplot2::theme_bw(base_family = "Arial Unicode MS") +
+        ggplot2::theme(
+            aspect.ratio = 1,
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.position = c(0.75, 0.9),
+            legend.title = element_blank(),
+            legend.text = element_text(size = 15),
+            plot.title = element_text(size = 15, hjust = 0.5),
+            panel.grid = element_blank()
+        )
+    
+    # print(p)
+        
+    ggsave(
+        filename = full.path(paste0("09_bulk/RNA_seq/MuSic/Weight_surv/LUAD/TCGA_", i, ".pdf")),
+        plot = p,
+        width = 4,
+        height = 4
+    )
+}
+```
+
+
+##### Piechart for stage composition of each group
+
+```{r echo=FALSE, fig.height=9, fig.width=6}
+make_piechart_of_stages_each_group(temp_tree, meta)
+```
+
+
+
+#### LUSC
+```{r echo=FALSE}
+temp_est = t(merged_est[, rownames(meta[meta$Source == "TCGA" & meta$Disease == "LUSC", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est)
+temp_tree$Disease = "LUSC"
+temp_tree$Source = "TCGA"
+# final_tree = rbind(final_tree, temp_tree)
+
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/TCGA_LUSC.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T,
+    only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+
+
+# temp_tree$ID <- sapply(rownames(temp_tree), function(x) {
+#     temp = str_split(x, "\\.")[[1]]
+#     paste(temp[1], temp[2], temp[3], sep = "-")
+# })
+
+clinical = lusc_cli
+
+for (i in unique(final_tree$Clt[final_tree$Disease == "LUSC"])) {
+    if (i == "ID") {
+        next
+    }
+    
+    clinical$group = "Others"
+    temp_clinical = rownames(final_tree)[final_tree$Clt == i & final_tree$Source == "TCGA" & final_tree$Disease == "LUSC"]
+    temp_clinical = sapply(temp_clinical,function(x) {
+        x = str_split(x, "\\.")[[1]][1:3]
+        paste(x, collapse = "-")
+    })
+    clinical[temp_clinical, "group"] = i
+
+    p <- TCGAanalyze_survival(
+        clinical,
+        "group",
+        filename = NULL,
+        risk.table = F,
+        conf.int = F,
+        ncensor.plot = TRUE,
+        # labels = c("high", "low"),
+        color = c("red", "blue"),
+        conf.int.style = "step",  # customize style of confidence intervals
+    )
+    p <- p$plot
+    p <- p + 
+        labs(title = i) +
+        ggplot2::theme_bw(base_family = "Arial Unicode MS") +
+        ggplot2::theme(
+            aspect.ratio = 1,
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.position = c(0.75, 0.9),
+            legend.title = element_blank(),
+            legend.text = element_text(size = 15),
+            plot.title = element_text(size = 15, hjust = 0.5),
+            panel.grid = element_blank()
+        )
+    
+    # print(p)
+        
+    ggsave(
+        filename = full.path(paste0("09_bulk/RNA_seq/MuSic/Weight_surv/LUSC/TCGA_", i, ".pdf")),
+        plot = p,
+        width = 4,
+        height = 4
+    )
+}
+```
+
+
+##### Piechart for stage composition of each group
+
+```{r echo=FALSE, fig.height=6, fig.width=6}
+make_piechart_of_stages_each_group(temp_tree, meta)
+```
+
+### East Asians
+#### LUAD
+```{r echo=FALSE}
+temp_est = t(merged_est[, rownames(meta[meta$Source == "East Asians" & meta$Disease == "LUAD", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est, k = 8)
+temp_tree$Disease = "LUAD"
+temp_tree$Source = "East Asians"
+# final_tree = rbind(final_tree, temp_tree)
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/East_Asains_LUAD.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T, 
+    only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+
+
+temp_meta = east_meta[!is.na(east_meta$OS_MONTHS), ]
+temp_meta = temp_meta[intersect(rownames(temp_meta), rownames(temp_est)), ]
+temp_meta$OS_STATUS = sapply(temp_meta$OS_STATUS, function(x) { ifelse(x == "LIVING", 0, 1) })
+
+temp_est = east_est[rownames(temp_meta), ]
+
+for (i in unique(final_tree$Clt[final_tree$Disease == "LUAD"])) {
+    temp_meta$group = "Others"
+    temp_meta[rownames(final_tree)[final_tree$Clt == i & final_tree$Source == "East Asians" & final_tree$Disease == "LUAD"], "group"] = i
+    
+    cox_fit = survfit(Surv(time=OS_MONTHS, event=OS_STATUS) ~ group, data=temp_meta)
+    
+    p = ggsurvplot(
+        fit=cox_fit, data=temp_meta, pval = T, risk.table = F, 
+        ggtheme = theme_classic(base_family = "Arial Unicode MS") + ggplot2::theme(
+                aspect.ratio = 1,
+                axis.text = element_text(size = 15),
+                axis.title = element_text(size = 15),
+                legend.position = c(0.75, 0.9),
+                legend.title = element_blank(),
+                legend.text = element_text(size = 15),
+                plot.title = element_text(size = 15, hjust = 0.5)
+            ),
+        palette=c("red", "blue")
+    )
+    p = p + labs(title = i)
+    
+    print(p)
+    ggsave(
+        filename = full.path(paste0("09_bulk/RNA_seq/MuSic/Weight_surv/LUAD/EA_", i, ".pdf")),
+        plot = p$plot,
+        width = 4, height = 4
+    )
+}
+```
+
+
+##### Piechart for stage composition of each group
+
+有部分没有时期信息，图上即为空白
+
+```{r echo=FALSE, fig.height=12, fig.width=6}
+make_piechart_of_stages_each_group(temp_tree, meta)
+```
+
+
+#### NL(AD)
+```{r echo=FALSE}
+temp_est = t(merged_est[, rownames(meta[meta$Source == "East Asians" & meta$Disease == "NL(AD)", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est)
+temp_tree$Disease = "NL(AD)"
+temp_tree$Source = "East Asians"
+# final_tree = rbind(final_tree, temp_tree)
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/East_Asains_NLAD.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T,
+    only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+```
+
+
+### GTEx
+```{r echo=FALSE}
+temp_est = t(merged_est[, rownames(meta[meta$Source == "GTEx" & meta$Disease == "NL", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est)
+temp_tree$Disease = "NL"
+temp_tree$Source = "GTEx"
+# final_tree = rbind(final_tree, temp_tree)
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/GTEx.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T,
+    only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+```
+
+
+### SYSU
+#### LUAD
+```{r echo=FALSE}
+temp_est = t(merged_est[, rownames(meta[meta$Source == "SYSU" & meta$Disease == "LUAD", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est, k = 6)
+temp_tree$Disease = "LUAD"
+temp_tree$Source = "SYSU"
+# final_tree = rbind(final_tree, temp_tree)
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/SYSU_LUAD.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T,
+    only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+```
+
+
+##### Piechart for stage composition of each group
+
+```{r echo=FALSE, fig.height=12, fig.width=6}
+make_piechart_of_stages_each_group(temp_tree, meta)
+```
+
+
+#### LUSC
+```{r echo=FALSE}
+temp_est = t(merged_est[, rownames(meta[meta$Source == "SYSU" & meta$Disease == "LUSC", ])])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est, k = 4)
+temp_tree$Disease = "LUSC"
+temp_tree$Source = "SYSU"
+
+pdf(full.path("09_bulk/RNA_seq/MuSic/Weight/SYSU_LUSC.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T,
+    only_non_immu = T,
+    only_stage = T
+)
+dev.off()
+```
+
+```{r echo=FALSE, fig.height=12, fig.width=6}
+make_piechart_of_stages_each_group(temp_tree, meta)
+```
+
+
+## Survival
+
+### By cell composition per cell type
+
+#### TCGA
+```{r echo=FALSE, fig.height=4, fig.width=4}
+make_survival_by_cell_types <- function(merged_est, merged_meta, east_meta, tcga_clinical, cut.off=3) {
+    # TCGA
+    est <- as.data.frame(t(merged_est[, rownames(merged_meta)[merged_meta$Source == "TCGA"]]))
+    
+    est$ID <- sapply(rownames(est), function(x) {
+        temp = str_split(x, "\\.")[[1]]
+        paste(temp[1], temp[2], temp[3], sep = "-")
+    })
+    
+    
+    plist = list()
+    
+    for (i in colnames(est)) {
+        if (i == "ID") {
+            next
+        }
+        
+        temp_plist = list()
+        for (j in c("LUAD", "LUSC")) {
+            clinical = tcga_clinical[[j]]
+            temp_est <- est[str_detect(rownames(est), j), ]
+            temp_est$group = ifelse(temp_est[, i] > summary(temp_est[, i])[cut.off], "high", "low")
+            
+            if (j == "LUAD") {
+                luad_cli[temp_est$ID, "Cell"] = temp_est$group
+                clinical = luad_cli
+            } else {
+                lusc_cli[temp_est$ID, "Cell"] = temp_est$group
+                clinical = lusc_cli
+            }
+            
+            p <- TCGAanalyze_survival(
+                clinical,
+                "Cell",
+                filename = NULL,
+                risk.table = F,
+                conf.int = F,
+                ncensor.plot = TRUE,
+                labels = c("high", "low"),
+                color = c("red", "blue"),
+                conf.int.style = "step",  # customize style of confidence intervals
+            )
+            p <- p$plot
+            p <- p + 
+                labs(title = paste0(i, " (", j, ")")) +
+                ggplot2::theme_bw(base_family = "Arial Unicode MS") +
+                ggplot2::theme(
+                    aspect.ratio = 1,
+                    axis.text = element_text(size = 15),
+                    axis.title = element_text(size = 15),
+                    legend.position = c(0.75, 0.9),
+                    legend.title = element_blank(),
+                    legend.text = element_text(size = 15),
+                    plot.title = element_text(size = 15, hjust = 0.5),
+                    panel.grid = element_blank()
+                )
+            
+            temp_plist[[j]] = p
+        }
+        
+        plist[[i]] = temp_plist
+    }
+    
+    temp_meta = east_meta[!is.na(east_meta$OS_MONTHS), ]
+    temp_meta = temp_meta[str_detect(temp_meta$PATIENT_ID, "Tumor"), ]
+    temp_meta = temp_meta[intersect(rownames(temp_meta), rownames(east_est)), ]
+    temp_meta$OS_STATUS = sapply(temp_meta$OS_STATUS, function(x) { ifelse(x == "LIVING", 0, 1) })
+    
+    temp_est = t(merged_est[, rownames(temp_meta)])
+    
+    for (i in colnames(temp_est)) {
+        temp_meta$group = ifelse(temp_est[, i] > summary(temp_est[, i])[cut.off], "high", "low")
+        
+        cox_fit = survfit(Surv(time=OS_MONTHS, event=OS_STATUS) ~ group, data=temp_meta)
+        
+        p = ggsurvplot(
+            fit=cox_fit, data=temp_meta, pval = T, risk.table = F, 
+            ggtheme = theme_classic() + ggplot2::theme(
+                    aspect.ratio = 1,
+                    axis.text = element_text(size = 15),
+                    axis.title = element_text(size = 15),
+                    legend.position = c(0.75, 0.9),
+                    legend.title = element_blank(),
+                    legend.text = element_text(size = 15),
+                    plot.title = element_text(size = 15, hjust = 0.5)
+                ),
+            palette=c("red", "blue")
+        )
+        p = p + 
+            labs(title = paste0(i, "(East Asians)"))
+            
+    
+        plist[[i]][["EastAsians"]] = p$plot
+    }
+    
+    return(plist)
+
+}
+```
+
+
+By median
+```{r fig.height=4, fig.width=12}
+dir.create(full.path("09_bulk/RNA_seq/MuSic/Surv/median"), recursive = T, showWarnings = F)
+
+plist = make_survival_by_cell_types(
+    merged_est = merged_est,
+    merged_meta = meta, 
+    east_meta = east_meta, 
+    tcga_clinical = list("LUAD"=luad_cli, "LUSC"=lusc_cli)
+)
+
+
+for (i in sort(names(plist))) {
+    temp_list = plist[[i]]
+    
+    for (j in c("LUAD", "LUSC", "EastAsians")) {
+        ggsave(
+            filename = full.path("09_bulk/RNA_seq/MuSic/Surv/median", paste0(i, "_", j, ".pdf")),
+            plot = temp_list[[j]],
+            width = 4,
+            height = 4
+        )
+    }
+    p <- cowplot::plot_grid(plotlist = plist[[i]], ncol = length(plist[[i]]))
+    
+    print(p)
+}
+```
+
+
+By top 75% as high
+```{r fig.height=4, fig.width=12}
+plist = make_survival_by_cell_types(
+    merged_est = merged_est,
+    merged_meta = meta, 
+    east_meta = east_meta, 
+    tcga_clinical = list("LUAD"=luad_cli, "LUSC"=lusc_cli),
+    cut.off = 2
+)
+
+
+for (i in sort(names(plist))) {
+    p <- cowplot::plot_grid(plotlist = plist[[i]], ncol = length(plist[[i]]))
+    print(p)
+}
+```
+
+
+By mean
+```{r fig.height=4, fig.width=12}
+plist = make_survival_by_cell_types(
+    merged_est = merged_est,
+    merged_meta = meta, 
+    east_meta = east_meta, 
+    tcga_clinical = list("LUAD"=luad_cli, "LUSC"=lusc_cli),
+    cut.off = 4
+)
+
+
+for (i in sort(names(plist))) {
+    p <- cowplot::plot_grid(plotlist = plist[[i]], ncol = length(plist[[i]]))
+    print(p)
+}
+```
+
+
+By top 25 as high
+```{r fig.height=4, fig.width=12}
+plist = make_survival_by_cell_types(
+    merged_est = merged_est,
+    merged_meta = meta, 
+    east_meta = east_meta, 
+    tcga_clinical = list("LUAD"=luad_cli, "LUSC"=lusc_cli),
+    cut.off = 5
+)
+
+
+for (i in sort(names(plist))) {
+    p <- cowplot::plot_grid(plotlist = plist[[i]], ncol = length(plist[[i]]))
+    print(p)
+}
+```
+
+
+## PCA, UMAP and tSNE
+
+### PCA related
+```{r echo=FALSE}
+make_pca_analysis <- function(data, output_prefix) {
+    res.pca <- prcomp(data)
+    
+    p <- fviz_eig(
+        res.pca, 
+        ggtheme = theme_classic() + my_theme
+    )
+    ggsave(
+        filename = paste(output_prefix, "scree_plot.pdf", sep = "_"),
+        plot = p,
+        device = "pdf",
+        width = 6,
+        height = 6
+    )
+    
+    ggsave(
+        filename = paste(output_prefix, "contrib_dim1.pdf", sep = "_"),
+        device = "pdf",
+        plot = fviz_contrib(
+            res.pca, 
+            choice = "var", 
+            axes = 1, 
+            top = 10, 
+            ggtheme = theme_classic(base_family = "Arial Unicode MS") + theme(
+                plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+                legend.position = legend.position,
+                axis.text = element_text(size = axis_size),
+                axis.text.x = element_text(size = axis_size),
+                axis.title = element_text(size = axis_title_size),
+                legend.text = element_text(size = legend_text_size),
+                legend.title = element_text(size = legend_title_size)
+            )
+        ) ,
+        width = 8,
+        height = 6
+    )
+    
+    
+    ggsave(
+        filename = paste(output_prefix, "contrib_dim2.pdf", sep = "_"),
+        plot = fviz_contrib(
+            res.pca, 
+            choice = "var",
+            axes = 2, 
+            top = 10,
+            ggtheme = theme_classic(base_family = "Arial Unicode MS") + theme(
+                plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+                legend.position = legend.position,
+                axis.text = element_text(size = axis_size),
+                axis.text.x = element_text(size = axis_size),
+                axis.title = element_text(size = axis_title_size),
+                legend.text = element_text(size = legend_text_size),
+                legend.title = element_text(size = legend_title_size)
+            )
+        ),
+        device = "pdf",
+        width = 8,
+        height = 6
+    )
+    
+    
+    p <- fviz_pca_var(
+        res.pca,
+        col.var = "contrib", # Color by contributions to the PC
+        gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+        repel = TRUE,     # Avoid text overlapping
+        ggtheme = theme_classic(base_family = "Arial Unicode MS") + my_theme,
+        labelsize = 8
+    )
+    
+    ggsave(
+        filename = paste(output_prefix, "contrib_pca.pdf", sep = "_"),
+        device = "pdf",
+        plot = p,
+        width = 6,
+        height = 6
+    )
+}
+```
+
+
+UMAP
+```{r echo=FALSE}
+make_umap <- function(x, meta, dot.size = 2, show_source=T, do.return = F) {
+    data = as.data.frame(x$layout[, 1:2])
+    
+    colnames(data) <- c("UMAP1", "UMAP2")
+
+    data$Disease <- meta[rownames(data), "Disease"]
+    data$Stage <- meta[rownames(data), "Stage"]
+    data$Source <- meta[rownames(data), "Source"]
+
+    p1 <- ggplot(data, aes(x = UMAP1, y = UMAP2, color  = Disease)) +
+        geom_point(size = dot.size) +
+        theme_bw() +
+        my_theme + 
+        theme(legend.position = "bottom") +
+        labs(color = "") +
+        scale_color_manual(values = Disease) +
+        guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    
+    p2 <- ggplot(data, aes(x = UMAP1, y = UMAP2, color  = Stage)) +
+        geom_point(size = dot.size) +
+        theme_bw() +
+        my_theme + 
+        theme(legend.position = "bottom") +
+        labs(color = "") +
+        scale_color_manual(values = Stage) +
+        guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    
+    if (show_source) {
+        p3 <- ggplot(data, aes(x = UMAP1, y = UMAP2, color  = Source)) +
+            geom_point(size = dot.size) +
+            theme_bw() +
+            my_theme + 
+            theme(legend.position = "bottom") +
+            labs(color = "") +
+            scale_color_manual(values = Source) +
+            guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+        
+        if(do.return) {
+            return (list(p1, p2, p3))
+        }
+        
+        return (cowplot::plot_grid(p1, p2, p3, ncol = 3))
+    } else {
+        
+        if(do.return) {
+            return (list(p1, p2))
+        }
+        
+        return (cowplot::plot_grid(p1, p2, ncol = 2))
+    }
+}
+
+```
+
+tSNE 
+```{r echo=FALSE}
+make_tsne <- function(x, meta, dot.size=2, show_source=T, do.return = F) {
+    data = as.data.frame(x)
+    
+    colnames(data) <- c("tSNE_1", "tSNE_2")
+
+    data$Disease <- meta[rownames(data), "Disease"]
+    data$Stage <- meta[rownames(data), "Stage"]
+    data$Source <- meta[rownames(data), "Source"]
+
+    p1 <- ggplot(data, aes(x = tSNE_1, y = tSNE_2, color  = Disease)) +
+        geom_point(size = dot.size) +
+        theme_bw() +
+        my_theme + 
+        theme(legend.position = "bottom") +
+        labs(color = "") +
+        scale_color_manual(values = Disease) +
+        guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    
+    p2 <- ggplot(data, aes(x = tSNE_1, y = tSNE_2, color  = Stage)) +
+        geom_point(size = dot.size) +
+        theme_bw() +
+        my_theme + 
+        theme(legend.position = "bottom") +
+        labs(color = "") +
+        scale_color_manual(values = Stage) +
+        guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    
+    if (show_source) {
+        p3 <- ggplot(data, aes(x = tSNE_1, y = tSNE_2, color  = Source)) +
+            geom_point(size = dot.size) +
+            theme_bw() +
+            my_theme + 
+            theme(legend.position = "bottom") +
+            labs(color = "") +
+            scale_color_manual(values = Source) +
+            guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+        
+        if(do.return) {
+            return (list(p1, p2, p3))
+        }
+        
+        return (cowplot::plot_grid(p1, p2, p3, ncol = 3))
+    } else {
+        
+        if(do.return) {
+            return (list(p1, p2))
+        }
+        
+        return (cowplot::plot_grid(p1, p2, ncol = 2))
+    }
+}
+```
+
+PCA
+```{R echo=FALSE}
+make_pca_reduction_plots <- function(data, meta, show_source=T, n.pcs = 10, dot.size = 2) {
+    
+    res.pca <- data
+    
+    p <- ggplot(
+        data.frame(x = 1:ncol(res.pca$x), y = apply(res.pca$x, 2, sd)), 
+        aes(x = x, y = y)
+    ) + geom_point()
+    
+    print(p)
+    
+    meta = meta[rownames(res.pca$x), ]
+    
+    p1 <- autoplot(res.pca, data = meta,  colour = 'Disease', frame = TRUE) + 
+        my_theme + theme(aspect.ratio=1, legend.position = "bottom") +
+        labs(title = "Disease") +
+        scale_color_manual(values = Disease) +
+        guides(color = guide_legend(override.aes = list(size = 4)))
+    
+    p2 <- autoplot(res.pca, data = meta,  colour = 'Stage', frame = TRUE) + 
+        my_theme + theme(aspect.ratio=1, legend.position = "bottom")  +
+        labs(title = "Stage") +
+        scale_color_manual(values = Stage) +
+        guides(color = guide_legend(override.aes = list(size = 4)))
+    
+    if (show_source) {
+        p3 <- autoplot(res.pca, data = meta,  colour = 'Source', frame = TRUE) + 
+            my_theme + theme(aspect.ratio=1, legend.position = "bottom")  +
+            labs(title = "Source") +
+            scale_color_manual(values = Source) +
+            guides(color = guide_legend(override.aes = list(size = 4)))
+        
+        return(cowplot::plot_grid(p1, p2, p3, ncol = 3))
+    } else {
+        return(cowplot::plot_grid(p1, p2, ncol = 2))
+    }
+}
+
+
+
+make_pca_contrib <- function(res.pca, axes=1) {
+    fviz_contrib(
+        res.pca, 
+        choice = "var", 
+        axes = axes, 
+        top = 10, 
+        ggtheme = theme_classic(base_family = "Arial Unicode MS") + theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+            legend.position = legend.position,
+            axis.text = element_text(size = axis_size),
+            axis.text.x = element_text(size = axis_size),
+            axis.title = element_text(size = axis_title_size),
+            legend.text = element_text(size = legend_text_size),
+            legend.title = element_text(size = legend_title_size)
+        )
+    )
+}
+
+```
+
+
+
+#### All samples
+```{r fig.height=4, fig.width=5, echo=FALSE}
+dir.create(full.path("09_bulk/RNA_seq/MuSic/PCA"), recursive = T, showWarnings = F)
+
+res.pca = prcomp(t(merged_est))
+make_pca_reduction_plots(res.pca, meta) 
+
+
+p <- fviz_pca_var(
+    res.pca,
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,     # Avoid text overlapping
+    ggtheme = theme_classic(base_family = "Arial Unicode MS") + my_theme,
+    labelsize = 8
+)
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/All_contrib_var.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 6,
+    height = 6
+)
+
+
+p = make_pca_contrib(res.pca, 1)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/All_contrib_1.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+p = make_pca_contrib(res.pca, 2)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/All_contrib_2.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+
+n.pcs = 6
+res.umap <- umap(res.pca$x[, 1:n.pcs])
+p = make_umap(res.umap, meta, do.return = T)
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/All_umap.pdf"),
+    device = "pdf",
+    plot = p[[1]],
+    width = 4,
+    height = 6
+)
+
+
+
+res.tsne <- Rtsne(res.pca$x[, 1:n.pcs], dims = 2, perplexity=min(30, n.pcs - 1), verbose=F,  max_iter = 500, check_duplicates = F)
+res.tsne = as.data.frame(res.tsne$Y)
+rownames(res.tsne) <- rownames(res.pca$x)
+p = make_tsne(res.tsne, meta, do.return=T)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/All_tsne.pdf"),
+    device = "pdf",
+    plot = p[[1]],
+    width = 4,
+    height = 6
+)
+
+```
+
+
+#### In-house
+```{r fig.height=4, fig.width=8, echo=FALSE}
+res.pca = prcomp(t(merged_est[, rownames(meta[meta$Source == "In-house", ])]))
+# make_pca_reduction_plots(res.pca, meta,show_source = F) 
+
+n.pcs = 5
+
+
+p <- fviz_pca_var(
+    res.pca,
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,     # Avoid text overlapping
+    ggtheme = theme_classic() + my_theme,
+    labelsize = 8
+)
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/In_house_contrib_var.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 6,
+    height = 6
+)
+
+
+p = make_pca_contrib(res.pca, 1)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/In_house_contrib_1.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+p = make_pca_contrib(res.pca, 2)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/In_house_contrib_2.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+
+
+# n.pcs = 6
+# res.umap <- umap(res.pca$x[, 1:n.pcs])
+# p = make_umap(res.umap, meta, do.return = T)
+# 
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/MuSic/PCA/In_house_umap.pdf"),
+#     device = "pdf",
+#     plot = p[[1]],
+#     width = 4,
+#     height = 6
+# )
+# 
+# 
+# 
+# res.tsne <- Rtsne(res.pca$x[, 1:n.pcs], dims = 2, perplexity=min(30, n.pcs - 1), verbose=F,  max_iter = 500, check_duplicates = F)
+# res.tsne = as.data.frame(res.tsne$Y)
+# rownames(res.tsne) <- rownames(res.pca$x)
+# p = make_tsne(res.tsne, meta, do.return=T)
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/MuSic/PCA/In_house_tsne.pdf"),
+#     device = "pdf",
+#     plot = p[[1]],
+#     width = 4,
+#     height = 6
+# )
+```
+
+#### East Asians
+```{r fig.height=4, fig.width=8, echo=FALSE}
+res.pca = prcomp(t(merged_est[, rownames(meta[meta$Source == "East Asians", ])]))
+# make_pca_reduction_plots(res.pca, meta,show_source = F) 
+
+
+p <- fviz_pca_var(
+    res.pca,
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,     # Avoid text overlapping
+    ggtheme = theme_classic() + my_theme,
+    labelsize = 8
+)
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/East_Asians_contrib_var.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 6,
+    height = 6
+)
+
+
+
+p = make_pca_contrib(res.pca, 1)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/East_Asians_contrib_1.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+p = make_pca_contrib(res.pca, 2)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/East_Asians_contrib_2.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+
+# n.pcs = 6
+# res.umap <- umap(res.pca$x[, 1:n.pcs])
+# p = make_umap(res.umap, meta, do.return = T)
+# 
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/MuSic/PCA/East_Asians_umap.pdf"),
+#     device = "pdf",
+#     plot = p[[1]],
+#     width = 4,
+#     height = 6
+# )
+# 
+# 
+# 
+# res.tsne <- Rtsne(res.pca$x[, 1:n.pcs], dims = 2, perplexity=min(30, n.pcs - 1), verbose=F,  max_iter = 500, check_duplicates = F)
+# res.tsne = as.data.frame(res.tsne$Y)
+# rownames(res.tsne) <- rownames(res.pca$x)
+# p = make_tsne(res.tsne, meta, do.return=T)
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/MuSic/PCA/East_Asians_tsne.pdf"),
+#     device = "pdf",
+#     plot = p[[1]],
+#     width = 4,
+#     height = 6
+# )
+```
+
+
+#### TCGA
+```{r fig.height=4, fig.width=8, echo=FALSE}
+res.pca = prcomp(t(merged_est[, rownames(meta[meta$Source == "TCGA", ])]))
+# make_pca_reduction_plots(res.pca, meta,show_source = F) 
+
+
+p <- fviz_pca_var(
+    res.pca,
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,     # Avoid text overlapping
+    ggtheme = theme_classic() + my_theme,
+    labelsize = 8
+)
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/TCGA_contrib_var.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 6,
+    height = 6
+)
+
+
+
+p = make_pca_contrib(res.pca, 1)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/TCGA_contrib_1.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+p = make_pca_contrib(res.pca, 2)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/TCGA_contrib_2.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+
+# n.pcs = 5
+# res.umap <- umap(res.pca$x[, 1:n.pcs])
+# p = make_umap(res.umap, meta, do.return = T)
+# 
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/MuSic/PCA/TCGA_umap.pdf"),
+#     device = "pdf",
+#     plot = p[[1]],
+#     width = 4,
+#     height = 6
+# )
+# 
+# 
+# res.tsne <- Rtsne(res.pca$x[, 1:n.pcs], dims = 2, perplexity=min(30, n.pcs - 1), verbose=F,  max_iter = 500, check_duplicates = F)
+# res.tsne = as.data.frame(res.tsne$Y)
+# rownames(res.tsne) <- rownames(res.pca$x)
+# p = make_tsne(res.tsne, meta, do.return=T)
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/MuSic/PCA/TCGA_tsne.pdf"),
+#     device = "pdf",
+#     plot = p[[1]],
+#     width = 4,
+#     height = 6
+# )
+```
+
+
+#### SYSU
+```{r fig.height=4, fig.width=8, echo=FALSE}
+res.pca = prcomp(t(merged_est[, rownames(meta[meta$Source == "SYSU", ])]))
+# make_pca_reduction_plots(res.pca, meta,show_source = F) 
+
+
+
+p <- fviz_pca_var(
+    res.pca,
+    col.var = "contrib", # Color by contributions to the PC
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel = TRUE,     # Avoid text overlapping
+    ggtheme = theme_classic() + my_theme,
+    labelsize = 8
+)
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/SYSU_contrib_var.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 6,
+    height = 6
+)
+
+
+
+p = make_pca_contrib(res.pca, 1)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/SYSU_contrib_1.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+p = make_pca_contrib(res.pca, 2)
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/PCA/SYSU_contrib_2.pdf"),
+    device = "pdf",
+    plot = p,
+    width = 8,
+    height = 6
+)
+
+# n.pcs = 5
+# res.umap <- umap(res.pca$x[, 1:n.pcs])
+# p = make_umap(res.umap, meta, do.return = T)
+# 
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/MuSic/PCA/SYSU_umap.pdf"),
+#     device = "pdf",
+#     plot = p[[1]],
+#     width = 4,
+#     height = 6
+# )
+# 
+# 
+# 
+# res.tsne <- Rtsne(res.pca$x[, 1:n.pcs], dims = 2, perplexity=min(30, n.pcs - 1), verbose=F,  max_iter = 500, check_duplicates = F)
+# res.tsne = as.data.frame(res.tsne$Y)
+# rownames(res.tsne) <- rownames(res.pca$x)
+# p = make_tsne(res.tsne, meta, do.return=T)
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/MuSic/PCA/SYSU_tsne.pdf"),
+#     device = "pdf",
+#     plot = p[[1]],
+#     width = 4,
+#     height = 6
+# )
+```
+
+## Final plot
+```{r}
+# merged_est <- readRDS(full.path("09_bulk/RNA_seq/MuSic/All_est.rds"))
+# meta <- readRDS(full.path("09_bulk/RNA_seq/MuSic/All_est_meta.rds"))
+```
+
+
+## LUAD
+```{r fig.height=4, fig.width=5}
+temp_est = t(merged_est[, rownames(meta)[meta$Disease == "LUAD"]])
+best_ncluster(temp_est)
+
+
+temp_tree = kmean_cluster(temp_est, k = 6, seed = 7)
+
+
+# pdf(full.path("09_bulk/RNA_seq/MuSic/LUAD_weight.pdf"), width = 5, height = 4)
+make_heatmap_number_merged(
+    temp_est,
+    meta,
+    row_split = temp_tree[rownames(temp_est), "Clt"],
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T
+)
+# dev.off()
+```
+
+
+```{r}
+temp_tree$ID <- sapply(rownames(temp_tree), function(x) {
+
+    if (str_detect(x, "TCGA")) {
+        temp = str_split(x, "\\.")[[1]]
+        return(paste(temp[1], temp[2], temp[3], sep = "-"))
+    } else {
+        return(NA)
+    }
+
+})
+
+clinical = luad_cli
+
+for (i in unique(temp_tree$Clt)) {
+    temp_ids = temp_tree$ID[temp_tree$Clt == i]
+    temp_ids = temp_ids[!is.na(temp_ids)]
+
+    clinical$group = "Others"
+    clinical[temp_ids, "group"] = i
+
+    p1 <- TCGAanalyze_survival(
+        clinical,
+        "group",
+        filename = NULL,
+        risk.table = F,
+        conf.int = F,
+        ncensor.plot = TRUE,
+        # labels = c("high", "low"),
+        color = c("red", "blue"),
+        conf.int.style = "step",  # customize style of confidence intervals
+    )
+    p1 <- p1$plot
+    p1 <- p1 +
+        labs(title = i) +
+        ggplot2::theme(
+            aspect.ratio = 1,
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.position = c(0.75, 0.9),
+            legend.title = element_blank(),
+            legend.text = element_text(size = 15),
+            plot.title = element_text(size = 15, hjust = 0.5)
+        )
+
+    # ggsave(
+    #     filename = full.path(paste0("09_bulk/RNA_seq/MuSic/Weight_surv/LUAD/TCGA_", i, ".pdf")),
+    #     plot = p1,
+    #     width = 4,
+    #     height = 4
+    # )
+
+
+    temp_meta = east_meta[!is.na(east_meta$OS_MONTHS), ]
+    temp_meta = temp_meta[intersect(rownames(temp_meta), rownames(temp_est)), ]
+    temp_meta$OS_STATUS = sapply(temp_meta$OS_STATUS, function(x) { ifelse(x == "LIVING", 0, 1) })
+
+    temp_meta$group = "Others"
+
+    temp_ids = intersect(rownames(temp_tree)[temp_tree$Clt == i], rownames(temp_meta))
+    temp_meta[temp_ids, "group"] = i
+
+    cox_fit = survfit(Surv(time=OS_MONTHS, event=OS_STATUS) ~ group, data=temp_meta)
+
+    p2 = ggsurvplot(
+        fit=cox_fit, data=temp_meta, pval = T, risk.table = F,
+        ggtheme = theme_classic() + ggplot2::theme(
+                aspect.ratio = 1,
+                axis.text = element_text(size = 15),
+                axis.title = element_text(size = 15),
+                legend.position = c(0.75, 0.9),
+                legend.title = element_blank(),
+                legend.text = element_text(size = 15),
+                plot.title = element_text(size = 15, hjust = 0.5)
+            ),
+        palette=c("red", "blue")
+    )
+    p2 = p2 + labs(title = i)
+
+    # ggsave(
+    #     filename = full.path(paste0("09_bulk/RNA_seq/MuSic/Weight_surv/LUAD/EA_", i, ".pdf")),
+    #     plot = p2$plot,
+    #     width = 4,
+    #     height = 4
+    # )
+
+    print(cowplot::plot_grid(p1, p2$plot, nrow = 1))
+
+}
+
+```
+
+
+## LUSC
+```{r}
+# temp_est = t(merged_est[, rownames(meta)[meta$Disease == "LUSC"]])
+# best_ncluster(temp_est)
+# 
+# 
+# temp_tree = kmean_cluster(temp_est, k = 4)
+# 
+# 
+# pdf(full.path("09_bulk/RNA_seq/MuSic/LUSC_weight.pdf"), width = 5, height = 4)
+# make_heatmap_number_merged(
+#     temp_est,
+#     meta, 
+#     row_split = temp_tree[rownames(temp_est), "Clt"], 
+#     # column_split = rownames(temp_tree),
+#     cluster_rows = F,
+#     cluster_columns = T,
+#     show_column_names = T
+# )
+# dev.off()
+```
+
+
+
+```{r}
+# temp_tree$ID <- sapply(rownames(temp_tree), function(x) {
+#     
+#     if (str_detect(x, "TCGA")) {
+#         temp = str_split(x, "\\.")[[1]]
+#         return(paste(temp[1], temp[2], temp[3], sep = "-"))
+#     } else {
+#         return(NA)
+#     }
+#     
+# })
+# 
+# clinical = lusc_cli
+# 
+# for (i in unique(temp_tree$Clt)) {
+#     temp_ids = temp_tree$ID[temp_tree$Clt == i]
+#     temp_ids = temp_ids[!is.na(temp_ids)]
+# 
+#     clinical$group = "Others"
+#     clinical[temp_ids, "group"] = i
+# 
+#     p1 <- TCGAanalyze_survival(
+#         clinical,
+#         "group",
+#         filename = NULL,
+#         risk.table = F,
+#         conf.int = F,
+#         ncensor.plot = TRUE,
+#         # labels = c("high", "low"),
+#         color = c("red", "blue"),
+#         conf.int.style = "step",  # customize style of confidence intervals
+#     )
+#     p1 <- p1$plot
+#     p1 <- p1 + 
+#         labs(title = i) +
+#         ggplot2::theme(
+#             aspect.ratio = 1,
+#             axis.text = element_text(size = 15),
+#             axis.title = element_text(size = 15),
+#             legend.position = c(0.75, 0.9),
+#             legend.title = element_blank(),
+#             legend.text = element_text(size = 15),
+#             plot.title = element_text(size = 15, hjust = 0.5)
+#         )
+#     
+#     ggsave(
+#         filename = full.path(paste0("09_bulk/RNA_seq/MuSic/Weight_surv/LUSC/TCGA_", i, ".pdf")),
+#         plot = p1,
+#         width = 4,
+#         height = 4
+#     )
+# 
+#     
+#     print(p1)
+#     
+# }
+
+```
+
+
+---
+
+### Test deconvolution on ATII
+```{R}
+tree <- read.csv(full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), row.names = 1, stringsAsFactors = F)
+
+bulk_meta <- readRDS(full.path("09_bulk/RNA_seq/DEGs/data/All_est_meta.rds"))
+expr <- readRDS(full.path("09_bulk/RNA_seq/DEGs/data/All_expr_convert.rds"))
+
+
+obj <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/seurat.rds"))
+
+markers <- read.csv(full.path("03_each_cells/Batch/ATII/LUAD/cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+
+markers <- markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(50, wt = avg_logFC) %>%
+    unique() %>%
+    as.data.frame()
+```
+
+
+```{R}
+sc_set <- ExpressionSet(
+    as.matrix(obj@raw.data[unique(markers$gene), ]), 
+    phenoData = AnnotatedDataFrame(obj@meta.data)
+)
+
+bulk_set <- ExpressionSet(
+    as.matrix(expr[, rownames(tree)[tree$Disease == "LUAD" & tree$Clt == 3]]), 
+    phenoData = AnnotatedDataFrame(bulk_meta[rownames(tree)[tree$Disease == "LUAD" & tree$Clt == 3], ])
+)
+    
+bulk_dec = music_prop(
+    bulk.eset = bulk_set, 
+    sc.eset = sc_set, 
+    clusters = 'res.0.1',
+    samples = 'SampleID', 
+    markers = markers$gene,
+    verbose = F
+)
+```
+
+```{r}
+
+# ra <- rowAnnotation(
+#     Disease = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Disease"], 
+#     Stage = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Stage"],
+#     Source = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Source"],
+#     col = colors, 
+#     show_annotation_name = F, 
+#     show_legend = T
+# )
+# 
+# 
+# Heatmap(
+#     bulk_dec$Est.prop.weighted,
+#     cluster_rows = F, cluster_columns = T,
+#     show_column_names = T
+# )
+
+make_heatmap_number_merged(bulk_dec$Est.prop.weighted, bulk_meta)
+```
+
+
+```{R}
+temp = obj@meta.data %>%
+    group_by(SampleID, res.0.1) %>%
+    add_tally() %>%
+    dplyr::select(SampleID, res.0.1, n) %>%
+    unique() %>%
+    group_by(SampleID) %>%
+    mutate(n = n / sum(n)) %>%
+    unique() %>%
+    as.data.frame()
+
+temp <- dcast(temp, SampleID~res.0.1, value.var = "n", fun.aggregate = mean, fill = 0)
+rownames(temp) <- temp$SampleID
+temp <- temp[,colnames(temp) != "SampleID"]
+
+temp_meta <- unique(obj@meta.data[, c("SampleID", "Stage")])
+rownames(temp_meta) <- temp_meta$SampleID
+
+ra <- rowAnnotation(
+    Stage = temp_meta[rownames(temp), "Stage"],
+    col = llist(
+        Stage=Stage
+    ),
+    show_annotation_name = F,
+    show_legend = T
+)
+
+Heatmap(
+    temp, 
+    name = "Weight", 
+    show_row_names = F, 
+    column_title = "Single Cell (ATII)",
+    left_annotation = ra
+)
+```
+
+
+### AUC/ROC
+```{R fig.height=5, fig.width=5}
+auc <- read.csv(full.path("09_bulk/RNA_seq/MuSic/roc_auc_score.csv"), stringsAsFactors = F)
+
+
+temp <- auc %>%
+    group_by(label) %>%
+    mutate(lab = paste0(label, ": mean=", round(mean(AUC), 2), "; sd=", round(sd(unique(AUC)), 3))) %>%
+    as.data.frame()
+
+
+p <- ggplot(temp[temp$repeat. == "R0", ], aes(x=x, y=y, color=lab)) +
+    () +
+    labs(x= "False Positive Rate", y = "True Positive Rate", color = "") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    my_theme +
+    theme(legend.position = c(0.5, 0.2))
+
+
+print(p)
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/MuSic/AUC_ROC.pdf"),
+    plot = p,
+    width = 5,
+    height = 5
+)
+```
+
+
+
+### Test deconvolution on Basal
+```{R}
+tree <- read.csv(full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), row.names = 1, stringsAsFactors = F)
+
+bulk_meta <- readRDS(full.path("09_bulk/RNA_seq/DEGs/data/All_est_meta.rds"))
+expr <- readRDS(full.path("09_bulk/RNA_seq/DEGs/data/All_expr_convert.rds"))
+
+
+obj <- readRDS(full.path("03_each_cells/Batch/Basal/LUSC/seurat.rds"))
+
+markers = c("MKI67", "TOP2A", "PBK", "GTSE1")
+
+obj@meta.data$Clt = "Non-cycling"
+obj@meta.data$Clt[obj@meta.data$res.0.09 == 3] = "Cycling"
+```
+
+
+```{R}
+sc_set <- ExpressionSet(
+    as.matrix(obj@raw.data[unique(markers), ]), 
+    phenoData = AnnotatedDataFrame(obj@meta.data)
+)
+
+bulk_set <- ExpressionSet(
+    as.matrix(expr[, rownames(tree)[tree$Disease == "LUSC" & tree$Clt == 3]]), 
+    phenoData = AnnotatedDataFrame(bulk_meta[rownames(tree)[tree$Disease == "LUSC" & tree$Clt == 3], ])
+)
+    
+bulk_dec = music_prop(
+    bulk.eset = bulk_set, 
+    sc.eset = sc_set, 
+    clusters = 'Clt',
+    samples = 'SampleID', 
+    markers = markers,
+    verbose = F
+)
+```
+
+```{r}
+
+# ra <- rowAnnotation(
+#     Disease = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Disease"], 
+#     Stage = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Stage"],
+#     Source = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Source"],
+#     col = colors, 
+#     show_annotation_name = F, 
+#     show_legend = T
+# )
+# 
+# 
+# Heatmap(
+#     bulk_dec$Est.prop.weighted,
+#     cluster_rows = F, cluster_columns = T,
+#     show_column_names = T
+# )
+
+make_heatmap_number_merged(bulk_dec$Est.prop.weighted, bulk_meta)
+```
+
+
+
+
+### Test deconvolution on ATII
+```{R}
+tree <- read.csv(full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), row.names = 1, stringsAsFactors = F)
+
+bulk_meta <- readRDS(full.path("09_bulk/RNA_seq/DEGs/data/All_est_meta.rds"))
+expr <- readRDS(full.path("09_bulk/RNA_seq/DEGs/data/All_expr_convert.rds"))
+
+
+obj <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/seurat.rds"))
+
+markers = c("WNT3", "WNT5A", "WNT5B")
+
+obj@meta.data$Clt = "Non-cycling"
+obj@meta.data$Clt[obj@meta.data$res.0.25 == 3] = "Cycling"
+```
+
+
+```{R}
+sc_set <- ExpressionSet(
+    as.matrix(obj@raw.data[unique(markers), ]), 
+    phenoData = AnnotatedDataFrame(obj@meta.data)
+)
+
+bulk_set <- ExpressionSet(
+    as.matrix(expr[, rownames(tree)[tree$Disease == "LUAD" & tree$Clt == 3]]), 
+    phenoData = AnnotatedDataFrame(bulk_meta[rownames(tree)[tree$Disease == "LUAD" & tree$Clt == 3], ])
+)
+    
+bulk_dec = music_prop(
+    bulk.eset = bulk_set, 
+    sc.eset = sc_set, 
+    clusters = 'Clt',
+    samples = 'SampleID', 
+    markers = markers,
+    verbose = F
+)
+```
+
+```{r}
+
+# ra <- rowAnnotation(
+#     Disease = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Disease"], 
+#     Stage = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Stage"],
+#     Source = bulk_meta[rownames(bulk_dec$Est.prop.weighted), "Source"],
+#     col = colors, 
+#     show_annotation_name = F, 
+#     show_legend = T
+# )
+# 
+# 
+# Heatmap(
+#     bulk_dec$Est.prop.weighted,
+#     cluster_rows = F, cluster_columns = T,
+#     show_column_names = T
+# )
+
+make_heatmap_number_merged(bulk_dec$Est.prop.weighted, bulk_meta)
+```
+
+
+### TCGA Basal
+
+```{r}
+final_tree <- read.csv(full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), row.names = 1, stringsAsFactors = F)
+
+tcga <- read.csv(full.path("TCGA/Lung.csv"), row.names = 1, stringsAsFactors = F)
+tcga <- tcga[c("PRKDC", "ATM", "ATR", "TP53", "MDM2"), ]
+
+tcga <- melt(as.matrix(tcga))
+tcga$clt = final_tree[tcga$Var2, "Clt"]
+tcga$Disease = final_tree[tcga$Var2, "Disease"]
+
+
+ggplot(tcga, aes(x=as.character(clt), y=log10(value + 1), color=Var1)) +
+    geom_boxplot() +
+    facet_grid(Disease~., scales = "free", space = "free")
+
+
+ggplot(tcga, aes(x=Var1, y=log10(value + 1), color=as.character(clt))) +
+    geom_boxplot() +
+    facet_grid(Disease~., scales = "free", space = "free")
+```

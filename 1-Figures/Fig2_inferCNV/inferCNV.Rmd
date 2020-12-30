@@ -1,0 +1,4652 @@
+---
+title: "InferCNV"
+author: "Zhang Yiming"
+date: "2020/3/1"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+
+```{R include=FALSE}
+reticulate::use_python("/home/zhangyiming/.pyenv/shims/python")
+options(stringsAsFactors = T)
+set.seed(42)
+library(infercnv)
+library(Seurat)
+library(ggfortify)
+library(ggplot2)
+library(Rtsne)
+library(umap)
+library(wesanderson)
+library(ComplexHeatmap)
+library(circlize)
+library(doMC)
+library(tictoc)
+library(stringr)
+library(Seurat)
+library(wesanderson)
+library(reshape2)
+
+extrafont::loadfonts()
+```
+
+
+```{r var}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+cell_color = c(
+    wes_palette("Darjeeling1"), 
+    wes_palette("Moonrise3"),
+    wes_palette("Darjeeling2"),
+    wes_palette("Moonrise1")
+)[1:length(unique(meta$cell_name1))]
+
+names(cell_color) = unique(meta$cell_name1)
+
+disease_colors = c(
+    "LUAD" = "#0084D1", 
+    "Normal (LUAD)"="#FECC1B", 
+    "LUAD_Normal"="#FECC1B", 
+    "Normal"="#73BDFF", 
+    "Normal (LUSC)"="#778793", 
+    "LUSC_Normal"="#778793", 
+    "LUSC"="#A0C807", 
+    "BSPN"="#6A0019", 
+    "BSPN_Normal"="#C5000B"
+)
+
+
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V6))
+
+
+chrom_color <- c(
+    wes_palette("Darjeeling1"), 
+    wes_palette("Darjeeling2"), 
+    wes_palette("Moonrise1"), 
+    wes_palette("Moonrise2"), 
+    wes_palette("Moonrise3"),
+    wes_palette("Royal1"),
+    wes_palette("Royal2"),
+    wes_palette("Chevalier1"),
+    wes_palette("FantasticFox1"),
+    wes_palette("GrandBudapest1"),
+    wes_palette("GrandBudapest2")
+)
+chrom_color <- chrom_color[1:length(unique(gene_pos$V1))]
+names(chrom_color) <- unique(gene_pos$V1)
+
+
+stage_color =  c(
+    "I"="#65A9A3", 
+    "II"="#4A933E", 
+    "III"="#EC7A21", 
+    "IV"="#D73F47", 
+    "LUAD_Normal"="#FECC1B", 
+    "LUSC_Normal"="#778793",
+    "Normal(LUAD)"="#FECC1B", 
+    "Normal(LUSC)"="#778793"
+    
+)
+
+
+axis_size = 18
+axis_title_size = 20
+title_size = 25
+legend.position="right"
+legend_text_size = 15
+legend_title_size = 20
+
+my_theme <- ggplot2::theme(
+    aspect.ratio=1,
+    plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+    legend.position = legend.position,
+    axis.text = element_text(size = axis_size),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = axis_size),
+    axis.title = element_text(size = axis_title_size),
+    legend.text = element_text(size = legend_text_size),
+    legend.title = element_text(size = legend_title_size),
+    panel.grid = element_blank()
+)
+
+col_fun = colorRamp2(c(-3, 0, 3), c("blue", "white", "red"))
+
+Stage = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "Normal"="#73BDFF")
+Disease = c( 
+    "LUAD" = "#0084D1",  "NL(AD)"="#FECC1B",  "NL"="#778793", "AD" = "#0084D1",  
+    "BSPN"="#C93311",  "NL(SC)"="#778793",  "LUSC"="#A0C807", "SC"="#A0C807"
+)
+
+immu <- c( 
+    "B", "CD4", "CD8",
+    "DC", "Mast", "Mφ",
+    "NK", "Tregs", "Gran"
+)
+```
+
+
+
+## Run inferCNV
+### ATII
+
+
+```{r atii_infer, eval=FALSE, include=FALSE}
+obj <- readRDS(full.path("03_each_cells/total/ATII/seurat.rds"))
+
+
+cells = rownames(obj@meta.data)
+
+temp_file = full.path("anno_ATII")
+
+temp = obj@meta.data[cells, c("Cells", "Disease")]
+for (i in 1:ncol(temp)) {
+    temp[, i] <- as.character(temp[, i])
+}
+
+write.table(temp, temp_file, row.names = F, col.names = F, sep="\t", quote = F)
+
+infercnv_obj = CreateInfercnvObject(
+    raw_counts_matrix=obj@raw.data[, cells],
+    gene_order_file=full.path("12_final_plots/gene_pos.txt"),
+    annotations_file=temp_file,
+    delim="\t",
+    ref_group_names=c("LUAD_Normal", "LUSC_Normal")
+)
+
+
+
+file.remove(temp_file)
+
+infercnv_obj = infercnv::run(
+    infercnv_obj,
+    cutoff=0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+    out_dir=full.path("11_CNV/ATII"), 
+    cluster_by_groups=TRUE, 
+    denoise=TRUE,
+    HMM=TRUE
+)
+```
+
+
+### Basal
+```{r basal_infer, eval=FALSE, include=FALSE}
+obj <- readRDS(full.path("03_each_cells/total/Basal/seurat.rds"))
+
+cells = rownames(obj@meta.data)
+
+temp_file = full.path("anno_Basal")
+
+temp = obj@meta.data[cells, c("Cells", "Disease")]
+for (i in 1:ncol(temp)) {
+    temp[, i] <- as.character(temp[, i])
+}
+
+write.table(temp, temp_file, row.names = F, col.names = F, sep="\t", quote = F)
+
+infercnv_obj = CreateInfercnvObject(
+    raw_counts_matrix=obj@raw.data[, cells],
+    gene_order_file=full.path("12_final_plots/gene_pos.txt"),
+    annotations_file=temp_file,
+    delim="\t",
+    ref_group_names=c("LUAD_Normal")
+)
+
+
+
+# file.remove(temp_file)
+
+infercnv_obj = infercnv::run(
+    infercnv_obj,
+    cutoff=0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+    out_dir=full.path("11_CNV/Basal"), 
+    cluster_by_groups=TRUE, 
+    denoise=TRUE,
+    HMM=TRUE
+)
+```
+
+
+### Cilia
+```{r cilia_infer, eval=FALSE, include=FALSE}
+temp_meta = meta[
+    meta$Disease %in% c("LUAD", "LUAD_Normal", "LUSC", "LUSC_Normal") & meta$cell_short == "Cilia", ]
+cells = rownames(meta)
+
+temp_file = full.path("anno_Cilia")
+
+temp = temp_meta[, c("Cells", "Disease")]
+for (i in 1:ncol(temp)) {
+    temp[, i] <- as.character(temp[, i])
+}
+
+write.table(temp, temp_file, row.names = F, col.names = F, sep="\t", quote = F)
+
+infercnv_obj = CreateInfercnvObject(
+    raw_counts_matrix=expr[, cells],
+    gene_order_file=full.path("12_final_plots/gene_pos.txt"),
+    annotations_file=temp_file,
+    delim="\t",
+    ref_group_names=c("LUAD_Normal", "LUSC_Normal")
+)
+
+out_dir = full.path("11_CNV/Cilia")
+
+dir.create(out_dir, showWarnings = F, recursive = T)
+
+infercnv_obj = infercnv::run(
+    infercnv_obj,
+    cutoff=0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+    out_dir=out_dir, 
+    cluster_by_groups=TRUE, 
+    denoise=TRUE,
+    HMM=TRUE
+)
+```
+
+
+
+### NE
+```{r cilia_infer, eval=FALSE, include=FALSE}
+temp_meta = meta[
+    meta$Disease %in% c("LUAD", "LUAD_Normal", "LUSC", "LUSC_Normal") & meta$cell_short == "NE", ]
+cells = rownames(meta)
+
+temp_file = full.path("anno_NE")
+
+temp = temp_meta[, c("Cells", "Disease")]
+for (i in 1:ncol(temp)) {
+    temp[, i] <- as.character(temp[, i])
+}
+
+write.table(temp, temp_file, row.names = F, col.names = F, sep="\t", quote = F)
+
+infercnv_obj = CreateInfercnvObject(
+    raw_counts_matrix=expr[, cells],
+    gene_order_file=full.path("12_final_plots/gene_pos.txt"),
+    annotations_file=temp_file,
+    delim="\t",
+    ref_group_names=c("LUAD_Normal", "LUSC_Normal")
+)
+
+out_dir = full.path("11_CNV/NE")
+
+dir.create(out_dir, showWarnings = F, recursive = T)
+
+infercnv_obj = infercnv::run(
+    infercnv_obj,
+    cutoff=0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+    out_dir=out_dir, 
+    cluster_by_groups=TRUE, 
+    denoise=TRUE,
+    HMM=TRUE
+)
+```
+
+## Compare Non-immune cells of LUAD and LUSC
+
+```{r sc_ad, eval=FALSE, include=FALSE}
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta <- readRDS(full.path("02_rds/meta.rds"))
+
+
+make_infercnv <- function(expr, meta, control="LUAD_Normal", treat="LUAD") {
+    meta = meta[meta$Disease %in% c(control, treat) & !meta$cell_short %in% immu, ]
+    cells = rownames(meta)
+    
+    temp_file = paste("anno", treat, sep = "_")
+    
+    temp = meta[, c("Cells", "Disease")]
+    for (i in 1:ncol(temp)) {
+        temp[, i] <- as.character(temp[, i])
+    }
+    
+    write.table(temp, temp_file, row.names = F, col.names = F, sep="\t", quote = F)
+    
+    infercnv_obj = CreateInfercnvObject(
+        raw_counts_matrix=expr[, cells],
+        gene_order_file=full.path("12_final_plots/gene_pos.txt"),
+        annotations_file=temp_file,
+        delim="\t",
+        ref_group_names=c(control)
+    )
+    
+    out_dir = full.path("11_CNV/", treat)
+
+    dir.create(out_dir, showWarnings = F, recursive = T)
+    
+    infercnv_obj = infercnv::run(
+        infercnv_obj,
+        cutoff=0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+        out_dir=out_dir, 
+        cluster_by_groups=TRUE, 
+        denoise=TRUE,
+        HMM=TRUE
+    )
+}
+
+make_infercnv(expr, meta, control="LUAD_Normal", treat="LUAD")
+make_infercnv(expr, meta, control="LUSC_Normal", treat="LUSC")
+```
+
+
+### Calculate by cells
+```{R}
+registerDoMC(3)
+foreach (cell = unique(meta$cell_short)) %dopar% {
+  
+    if (file.exists(paste(cell, "run.final.infercnv_obj", sep = "/"))) {
+      return(NA)
+    }
+    
+    temp_meta = meta[meta$cell_short == cell, ]
+    temp_disease = as.character(unique(temp_meta$Disease))
+    cells = rownames(temp_meta)
+    
+    temp_file = paste("anno", cell, sep = "_")
+    
+    temp = temp_meta[, c("Cells", "Disease")]
+    for (i in 1:ncol(temp)) {
+        temp[, i] <- as.character(temp[, i])
+    }
+    
+    write.table(temp, temp_file, row.names = F, col.names = F, sep="\t", quote = F)
+    
+    infercnv_obj = CreateInfercnvObject(
+        raw_counts_matrix=expr[, cells],
+        gene_order_file=full.path("12_final_plots/gene_pos.txt"),
+        annotations_file=temp_file,
+        delim="\t",
+        ref_group_names=temp_disease[str_detect(temp_disease, "_Normal")]
+    )
+    
+    # out_dir = full.path("11_CNV/", cell)
+    out_dir = paste(getwd(), cell, sep = "/")
+    
+    dir.create(out_dir, showWarnings = F, recursive = T)
+    
+    infercnv_obj = infercnv::run(
+        infercnv_obj,
+        cutoff=0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+        out_dir=out_dir, 
+        cluster_by_groups=TRUE, 
+        denoise=TRUE,
+        HMM=TRUE
+    )
+}
+```
+
+
+```{r}
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta <- readRDS(full.path("02_rds/meta.rds"))
+
+set.seed(42)
+cell = "Basal"
+temp_meta <- meta[meta$cell_short == cell & meta$Disease %in% c("LUAD", "LUSC"), ]
+temp_meta$Disease[str_detect(temp_meta$Disease, "Normal")] = "Normal"
+temp_disease = as.character(unique(temp_meta$Disease))
+cells = rownames(temp_meta)
+
+temp_file = paste("anno", cell, sep = "_")
+
+temp = temp_meta[, c("Cells", "Disease")]
+for (i in 1:ncol(temp)) {
+    temp[, i] <- as.character(temp[, i])
+}
+
+write.table(temp, temp_file, row.names = F, col.names = F, sep="\t", quote = F)
+
+
+infercnv_obj = CreateInfercnvObject(
+    raw_counts_matrix=expr[, unique(cells)],
+    gene_order_file=full.path("12_final_plots/gene_pos.txt"),
+    annotations_file=temp_file,
+    delim="\t",
+    ref_group_names=NULL
+)
+
+rm(expr)
+gc()
+# out_dir = full.path("11_CNV/", cell)
+out_dir = paste(getwd(), cell, sep = "/")
+
+dir.create(out_dir, showWarnings = F, recursive = T)
+
+infercnv_obj = infercnv::run(
+    infercnv_obj,
+    cutoff=0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+    out_dir=out_dir, 
+    cluster_by_groups=TRUE, 
+    denoise=TRUE,
+    HMM=TRUE,
+    no_plot = F
+)
+```
+
+
+## Analyses & Plotting
+
+```{r plot}
+read_infercnv_obj <- function(path, filter=FALSE, zscore=TRUE) {
+    sample = basename(dirname(path))
+    sample = str_split(sample, "_")[[1]]
+    
+    if (length(sample) == 2) {
+        cell_name = sample[1]
+    } else {
+        cell_name = paste(sample[1], sample[2])
+    }
+    
+    sample = sample[length(sample)]
+    
+    infercnv_obj <- readRDS(path)
+    
+    gene_order <- as.data.frame(infercnv_obj@gene_order)
+    gene_order$cell = cell_name
+    
+    if(zscore) {
+        expr <- apply(infercnv_obj@expr.data, 2, function(y) (y - mean(y)) / sd(y) ^ as.logical(sd(y)))
+    } else {
+        expr = infercnv_obj@expr.data
+    }
+    
+    if (filter) {
+        expr <- expr[apply(expr, 1, function(row) {
+            sum(row > 3) > (length(row) / 10)
+        }), ]
+        
+    }
+    
+    row_orders <- intersect(rownames(expr), rownames(gene_order))
+    cbind(expr[row_orders, ], gene_order[row_orders, ])
+}
+
+
+
+make_infercnv_heatmap <- function(path, cell, gene_mark, cluster_columns = F, cluster_rows = T) {
+    temp_data <- read_infercnv_obj(path, filter = F, zscore = T)
+    temp_data <- temp_data[, !colnames(temp_data) %in% c("chr", "start", "stop", "cell")]
+    
+    
+    temp_meta <- meta[colnames(temp_data), ]
+    temp_meta <- temp_meta[order(temp_meta$Disease, temp_meta$Stage), ]
+    temp_meta$Disease[temp_meta$Disease == 'LUAD_Normal'] <- "Normal (LUAD)"
+    temp_meta$Disease[temp_meta$Disease == 'LUSC_Normal'] <- "Normal (LUSC)"
+    
+    temp_cells <- rownames(temp_meta) # [temp_meta$cell_short == cell]
+    
+    la <- rowAnnotation(
+        Cell = temp_meta[as.character(temp_cells), "cell_short"],
+        Disease = temp_meta[as.character(temp_cells), "Disease"],
+        Stage = temp_meta[as.character(temp_cells), "Stage"],
+        col = list(
+            Cell = cell_color,
+            Disease = disease_colors,
+            Stage = stage_color
+        )
+    )
+    
+    temp_pos = data.frame(
+        gene = rownames(temp_data),
+        chrom = gene_pos[rownames(temp_data), "V1"]
+    )
+    
+    temp_pos <- temp_pos[order(temp_pos$chrom), ]
+    
+    pos_level = as.character(c(1:22, "X", "Y"))
+    all_temp_chrom = sort(unique(temp_pos$chrom))
+    pos_level <- c(pos_level, all_temp_chrom[!all_temp_chrom %in% pos_level])
+    
+    temp_pos$chrom <- factor(temp_pos$chrom, levels = pos_level)
+    temp_pos <- temp_pos[order(temp_pos$chrom), ]
+    
+    Heatmap(
+        t(as.matrix(temp_data[temp_pos$gene, as.character(temp_cells)])),
+        name = "Infercnv",
+        col = colorRamp2(c(-1.15, -0.5, 0, 0.5, 1.15), c("blue", "white", "white", "white", "red")),
+        show_row_names = F,
+        # left_annotation = la,
+        row_title_rot = 0,
+        border = T,
+        show_column_names = F,
+        column_names_rot = 90,
+        # bottom_annotation = ba,
+        cluster_columns = cluster_columns,
+        cluster_rows = cluster_rows,
+        column_split = as.character(temp_pos$chrom),
+        column_title_rot = 90
+    )
+}
+```
+
+
+```{r load_atii}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V6))
+```
+
+
+```{r pca_relate}
+plot_sd_of_pca <- function(pca) {
+    data = data.frame(
+        x=1:ncol(pca$x),
+        y=apply(pca$x, 2, sd)
+    )
+    
+    ggplot(data, aes(x=x, y=y)) + geom_point()
+}
+
+
+make_umap <- function(x, meta, dot.size = 2, do.return = F) {
+    data = as.data.frame(x$layout[, 1:2])
+    
+    meta$Disease <- sapply(meta$Disease, function(x) {
+        disease = c(
+            "LUAD"="AD",
+            "LUSC"="SC",
+            "LUAD_Normal"="NL(AD)",
+            "LUSC_Normal"="NL(SC)",
+            "LULC"="LC",
+            "LULC_Normal"="NL(LC)",
+            "Pleiomorphic"="UPS",
+            "Pleiomorphic Normal"="NL(UPS)"
+        )
+        
+        as.character(disease[x])
+    })
+    
+    colnames(data) <- c("UMAP1", "UMAP2")
+
+    data$Disease <- meta[rownames(data), "Disease"]
+    data$Stage <- meta[rownames(data), "Stage"]
+    data$Source <- meta[rownames(data), "Source"]
+
+    p1 <- ggplot(data, aes(x = UMAP1, y = UMAP2, color  = Disease)) +
+        geom_point(size = dot.size) +
+        theme_bw() +
+        my_theme + 
+        theme(legend.position = "bottom") +
+        labs(color = "") +
+        scale_color_manual(values = Disease) +
+        guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    
+    p2 <- ggplot(data, aes(x = UMAP1, y = UMAP2, color  = Stage)) +
+        geom_point(size = dot.size) +
+        theme_bw() +
+        my_theme + 
+        theme(legend.position = "bottom") +
+        labs(color = "") +
+        scale_color_manual(values = Stage) +
+        guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    
+    if(do.return) {
+        return (list(p1, p2))
+    }
+    
+    return (cowplot::plot_grid(p1, p2, ncol = 2))
+}
+
+
+make_tsne <- function(x, meta, dot.size=2, show_source=T, do.return = F) {
+    data = as.data.frame(x)
+    
+    meta$Disease <- sapply(meta$Disease, function(x) {
+        disease = c(
+            "LUAD"="AD",
+            "LUSC"="SC",
+            "LUAD_Normal"="NL(AD)",
+            "LUSC_Normal"="NL(SC)",
+            "LULC"="LC",
+            "LULC_Normal"="NL(LC)",
+            "Pleiomorphic"="UPS",
+            "Pleiomorphic Normal"="NL(UPS)"
+        )
+        
+        as.character(disease[x])
+    })
+    
+    colnames(data) <- c("tSNE_1", "tSNE_2")
+
+    data$Disease <- meta[rownames(data), "Disease"]
+    data$Stage <- meta[rownames(data), "Stage"]
+    data$Source <- meta[rownames(data), "Source"]
+    
+    plist = list()
+
+    plist[[1]] <- ggplot(data, aes(x = tSNE_1, y = tSNE_2, color  = Disease)) +
+        geom_point(size = dot.size) +
+        theme_bw() +
+        my_theme + 
+        theme(legend.position = "bottom") +
+        labs(color = "") +
+        scale_color_manual(values = Disease) +
+        guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    
+    plist[[2]] <- ggplot(data, aes(x = tSNE_1, y = tSNE_2, color  = Stage)) +
+        geom_point(size = dot.size) +
+        theme_bw() +
+        my_theme + 
+        theme(legend.position = "bottom") +
+        labs(color = "") +
+        scale_color_manual(values = Stage) +
+        guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    
+    if (show_source) {
+        data$Group <- as.character(meta[rownames(data), "Group"])
+          plist[[3]] = ggplot(data, aes(x = tSNE_1, y = tSNE_2, color  = Group)) +
+            geom_point(size = dot.size) +
+            theme_bw() +
+            my_theme + 
+            theme(legend.position = "bottom") +
+            labs(color = "") +
+            guides(color = guide_legend(override.aes = list(size = 4), ncol=2))
+    }
+    
+    if(do.return) {
+        return (plist)
+    }
+    
+    return (cowplot::plot_grid(plotlist = plist, ncol = length(plist)))
+    
+}
+
+```
+
+
+
+#### PCA
+```{R atii_pca, fig.height=6, fig.width=8}
+temp_data <- temp_data[order(apply(temp_data, 1, sd), decreasing = T), ]
+
+res.pca = prcomp(t(temp_data[1:500, ]))
+
+autoplot(
+    res.pca, 
+    data = meta[colnames(temp_data), ], 
+    colour = "Disease", 
+    frame = F, 
+    frame.type = 'norm',
+    size = 0.2, alpha = .5
+)
+autoplot(
+    res.pca, 
+    data = meta[colnames(temp_data), ], 
+    colour = "Stage", 
+    frame = F, frame.type = 'norm',
+    size=0.2, alpha = .5
+)
+
+plot_sd_of_pca(res.pca)
+```
+
+#### UMAP
+```{r atii_umap, fig.height=6, fig.width=12}
+n.pcs = 75
+res.umap <- umap(res.pca$x[, 1:n.pcs])
+p = make_umap(res.umap, meta, dot.size = 0.2)
+
+p
+```
+
+
+
+#### tSNE
+```{r atii_tsne}
+res.tsne <- Rtsne(res.pca$x[, 1:n.pcs], dims = 2, perplexity=min(30, n.pcs - 1), verbose=F,  max_iter = 500, check_duplicates = F)
+res.tsne = as.data.frame(res.tsne$Y)
+rownames(res.tsne) <- rownames(res.pca$x)
+
+```
+
+
+```{R}
+library(factoextra)
+fviz_nbclust(res.pca$x[, 1:75], kmeans, method = "wss") +
+    geom_vline(xintercept = 4, linetype = 2)+
+  labs(subtitle = "Elbow method")
+```
+
+### Cluster
+```{r}
+set.seed(42)
+# res.tree = hclust(dist(res.pca$x[, 1:50]), method = "ward.D")
+# res.tree = cutree(res.tree, k = 4)
+
+res.tree = kmeans(res.pca$x[, 1:75], 15)
+res.tree = res.tree$cluster
+
+# res.tree = kmeans()
+
+meta$Group = NA
+
+for (i in names(res.tree)) {
+    meta[i, "Group"] = res.tree[[i]]
+}
+
+
+p = make_tsne(res.tsne, meta, dot.size = 0.2, show_source = T)
+p
+```
+
+
+```{r fig.height=10, fig.width=20}
+temp_cells <- temp_cells[order(meta[temp_cells, "Group"])]
+
+group_color = as.character(wes_palette("Zissou1", 15, type = "continuous"))
+names(group_color) <- as.character(1:15)
+
+la <- rowAnnotation(
+    Disease = temp_meta[as.character(temp_cells), "Disease"],
+    Stage = temp_meta[as.character(temp_cells), "Stage"],
+    # Group = meta[as.character(temp_cells), "Group"],
+    col = list(
+        Disease = disease_colors,
+        Stage = stage_color
+        # Group = group_color
+    )
+)
+
+
+# order = fastcluster::hclust(dist(temp_data))
+
+
+Heatmap(
+    t(as.matrix(temp_data[temp_pos$gene, as.character(temp_cells)])),
+    col = colorRamp2(c(-1.15, 0,1.15), c("#000074", "white", "#760002")),
+    name = "Infercnv",
+    show_row_names = F,
+    left_annotation = la,
+    row_title_rot = 0,
+    border = T,
+    show_column_names = F,
+    column_names_rot = 90,
+    # bottom_annotation = ba,
+    cluster_columns = F,
+    cluster_rows = F,
+    row_split = as.character(meta[temp_cells, "Group"]),
+    column_split = as.character(temp_pos$chrom),
+    column_title_rot = 90
+)
+```
+
+
+
+## Cilia
+```{r cilia}
+temp_data <- read_infercnv_obj(full.path("11_CNV/Cilia/run.final.infercnv_obj"), filter = F, zscore = T)
+temp_data <- temp_data[, !colnames(temp_data) %in% c("chr", "start", "stop", "cell")]
+```
+
+
+```{r heatmap, eval=FALSE, include=FALSE}
+temp_meta <- meta[colnames(temp_data), ]
+temp_meta <- temp_meta[order(temp_meta$Disease, temp_meta$Stage), ]
+temp_meta$Disease[temp_meta$Disease == 'LUAD_Normal'] <- "Normal (LUAD)"
+temp_meta$Disease[temp_meta$Disease == 'LUSC_Normal'] <- "Normal (LUSC)"
+
+# temp_meta <- temp_meta[temp_meta$Disease %in% c("LUAD", "LUSC"), ]
+
+temp_cells <- rownames(temp_meta)[temp_meta$cell_short == "Cilia"]
+
+la <- rowAnnotation(
+    Disease = temp_meta[as.character(temp_cells), "Disease"],
+    Stage = temp_meta[as.character(temp_cells), "Stage"],
+    col = list(
+        Disease = disease_colors,
+        Stage = stage_color
+    )
+)
+
+temp_pos = data.frame(
+    gene = rownames(temp_data),
+    chrom = gene_pos[rownames(temp_data), "V1"]
+)
+
+temp_pos <- temp_pos[order(temp_pos$chrom), ]
+
+pos_level = as.character(c(1:22, "X", "Y"))
+all_temp_chrom = sort(unique(temp_pos$chrom))
+pos_level <- c(pos_level, all_temp_chrom[!all_temp_chrom %in% pos_level])
+
+temp_pos$chrom <- factor(temp_pos$chrom, levels = pos_level)
+temp_pos <- temp_pos[order(temp_pos$chrom), ]
+temp_pos <- temp_pos[!is.na(temp_pos$chrom), ]
+
+
+h <- Heatmap(
+    t(as.matrix(temp_data[temp_pos$gene, as.character(temp_cells)])),
+    col = colorRamp2(c(-1.15, -0.5 , 0, 0.5, 1.15), c("#000074", "white", "white", "white", "#760002")),
+    name = "Infercnv",
+    show_row_names = F,
+    left_annotation = la,
+    row_title_rot = 0,
+    border = T,
+    show_column_names = F,
+    column_names_rot = 90,
+    # bottom_annotation = ba,
+    cluster_columns = F,
+    cluster_rows = T,
+    row_split = as.character(temp_meta[temp_cells, "Disease"]),
+    column_split = as.character(temp_pos$chrom),
+    column_title_rot = 90
+)
+
+draw(h)
+
+pdf(full.path("11_CNV/Cilia/heatmap.pdf"), width = 20, height = 10)
+draw(h)
+dev.off()
+```
+
+
+
+```{R atii_pca, fig.height=6, fig.width=8}
+temp_data <- temp_data[order(apply(temp_data, 1, sd), decreasing = T), ]
+
+res.pca = prcomp(t(temp_data[1:500, ]))
+
+autoplot(
+    res.pca, 
+    data = meta[colnames(temp_data), ], 
+    colour = "Disease", 
+    frame = F, 
+    frame.type = 'norm',
+    size = 0.2, alpha = .5
+)
+autoplot(
+    res.pca, 
+    data = meta[colnames(temp_data), ], 
+    colour = "Stage", 
+    frame = F, frame.type = 'norm',
+    size=0.2, alpha = .5
+)
+
+plot_sd_of_pca(res.pca)
+```
+
+#### UMAP
+```{r atii_umap, fig.height=6, fig.width=12}
+n.pcs = 50
+res.umap <- umap(res.pca$x[, 1:n.pcs])
+p = make_umap(res.umap, meta, dot.size = 0.2)
+
+p
+```
+
+
+
+#### tSNE
+```{r atii_tsne}
+res.tsne <- Rtsne(res.pca$x[, 1:n.pcs], dims = 2, perplexity=min(30, n.pcs - 1), verbose=F,  max_iter = 500, check_duplicates = F)
+res.tsne = as.data.frame(res.tsne$Y)
+rownames(res.tsne) <- rownames(res.pca$x)
+p = make_tsne(res.tsne, meta, dot.size = 0.2)
+p
+```
+
+
+## Test on kmeans
+```{R}
+tic()
+tree = kmeans(t(temp_data), centers = 5)
+toc()
+```
+
+
+### Test on heatmap
+
+
+## Test on heatmap
+```{r}
+make_pc_plot <- function(obj, n.pcs = 50) {
+  data = data.frame(
+    x = as.numeric(str_replace_all(colnames(obj@dr$pca@cell.embeddings), "PC", "")),
+    y = apply(obj@dr$pca@cell.embeddings, 2, sd)
+  )
+  
+  ggplot(data[1:n.pcs, ], aes(x=x, y=y)) +
+    geom_point() +
+    theme(axis.text.x = element_text(angle = 90))
+}
+
+
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+
+convert_to_seurat <- function(data) {
+    obj <- CreateSeuratObject(
+        data,
+        meta.data = meta[colnames(data), c("SampleID", "PatientID", "Stage", "Disease")]
+    )
+    gc()
+    
+    pcs = min(100, min(nrow(obj@raw.data), ncol(obj@raw.data)) - 1)
+        
+    obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+    obj <- FindVariableGenes(
+      object = obj, mean.function = ExpMean, 
+      dispersion.function = LogVMR, x.low.cutoff = 0.0125, 
+      x.high.cutoff = 3, y.cutoff = 0.5
+    )
+    
+    obj <- ScaleData(object = obj, vars.to.regress = c("nUMI"))
+    obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = pcs)
+    
+    print(make_pc_plot(obj))
+    return(obj)
+}
+
+perform_cluster <- function(obj, n.pcs = 10, pcs=100) {
+  
+  pcs = min(pcs, ncol(obj@dr$pca@cell.embeddings))
+  
+  obj <- RunUMAP(
+      object = obj, 
+      dims.use = 1:n.pcs, 
+      do.fast = TRUE, 
+      reduction.use = "pca",
+      n_neighbors = min(30, pcs)
+  )
+  obj <- FindClusters(
+    object = obj, reduction.type = "pca", 
+    dims.use = 1:10, 
+    resolution = c(0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), 
+    print.output = 0, save.SNN = FALSE, force.recalc = TRUE
+  )
+  return(obj)
+}
+
+
+make_heatmap_by_cells <- function(
+  obj, 
+  cells, 
+  col_order, 
+  cluster_rows = T,
+  cluster_columns = F,
+  row_split = NULL,
+  row_order = NULL,
+  return_mtx = F,
+  show_patient = T
+) {
+    temp_meta <- obj@meta.data[cells, ]
+    # temp_meta <- temp_meta[order(temp_meta$Disease, temp_meta$Stage), ]
+    temp_meta$Disease[temp_meta$Disease == 'LUAD_Normal'] <- "Normal (LUAD)"
+    temp_meta$Disease[temp_meta$Disease == 'LUSC_Normal'] <- "Normal (LUSC)"
+    
+    patient_color = gg_color_hue(length(unique(temp_meta$PatientID)))
+    names(patient_color) = unique(temp_meta$PatientID)
+    
+    if (show_patient) {
+        la <- rowAnnotation(
+            Disease = temp_meta[cells, "Disease"],
+            PatientID = temp_meta[cells, "PatientID"],
+            Stage = temp_meta[cells, "Stage"],
+            col = list(Disease = disease_colors, Stage = stage_color, PatientID = patient_color),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    } else {
+          la <- rowAnnotation(
+            Disease = temp_meta[cells, "Disease"],
+            Stage = temp_meta[cells, "Stage"],
+            col = list(Disease = disease_colors, Stage = stage_color),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+
+    if (!is.null(row_order)) {
+        row_order = row_order[intersect(rownames(row_order), rownames(temp_meta)), ]
+        temp_mtx = t(as.matrix(obj@raw.data[col_orders$order, rownames(temp_meta)]))
+        
+        row_split = row_order[cells, "Clt"]
+        # cluster_rows = F
+    } else {
+        temp_mtx = t(as.matrix(obj@raw.data[col_orders$order, rownames(temp_meta)]))
+    }
+    
+    temp_mtx = apply(temp_mtx, 2, function(y) { (y - mean(y)) / sd(y) ^ as.logical(sd(y)) } )
+    
+    if (return_mtx) {
+        return(temp_mtx)
+    }
+    
+    Heatmap(
+        temp_mtx,
+        name = "Infercnv",
+        col = colorRamp2(
+            c(-1.15, -0.5 , 0, 0.5, 1.15), 
+            c("#000074", "white", "white", "white", "#760002")
+        ),
+        show_row_names = F,
+        left_annotation = la,
+        row_title_rot = 0,
+        border = T,
+        show_column_names = F,
+        column_names_rot = 90,
+        # bottom_annotation = ba,
+        cluster_columns = cluster_columns,
+        cluster_rows = cluster_rows,
+        column_split = col_orders$chrom,
+        column_title_rot = 90,
+        row_split = row_split,
+        cluster_row_slices = F,
+        cluster_column_slices = F,
+        use_raster =  T,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontsize = 0, fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        ),
+    )
+}
+
+
+make_infercnv_heatmap_by_cluster <- function(
+  obj, group.by, 
+  cells = NULL,
+  cluster_rows = F,
+  cluster_columns = F
+) {
+    library(ComplexHeatmap)
+    library(circlize)
+  
+    temp_meta <- obj@meta.data
+    temp_meta <- temp_meta[order(temp_meta[, group.by]), ]
+    temp_meta <- temp_meta[order(temp_meta$Disease, temp_meta$Stage), ]
+    temp_meta$Disease[temp_meta$Disease == 'LUAD_Normal'] <- "Normal (LUAD)"
+    temp_meta$Disease[temp_meta$Disease == 'LUSC_Normal'] <- "Normal (LUSC)"
+    
+    temp_cells <- rownames(temp_meta)
+    
+    if (!is.null(cells)) {
+        temp_cells = intersect(temp_cells, cells)
+    }
+    
+    patient_color = gg_color_hue(length(unique(temp_meta$PatientID)))
+    names(patient_color) = unique(temp_meta$PatientID)
+    
+    la <- rowAnnotation(
+        # Cell = temp_meta[as.character(temp_cells), "cell_short"],
+        Disease = temp_meta[as.character(temp_cells), "Disease"],
+        PatientID = temp_meta[as.character(temp_cells), "PatientID"],
+        Stage = temp_meta[as.character(temp_cells), "Stage"],
+        col = list(
+            # Cell = cell_color,
+            Disease = disease_colors,
+            Stage = stage_color,
+            PatientID = patient_color
+        ),
+        annotation_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    )
+    
+    temp_pos = data.frame(
+        gene = rownames(obj@raw.data),
+        chrom = gene_pos[rownames(obj@raw.data), "V1"]
+    )
+    
+    temp_pos <- temp_pos[order(temp_pos$chrom), ]
+    
+    pos_level = as.character(c(1:22, "X", "Y"))
+    temp_pos$chrom <- factor(temp_pos$chrom, levels = pos_level)
+    temp_pos <- na.omit(temp_pos)
+    temp_pos <- temp_pos[order(temp_pos$chrom), ]
+    
+    temp_mtx = t(as.matrix(obj@raw.data[temp_pos$gene, as.character(temp_cells)]))
+    
+    Heatmap(
+        apply(temp_mtx, 2, function(y) { (y - mean(y)) / sd(y) ^ as.logical(sd(y)) } ),
+        name = "Infercnv",
+        col = colorRamp2(
+          c(-1.15, -0.5 , 0, 0.5, 1.15), 
+          c("#000074", "white", "white", "white", "#760002")
+        ),
+        show_row_names = F,
+        left_annotation = la,
+        row_title_rot = 0,
+        border = T,
+        show_column_names = F,
+        column_names_rot = 90,
+        cluster_columns = cluster_columns,
+        cluster_rows = cluster_rows,
+        column_split = temp_pos$chrom,
+        column_title_rot = 90,
+        row_split = temp_meta[temp_cells, group.by],
+        use_raster =  T,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontsize = 0, fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        ),
+    )
+}
+
+```
+
+### ATII
+
+```{r}
+temp_data <- read_infercnv_obj(full.path("11_CNV/each_cells/ATII/run.final.infercnv_obj"), filter = F, zscore = F)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+  temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)") & meta$Malignant]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/ATII/seurat_M.rds"))
+```
+
+
+```{r}
+obj <- readRDS(full.path("11_CNV/each_cells/ATII/seurat.rds"))
+```
+
+
+```{r fig.height=4, fig.width=5}
+for (i in c(0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) {
+  p <- DimPlot(
+    obj, reduction.use = "umap", 
+    group.by = paste0("res.", i), 
+    do.return = T, pt.size = 0.1
+  )
+  p = p + labs(title = paste0("res.", i))
+  print(p)
+}
+```
+
+
+```{r fig.height=4, fig.width=5}
+p <- DimPlot(
+  obj, reduction.use = "umap", 
+  group.by = "Disease", 
+  do.return = T, pt.size = 0.1
+)
+print(p)
+```
+
+
+
+```{r fig.height=8, fig.width=12}
+h1 <- make_infercnv_heatmap_by_cluster(
+  obj, 
+  group.by = "res.0.1", 
+  cluster_rows = F, 
+  cluster_columns = F
+)
+
+# pdf(full.path("11_CNV/each_cells/ATII/heatmap_by_clusters_res01.pdf"), width = 12, height = 8)
+draw(h1)
+# dev.off()
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),  # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+
+```{r}
+saveRDS(row_orders, full.path("11_CNV/each_cells/NE/tree.rds"))
+```
+
+
+```{r fig.height=8, fig.width=12}
+row_orders = readRDS(full.path("11_CNV/each_cells/NE/tree.rds"))
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row_orders$Cell,
+  col_order,
+  row_order = row_orders,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+### Epi
+
+```{r}
+temp_data <- read_infercnv_obj(
+  full.path("11_CNV/each_cells/Epi/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 5
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Epi/seurat.rds"))
+```
+
+
+```{r fig.height=4, fig.width=5}
+for (i in c(0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) {
+  p <- DimPlot(
+    obj, reduction.use = "umap", 
+    group.by = paste0("res.", i), 
+    do.return = T, pt.size = 0.1
+  )
+  p <- p + labs(title = i)
+  print(p)
+}
+```
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),  # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/Epi/tree.rds"))
+```
+
+
+
+### NE
+
+```{r}
+temp_data <- read_infercnv_obj(
+  full.path("11_CNV/each_cells/NE/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+  temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 5
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/NE/seurat.rds"))
+```
+
+
+```{r fig.height=4, fig.width=5}
+for (i in c(0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) {
+  p <- DimPlot(
+    obj, reduction.use = "umap", 
+    group.by = paste0("res.", i), 
+    do.return = T, pt.size = 0.1
+  )
+  p <- p + labs(title = paste0("res.", i))
+  print(p)
+}
+```
+
+
+
+```{r fig.height=4, fig.width=5}
+DimPlot(obj, reduction.use = "umap", group.by = "Disease", do.return = T, pt.size = 0.1)
+```
+
+
+```{r fig.height=8, fig.width=12}
+h1 <- make_infercnv_heatmap_by_cluster(
+  obj, 
+  group.by = "res.0.1", 
+  cluster_rows = T, 
+  cluster_columns = T
+)
+
+pdf(full.path("11_CNV/each_cells/NE/heatmap_by_clusters_res01.pdf"), width = 12, height = 8)
+draw(h1)
+dev.off()
+```
+
+
+
+```{r}
+co = column_order(h1)
+ro = row_order(h1)
+
+saveRDS(list("co"=co, "ro"=ro), full.path("11_CNV/each_cells/NE/orders.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+Further split 2
+```{R fig.height=8, fig.width=12}
+mtx = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 2],
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree1 = kmeans(mtx, 4)
+temp_tree1 = as.data.frame(temp_tree1$cluster)
+colnames(temp_tree1) <- "Clt"
+temp_tree1$Cell = rownames(temp_tree1)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 2],
+  col_order,
+  row_order = temp_tree1,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+
+```{r}
+temp_tree[temp_tree1$Cell, "Clt"] = paste0("2.", temp_tree1$Clt)
+
+saveRDS(temp_tree, full.path("11_CNV/each_cells/NE/tree.rds"))
+```
+
+
+```{r fig.height=8, fig.width=12}
+
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row_orders$Cell,
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+
+### Fib
+
+```{r}
+temp_data <- read_infercnv_obj(
+  full.path("11_CNV/each_cells/Fib/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+  temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+p <- make_pc_plot(obj)
+ggsave(
+  filename = full.path("11_CNV/each_cells/Fib/pcs_plot.pdf"),
+  plot = p,
+  width = 6,
+  height = 4
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Fib/seurat.rds"))
+```
+
+
+```{r fig.height=4, fig.width=5}
+for (i in c(0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) {
+  p <- DimPlot(
+    obj, reduction.use = "umap", 
+    group.by = paste0("res.", i), 
+    do.return = T, pt.size = 0.1
+  )
+  p <- p + labs(title = paste0("res.", i))
+  
+  ggsave(
+    filename = full.path("11_CNV/each_cells/Fib/dimplots", paste0("res_", i, ".pdf")),
+    plot = p,
+    width = 6,
+    height = 4
+  )
+}
+```
+
+
+
+```{r fig.height=4, fig.width=5}
+ggsave(
+  filename = full.path("11_CNV/each_cells/Fib/dimplots/disease.pdf"),
+  plot = DimPlot(obj, reduction.use = "umap", group.by = "Disease", do.return = T, pt.size = 0.1),
+  width = 6,
+  height = 4
+)
+```
+
+
+```{r fig.height=8, fig.width=12}
+h <- make_infercnv_heatmap_by_cluster(
+  obj, 
+  group.by = "res.0.1", 
+  cluster_rows = T, 
+  cluster_columns = T
+)
+
+pdf(full.path("11_CNV/each_cells/Fib/heatmap_by_clusters.pdf"), width = 12, height = 8)
+draw(h)
+dev.off()
+```
+
+
+
+```{r}
+co = column_order(h)
+ro = row_order(h)
+
+saveRDS(list("co"=co, "ro"=ro), full.path("11_CNV/each_cells/Fib/orders.rds"))
+```
+
+
+Further justify
+```{r}
+orders = readRDS(full.path("11_CNV/each_cells/Fib/orders.rds"))
+co = orders[["co"]]
+
+col_orders = NULL
+for (i in c(1:22, "X", "Y")) {
+  
+    col_orders = rbind(
+        col_orders, 
+        data.frame(
+          chrom=rep(i, length(co[[as.character(i)]])),
+          order=co[[as.character(i)]]
+        )
+    )
+}
+```
+
+
+```{R fig.height=8, fig.width=12}
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data[obj@meta.data$res.0.1 == 0, ]),
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 8)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data[obj@meta.data$res.0.1 == 0, ]),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = T,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+
+```{r}
+ro = orders[["ro"]]
+row_orders = NULL
+for (i in names(ro)) {
+    row_orders = rbind(
+        row_orders, 
+        data.frame(
+          Clt=rep(i, length(ro[[i]])),
+          order=ro[[i]]
+        )
+    )
+}
+
+
+row_orders$Cell = rownames(h@matrix)[row_orders$order]
+rownames(row_orders) <- row_orders$Cell
+row_orders$Clt = as.character(row_orders$Clt)
+row_orders[temp_tree$Cell, "Clt"] <- paste0("0.", temp_tree$Clt)
+
+saveRDS(row_orders, full.path("11_CNV/each_cells/Fib/tree.rds"))
+
+```
+
+
+```{r fig.height=8, fig.width=12}
+h1 = make_heatmap_by_cells(
+  obj, 
+  row_orders$Cell,
+  col_order,
+  row_order = row_orders,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h1)
+```
+
+More 
+```{R fig.height=8, fig.width=12}
+mtx = make_heatmap_by_cells(
+  obj, 
+  row_orders$Cell[row_orders$Clt == 0.5],
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 8)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row_orders$Cell[row_orders$Clt == 0.5],
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = T,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+row_orders[temp_tree$Cell, "Clt"] <- paste0("0.5.", temp_tree$Clt)
+row_orders[row_orders$Clt %in% c("0.5.2", "0.5.4", "0.5.6", "0.5.8"), "Clt"] = "0.5.7"
+
+saveRDS(row_orders, full.path("11_CNV/each_cells/Fib/tree.rds"))
+```
+
+```{r fig.height=8, fig.width=12}
+
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+
+h1 = make_heatmap_by_cells(
+  obj, 
+  row_orders$Cell,
+  col_order,
+  row_order = row_orders,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h1)
+```
+
+
+### Basal
+
+```{r}
+temp_data <- read_infercnv_obj(
+  full.path("11_CNV/each_cells/Basal/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+  temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)") & meta$Malignant]]
+)
+
+p <- make_pc_plot(obj)
+ggsave(
+  filename = full.path("11_CNV/each_cells/Basal/pcs_plot.pdf"),
+  plot = p,
+  width = 6,
+  height = 4
+)
+
+n.pcs = 5
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Basal/seurat.rds"))
+obj <- readRDS(full.path("11_CNV/each_cells/Basal/seurat.rds"))
+```
+
+
+```{r fig.height=4, fig.width=5}
+for (i in c(0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) {
+  p <- DimPlot(
+    obj, reduction.use = "umap", 
+    group.by = paste0("res.", i), 
+    do.return = T, pt.size = 0.1
+  )
+  p <- p + labs(title = paste0("res.", i))
+  
+  print(p)
+  # ggsave(
+  #   filename = full.path("11_CNV/each_cells/Basal/dimplots", paste0("res_", i, ".pdf")),
+  #   plot = p,
+  #   width = 6,
+  #   height = 4
+  # )
+}
+```
+
+
+
+```{r fig.height=4, fig.width=5}
+ggsave(
+  filename = full.path("11_CNV/each_cells/Basal/dimplots/disease.pdf"),
+  plot = DimPlot(obj, reduction.use = "umap", group.by = "Disease", do.return = T, pt.size = 0.1),
+  width = 6,
+  height = 4
+)
+```
+
+
+```{r fig.height=8, fig.width=12}
+h <- make_infercnv_heatmap_by_cluster(
+  obj, 
+  group.by = "res.0.05", 
+  cluster_rows = T, 
+  cluster_columns = F
+)
+
+pdf(full.path("11_CNV/each_cells/Basal/heatmap_by_clusters.pdf"), width = 12, height = 8)
+draw(h)
+dev.off()
+```
+
+
+
+```{r}
+co = column_order(h)
+ro = row_order(h)
+
+saveRDS(list("co"=co, "ro"=ro), full.path("11_CNV/each_cells/Basal/orders.rds"))
+orders <- readRDS(full.path("11_CNV/each_cells/Basal/orders.rds"))
+```
+
+
+Further 
+```{R fig.height=8, fig.width=12}
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  return_mtx = T
+)
+
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:ncol(mtx)
+)
+
+col_orders = col_orders[order(col_orders$chrom, col_orders$start), ]
+
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 8)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+### Club
+
+
+```{r}
+temp_data <- read_infercnv_obj(
+  full.path("11_CNV/each_cells/Club/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)") & meta$Malignant]]
+)
+
+n.pcs = 5
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Club/seurat.rds"))
+```
+
+
+```{r fig.height=4, fig.width=5}
+for (i in c(0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) {
+  p <- DimPlot(
+    obj, reduction.use = "umap", 
+    group.by = paste0("res.", i), 
+    do.return = T, pt.size = 0.1
+  )
+  p <- p + labs(title = i)
+  print(p)
+}
+```
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),  # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 9)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/Club/tree.rds"))
+```
+
+
+
+
+### Cilia
+
+
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/Cilia/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 5
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Cilia/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),  # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/Cilia/tree.rds"))
+```
+
+
+
+### EC
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/EC/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 5
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/EC/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),  # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r fig.height=8, fig.width=12}
+mtx = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 8], 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree1 = kmeans(mtx, 4)
+temp_tree1 = as.data.frame(temp_tree1$cluster)
+colnames(temp_tree1) <- "Clt"
+temp_tree1$Cell = rownames(temp_tree1)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 8],
+  col_order,
+  row_order = temp_tree1,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+temp_tree[temp_tree1$Cell, "Clt"] <- paste0("8.", temp_tree1$Clt)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell,   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/EC/tree.rds"))
+```
+
+
+
+### B
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/B/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/B/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/B/tree.rds"))
+```
+
+
+
+### CD4
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/CD4/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 8
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/CD4/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r}
+mtx = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 5], 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree1 = kmeans(mtx, 4)
+temp_tree1 = as.data.frame(temp_tree1$cluster)
+colnames(temp_tree1) <- "Clt"
+temp_tree1$Cell = rownames(temp_tree1)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 5],
+  col_order,
+  row_order = temp_tree1,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r}
+temp_tree[temp_tree1$Cell, "Clt"] <- paste0("5.", temp_tree1$Clt)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell,   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/CD4/tree.rds"))
+```
+
+
+### CD8
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/CD8/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/CD8/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r fig.height=8, fig.width=12}
+mtx = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 9], 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree1 = kmeans(mtx, 4)
+temp_tree1 = as.data.frame(temp_tree1$cluster)
+colnames(temp_tree1) <- "Clt"
+temp_tree1$Cell = rownames(temp_tree1)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 9],
+  col_order,
+  row_order = temp_tree1,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r}
+temp_tree[temp_tree1$Cell, "Clt"] <- paste0("9.", temp_tree1$Clt)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell,   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/CD8/tree.rds"))
+```
+
+
+
+### Gran
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/Gran/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Gran/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/Gran/tree.rds"))
+```
+
+
+### Mo
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/Mo/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Mo/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r fig.height=8, fig.width=12}
+mtx = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 5], 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree1 = kmeans(mtx, 4)
+temp_tree1 = as.data.frame(temp_tree1$cluster)
+colnames(temp_tree1) <- "Clt"
+temp_tree1$Cell = rownames(temp_tree1)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 5],
+  col_order,
+  row_order = temp_tree1,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+temp_tree[temp_tree1$Cell[temp_tree1 == 1], "Clt"] <- "5.1"
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell,   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/Mo/tree.rds"))
+```
+
+
+
+### NK
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/NK/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/NK/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/NK/tree.rds"))
+```
+
+
+
+
+### Tregs
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/Tregs/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Tregs/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+
+```{r fig.height=8, fig.width=12}
+mtx = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 9], 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree1 = kmeans(mtx, 4)
+temp_tree1 = as.data.frame(temp_tree1$cluster)
+colnames(temp_tree1) <- "Clt"
+temp_tree1$Cell = rownames(temp_tree1)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell[temp_tree$Clt == 9],
+  col_order,
+  row_order = temp_tree1,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r}
+temp_tree[temp_tree1$Cell, "Clt"] <- paste0("9.", temp_tree1$Clt)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  temp_tree$Cell,   # [obj@meta.data$res.0.1 == 1, ]
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/Tregs/tree.rds"))
+```
+
+
+
+
+
+### DC
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/DC/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/DC/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 8)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/DC/tree.rds"))
+```
+
+
+
+
+### Mast
+```{r}
+temp_data <- read_infercnv_obj(
+    full.path("11_CNV/each_cells/Mast/run.final.infercnv_obj"), filter = F, zscore = F
+)
+```
+
+
+```{R}
+obj <- convert_to_seurat(
+     temp_data[, colnames(temp_data) %in% rownames(meta)[str_detect(meta$Disease, "LU(AD|SC)")]]
+)
+
+n.pcs = 10
+
+obj <- perform_cluster(obj, n.pcs)
+
+saveRDS(obj, full.path("11_CNV/each_cells/Mast/seurat.rds"))
+```
+
+
+
+```{R fig.height=8, fig.width=12}
+col_orders = data.frame(
+  chrom = gene_pos[rownames(obj@raw.data), "V1"],
+  start = gene_pos[rownames(obj@raw.data), "V2"],
+  order = 1:nrow(obj@raw.data)
+)
+
+
+col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+
+
+mtx = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data), 
+  col_order,
+  return_mtx = T
+)
+
+set.seed(42)
+
+temp_tree = kmeans(mtx, 10)
+temp_tree = as.data.frame(temp_tree$cluster)
+colnames(temp_tree) <- "Clt"
+temp_tree$Cell = rownames(temp_tree)
+
+
+h_ne = make_heatmap_by_cells(
+  obj, 
+  row.names(obj@meta.data),
+  col_order,
+  row_order = temp_tree,
+  cluster_rows = F,
+  show_patient = F
+)
+
+draw(h_ne)
+```
+
+```{r}
+saveRDS(temp_tree, full.path("11_CNV/each_cells/Mast/tree.rds"))
+```
+
+
+
+### Make heatmap of each cells
+
+```{r}
+files = list.files(
+    full.path("11_CNV/each_cells/"), 
+    pattern = "seurat.rds", 
+    full.names = T, recursive = T
+)
+
+for (i in files) {
+    cell = basename(dirname(i))
+    
+    if (cell == "each_cells") {
+        next
+    }
+    
+    print(cell)
+    tree_path = paste(dirname(i), "tree.rds", sep = "/")
+    
+    obj <- readRDS(i)
+        row_order = readRDS(tree_path)
+        
+        col_orders = data.frame(
+      chrom = gene_pos[rownames(obj@raw.data), "V1"],
+      start = gene_pos[rownames(obj@raw.data), "V2"],
+      order = 1:nrow(obj@raw.data)
+    )
+    
+    
+    col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+    col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+    
+    
+    h_ne = make_heatmap_by_cells(
+      obj, 
+      row.names(obj@meta.data),
+      col_order,
+      row_order = readRDS(tree_path),
+      cluster_rows = F,
+      show_patient = F
+    )
+    
+    png(full.path("11_CNV/heatmap", paste0(cell, ".png")), width = 12, height = 8, units = "in", res = 600)
+    draw(h_ne)
+    dev.off()
+    
+}
+```
+
+
+### By cells
+
+```{r}
+temp = obj@meta.data %>%
+  group_by(res.0.1, Disease) %>%
+  add_tally() %>%
+  dplyr::select(res.0.1, Disease, n) %>%
+  unique() %>%
+  group_by(res.0.1) %>%
+  mutate(p = n / sum(n)) %>%
+  as.data.frame()
+
+
+temp$lab = paste(round(temp$p, 2), temp$n, sep = "\n")
+
+ggplot(temp, aes(x=res.0.1, y=p, fill = Disease, label = lab)) +
+  geom_bar(stat = "identity") +
+  geom_text(size = 3, position = position_stack(vjust = 0.5))
+```
+
+
+```{r}
+common_genes = NULL
+for (i in names(mtx)) {
+  if (is.null(common_genes)) {
+    common_genes = rownames(mtx[[i]])
+  } else {
+    common_genes = intersect(common_genes, rownames(mtx[[i]]))
+  }
+}
+
+temp_mtx = NULL
+for (i in names(mtx)) {
+  if (is.null(temp_mtx)) {
+    temp_mtx = mtx[[i]][common_genes, ]
+  } else {
+    temp_mtx = cbind(temp_mtx, mtx[[i]][common_genes, colnames(mtx[[i]]) %in% rownames(meta)])
+  }
+}
+```
+
+
+```{r}
+obj <- CreateSeuratObject(
+    temp_mtx[, colnames(temp_mtx) %in% rownames(meta)],
+    meta.data = meta[colnames(temp_mtx), c("SampleID", "PatientID", "Stage", "Disease")]
+)
+
+rm(temp_mtx)
+gc()
+
+pcs = min(100, min(nrow(obj@raw.data), ncol(obj@raw.data)) - 1)
+    
+obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+obj <- FindVariableGenes(
+  object = obj, mean.function = ExpMean, 
+  dispersion.function = LogVMR, x.low.cutoff = 0.0125, 
+  x.high.cutoff = 3, y.cutoff = 0.5
+)
+
+obj <- ScaleData(object = obj, vars.to.regress = c("nUMI"))
+obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = pcs)
+```
+
+```{r}
+make_pc_plot(obj)
+```
+
+```{r}
+n.pcs = 8
+#### 5. tSNE and UMAP
+
+obj <- RunUMAP(
+    object = obj, 
+    dims.use = 1:n.pcs, 
+    do.fast = TRUE, 
+    reduction.use = "pca",
+    n_neighbors = min(30, pcs)
+)
+
+obj <- FindClusters(
+  object = obj, reduction.type = "pca", 
+  dims.use = 1:n.pcs, 
+  resolution = c(0.03, 0.05, 0.07, 0.1, 0.2, 0.3, 0.4, 0.5), 
+  print.output = 0, save.SNN = FALSE, force.recalc = TRUE
+)
+```
+
+
+
+# Re perform seurat after CNV
+
+## Load data
+```{r}
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta <- readRDS(full.path("02_rds/meta.rds"))
+```
+
+## ATII
+```{R}
+atii_tree <- readRDS(full.path("11_CNV/each_cells/ATII/tree.rds"))
+
+obj <- convert_to_seurat(expr[, atii_tree$Cell[atii_tree$Clt != 9 & str_detect(meta[atii_tree$Cell, "Disease"], "LUAD")]])
+
+obj <- perform_cluster(obj, n.pcs = 10)
+saveRDS(obj, full.path("11_CNV/each_cells/ATII/seurat_obj_LUAD.rds"))
+```
+
+
+## Basal
+```{R}
+basal_tree <- readRDS(full.path("11_CNV/each_cells/Basal/tree.rds"))
+
+obj <- convert_to_seurat(
+  expr[, basal_tree$Cell[basal_tree$Clt != 6 & str_detect(meta[basal_tree$Cell, "Disease"], "LUSC")]]
+)
+
+
+obj <- perform_cluster(obj, n.pcs = 10)
+saveRDS(obj, full.path("11_CNV/each_cells/Basal/seurat_obj_LUSC.rds"))
+```
+
+
+## Stat 
+```{r}
+
+non_maglinant <- c(
+  "ATII"="9", "B"="7", "Basal"="6", "Epi"="6",
+  "NE"="2.2", "Club"="4", "Cilia"="5", "EC"="8.1",
+  "Fib"="0.5.7", "CD4"="5.1", "CD8"="9.3", "DC"="6",
+  "Gran"="2", "Mo"="5", "NK"="4", "Tregs"="9.4", "Mast"="9"
+)
+
+
+meta <- readRDS(full.path("02_rds/meta.rds"))
+meta$Malignant = NA
+
+
+# atii_tree <- readRDS(full.path("11_CNV/each_cells/ATII/tree.rds"))
+# basal_tree <- readRDS(full.path("11_CNV/each_cells/Basal/tree.rds"))
+# ne_tree <- readRDS(full.path("11_CNV/each_cells/NE/tree.rds"))
+# fib_tree <- readRDS(full.path("11_CNV/each_cells/Fib/tree.rds"))
+```
+
+
+```{r}
+# meta[atii_tree$Cell, "Malignant"] = atii_tree$Clt != 9
+# meta[basal_tree$Cell, "Malignant"] = basal_tree$Clt != 6
+# meta[ne_tree$Cell, "Malignant"] = as.character(ne_tree$Clt) != "1.3"
+# meta[fib_tree$Cell, "Malignant"] = as.character(fib_tree$Clt) != "0.5.7"
+
+for (i in names(non_maglinant)) {
+    temp_tree = readRDS(full.path("11_CNV/each_cells/", i, "tree.rds"))
+    meta[as.character(temp_tree$Cell), "Malignant"] = as.character(temp_tree$Clt) != non_maglinant[[i]]
+    
+    
+    cls = unique(temp_tree$Clt)
+    cls = cls[cls != non_maglinant[[i]]]
+    lvs = as.numeric(factor(cls))
+    names(lvs) = cls
+    lvs = sort(lvs)
+    lvs[[non_maglinant[[i]]]] = "NM"
+    
+    meta[as.character(temp_tree$Cell), "Malignant_tree"] = sapply(as.character(temp_tree$Clt), function(x) {
+        lvs[[x]]
+    })
+}
+
+meta$Malignant_tree[!meta$Malignant] = "Non"
+meta$cell_short[meta$cell_short == "ATII"] = "AT2"
+meta$cell_short[meta$cell_short == "Mo"] = "Mφ"
+
+saveRDS(meta, full.path("11_CNV/meta.rds"))
+```
+
+#### Original numbers
+```{r}
+sheet1 = meta %>%
+  group_by(cell_short, Disease, Stage) %>%
+  add_tally() %>%
+  dplyr::select(cell_short, Disease, Stage, n) %>%
+  unique() %>%
+  group_by(cell_short, Disease) %>%
+  mutate(total = sum(n)) %>%
+  as.data.frame()
+```
+
+
+
+```{r}
+meta$D = str_replace_all(meta$Disease, "_Normal", "")
+sheet2 = meta %>%
+  group_by(cell_short, Malignant, D, Stage) %>%
+  add_tally() %>%
+  dplyr::select(cell_short, Malignant, D, Stage, n) %>%
+  unique() %>%
+  group_by(cell_short, Malignant, D) %>%
+  mutate(total = sum(n)) %>%
+  as.data.frame()
+```
+
+
+```{r}
+sheet2$Disease = paste0(sheet2$D, ifelse(sheet2$Malignant, "", "_Normal"))
+
+temp = dcast(sheet1, cell_short+Stage~Disease, value.var = "n", fill = 0, fun.aggregate = mean)
+temp1 = dcast(sheet2, cell_short+Stage~Disease, value.var = "n", fill = 0, fun.aggregate = mean)
+temp1$Stage = paste(temp1$Stage, "M", sep = "-")
+```
+
+
+```{r}
+library(openxlsx)
+wb = createWorkbook()
+addWorksheet(wb, "disease")
+writeData(wb, 1, sheet1)
+
+addWorksheet(wb, "malignant")
+writeData(wb, 2, sheet2)
+
+wb = createWorkbook()
+addWorksheet(wb, "clinical")
+writeData(wb, 3, temp)
+
+addWorksheet(wb, "maglinant")
+writeData(wb, 4, temp1)
+
+saveWorkbook(wb, full.path("11_CNV/maglinant.xlsx"), overwrite = T)
+```
+
+
+```{r}
+make_heatmap_by_cells <- function(
+  obj, 
+  cells, 
+  col_orders, 
+  cluster_rows = T,
+  cluster_columns = F,
+  row_split = NULL,
+  row_order = NULL,
+  return_mtx = F,
+  show_patient = T,
+  mark = NULL
+) {
+    temp_meta <- obj@meta.data[cells, ]
+    # temp_meta <- temp_meta[order(temp_meta$Disease, temp_meta$Stage), ]
+    temp_meta$Disease[temp_meta$Disease == 'LUAD_Normal'] <- "Normal (LUAD)"
+    temp_meta$Disease[temp_meta$Disease == 'LUSC_Normal'] <- "Normal (LUSC)"
+    
+    patient_color = gg_color_hue(length(unique(temp_meta$PatientID)))
+    names(patient_color) = unique(temp_meta$PatientID)
+    
+    if (show_patient) {
+        la <- rowAnnotation(
+            Disease = temp_meta[cells, "Disease"],
+            PatientID = temp_meta[cells, "PatientID"],
+            Stage = temp_meta[cells, "Stage"],
+            col = list(Disease = disease_colors, Stage = stage_color, PatientID = patient_color),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    } else {
+          la <- rowAnnotation(
+            Disease = temp_meta[cells, "Disease"],
+            Stage = temp_meta[cells, "Stage"],
+            col = list(Disease = disease_colors, Stage = stage_color),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+    
+    ba <- NULL
+    if(!is.null(mark)) {
+        ba <- HeatmapAnnotation(
+            foo = anno_mark(
+              at = col_orders$order[col_orders$gene %in% mark], 
+              labels = col_orders$gene[col_orders$gene %in% mark],
+              which = "column", side = "column"
+              # labels_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+
+    if (!is.null(row_order)) {
+        row_order = row_order[intersect(rownames(row_order), rownames(temp_meta)), ]
+        temp_mtx = t(as.matrix(obj@raw.data[col_orders$order, rownames(temp_meta)]))
+        
+        row_split = row_order[cells, "Clt"]
+        # cluster_rows = F
+    } else {
+        temp_mtx = t(as.matrix(obj@raw.data[col_orders$order, rownames(temp_meta)]))
+    }
+    
+    print("Scale")
+    temp_mtx = apply(temp_mtx, 2, function(y) { (y - mean(y)) / sd(y) ^ as.logical(sd(y)) } )
+    
+    if (return_mtx) {
+        return(temp_mtx)
+    }
+    
+    print("Plot")
+    Heatmap(
+        temp_mtx,
+        name = "Infercnv",
+        col = colorRamp2(
+            c(-1.15, -0.5 , 0, 0.5, 1.15), 
+            c("#000074", "white", "white", "white", "#760002")
+        ),
+        show_row_names = F,
+        left_annotation = la,
+        row_title_rot = 0,
+        border = T,
+        show_column_names = F,
+        column_names_rot = 90,
+        bottom_annotation = ba,
+        cluster_columns = cluster_columns,
+        cluster_rows = cluster_rows,
+        column_split = col_orders$chrom,
+        column_title_rot = 90,
+        row_split = row_split,
+        cluster_row_slices = F,
+        cluster_column_slices = F,
+        use_raster =  T,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    )
+}
+
+
+
+
+make_heatmap_wrapper <- function(obj, row_orders, ref, mark = NULL) {
+  col_orders = data.frame(
+    chrom = gene_pos[rownames(obj@raw.data), "V1"],
+    start = gene_pos[rownames(obj@raw.data), "V2"],
+    gene = rownames(obj@raw.data),
+    order = 1:nrow(obj@raw.data)
+  )
+  
+  col_orders <- col_orders[order(col_orders$chrom, col_orders$start), ]
+  col_orders <- col_orders[col_orders$chrom %in% c(1:22, "X", "Y"), ]
+  col_orders$chrom <- factor(as.character(col_orders$chrom), levels = as.character(c(1:22, "X", "Y")))
+  # col_orders <- col_orders[order(col_orders$chrom), ]
+  
+  
+  cls = unique(row_orders$Clt)
+  cls = cls[cls != ref]
+  lvs = as.numeric(factor(cls))
+  names(lvs) = cls
+  lvs = sort(lvs)
+  lvs[[ref]] = "NM"
+  
+  row_orders$Clt <- factor(sapply(as.character(row_orders$Clt), function(x) { lvs[[x]] }), levels = lvs)
+  
+  make_heatmap_by_cells(
+    obj, 
+    row_orders$Cell,
+    col_orders,
+    row_order = row_orders,
+    cluster_rows = F,
+    show_patient = F,
+    mark = mark
+  )
+}
+
+
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+```
+
+
+
+# cls = unique(temp_tree$Clt)
+# cls = cls[lvs != "0.5.7"]
+# lvs = as.character(as.numeric(factor(cls)))
+# names(lvs) = cls
+# lvs = sort(lvs)
+# lvs[["0.5.7"]] = "Non_malignant"
+
+
+
+## Adjust heatmap
+```{r fig.height=6, fig.width=10}
+registerDoMC(10)
+
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V6))
+
+
+non_maglinant <- c(
+  "ATII"="9", "B"="7", "Basal"="6", "Epi"="6",
+  "NE"="2.2", "Club"="4", "Cilia"="5", "EC"="8.1",
+  "Fib"="0.5.7", "CD4"="5.1", "CD8"="9.3", "DC"="6",
+  "Gran"="2", "Mo"="5", "NK"="4", "Tregs"="9.4", "Mast"="9"
+)
+
+
+
+
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V6))
+
+
+for (i in names(non_maglinant)) {
+    print(i)
+    row_orders = readRDS(full.path("11_CNV/each_cells", i, "tree.rds"))
+    obj <- readRDS(full.path("11_CNV/each_cells", i, "seurat.rds"))
+    
+    if(i == "ATII") {
+      mark = c(
+        "CD74", "RPS14", "CCPC69", "GPX3", "TNIP1", 
+        "MISP1", "CFD", "PTBP1", "MED16", "R3HPM4",
+        "CSNK1D", "OGF0D3", "CD7", "CYBC1", "NARF", "FOXK2", "TBCD"
+      )
+    } else {
+      mark = NULL
+    }
+
+    cairo_pdf(full.path("11_CNV", paste0(i, ".pdf")), width = 8, height = 5)
+    draw(make_heatmap_wrapper(obj, row_orders, non_maglinant[[i]], mark = mark))
+    dev.off()
+}
+
+
+# foreach (i = names(non_maglinant)) %dopar% {
+#     row_orders = readRDS(full.path("11_CNV/each_cells", i, "tree.rds"))
+#     obj <- readRDS(full.path("11_CNV/each_cells", i, "seurat.rds"))
+#     
+#     if(i == "ATII") {
+#         mark = c(
+#             "CD74", "RPS14", "CCPC69", "GPX3", "TNIP1", 
+#             "MISP1", "CFD", "PTBP1", "MED16", "R3HPM4",
+#             "CSNK1D", "OGF0D3", "CD7", "CYBC1", "NARF", "FOXK2", "TBCD"
+#         )
+#     } else {
+#         mark = NULL
+#     }
+# 
+#     cairo_pdf(full.path("11_CNV", paste0(i, ".pdf")), width = 10, height = 6)
+#     draw(make_heatmap_wrapper(obj, row_orders, non_maglinant[[i]], mark = ifelse(i == "ATII", mark, NULL)))
+#     dev.off()
+# }
+```
+
+### Find highly variable genes
+```{R fig.height=6, fig.width=12}
+library(FactoMineR)
+library(factoextra)
+
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V6))
+
+
+non_maglinant <- c(
+  "ATII"="9", "B"="7", "Basal"="6", "Epi"="6",
+  "NE"="2.2", "Club"="4", "Cilia"="5", "EC"="8.1",
+  "Fib"="0.5.7", "CD4"="5.1", "CD8"="9.3", "DC"="6",
+  "Gran"="2", "Mo"="5", "NK"="4", "Tregs"="9.4", "Mast"="9"
+)
+
+
+row_orders = readRDS(full.path("11_CNV/each_cells/ATII/tree.rds"))
+obj <- readRDS(full.path("11_CNV/each_cells/ATII/seurat.rds"))
+
+obj@meta.data$Clt = row_orders[rownames(obj@meta.data), "Clt"]
+
+temp = apply(obj@raw.data, 1, sd)
+temp = sort(temp, decreasing = T)
+
+plot(density(as.numeric(temp)))
+
+res.pca = prcomp(t(obj@raw.data[ head(names(temp), 200), ]))
+
+# get_eigenvalue(res.pca)
+pca.var = get_pca_var(res.pca)
+contrib = sort(pca.var$contrib[, 1], decreasing = T)
+
+genes = names(contrib)
+
+genes = intersect(genes, gene_pos$V6[gene_pos$V1 == 19])
+
+# genes = c(
+#   "TP53", "STK11", "KEAP", "NF1", "RB1", "CDKN2A", "SETD2",
+#   "ADID1A", "SMARCA4", "RMB10", "U2AF1", "NOTCH1", "NOTCH2",
+#   "ASCL4", "FOXP1"
+# )
+
+make_heatmap_wrapper(obj, row_orders = row_orders, non_maglinant[["ATII"]], mark = genes)
+
+
+# registerDoMC(5)
+# res = foreach(i = unique(row_orders$Clt), .combine = "rbind") %dopar% {
+#     temp = FindMarkers(
+#       obj, 
+#       ident.1 = row_orders$Cell[row_orders$Clt == i],
+#       ident.2 = row_orders$Cell[row_orders$Clt != i],
+#       logfc.threshold = 0
+#     )
+#     temp$Clt = i
+#     temp$gene = rownames(gene)
+#     temp
+# }
+```
+
+
+```{r fig.height=6, fig.width=12}
+make_heatmap_wrapper(obj, row_orders = row_orders, non_maglinant[["ATII"]], mark = c("RPL18", "PPP1R15A", "FTL", "TRAPPC2B", "ZSCAN18", "AC010642.2"))
+```
+
+
+```{r fig.height=6, fig.width=12}
+h <- make_heatmap_wrapper(obj, row_orders = row_orders, non_maglinant[["ATII"]], mark = c(
+  "CD74", "RPS14", "CCPC69", "GPX3", "TNIP1", 
+  "MISP1", "CFD", "PTBP1", "MED16", "R3HPM4",
+  "CSNK1D", "OGF0D3", "CD7", "CYBC1", "NARF", "FOXK2", "TBCD"
+))
+
+# saveRDS(h, "atii_heatmap.rds")
+
+pdf(full.path("11_CNV/ATII.pdf"), width = 10, height = 6)
+draw(h)
+dev.off()
+```
+
+
+### 
+
+```{r}
+data = list()
+for (i in list.dirs(full.path("11_CNV/each_cells"), recursive = F)) {
+  print(i)
+  if (basename(i) %in% c("Basal_wo_ref", "CNV")) {
+    next
+  }
+  data[[basename(i)]] <- read_infercnv_obj(paste(i, "run.final.infercnv_obj", sep = "/"), zscore = T)
+}
+```
+
+```{r}
+library(reshape2)
+genes = c(
+  'EGFR', 'KRAS', 'ALK', 'ROS1', 'BRAF', 'MET', 'RET', 'ERBB2', "TP53",
+  "PRKDC", "ATM", "ATR", "MDM2", "CDKN1A"
+)
+
+registerDoMC(10)
+cnv = foreach (i = names(data), .combine = "rbind") %dopar% {
+  temp = data[[i]]
+  temp = temp[, !colnames(temp) %in% c("chr", "start", "end", "cell", "stop")]
+  temp = as.matrix(temp[intersect(rownames(temp), genes), ])
+  
+  # temp = temp[intersect(rownames(temp), genes), ]
+  temp = melt(as.matrix(temp))
+  
+  if (i == "ATII") {
+    i = "AT2"
+  } else if (i == "Mo") {
+    i = "Mφ"
+  }
+  temp$cell = i
+  temp
+}
+```
+
+
+```{r fig.height=12, fig.width=12}
+cnv$clt = paste(meta[as.character(cnv$Var2), "cell_short"], meta[as.character(cnv$Var2), "Malignant_tree"], sep = "_")
+cnv = cnv[!is.na(meta[as.character(cnv$Var2), "Malignant"]), ]
+
+
+cnv$value = as.numeric(as.character(cnv$value))
+cnv = cnv[!is.na(cnv$value), ]
+
+# ggpubr::ggviolin(
+#   cnv, x="clt", y="value",
+# ) +
+#   facet_grid(Var1~., scales = "free", space = "free")
+```
+
+
+```{r fig.height=6, fig.width=12}
+library(dplyr)
+# cnv$val = cnv$value
+# temp_cnv = reshape2::dcast(as.data.frame(cnv), Var1~Var2, value.var = "val", fun.aggregate = mean, fill = 0)
+# 
+# temp_cnv = cnv %>% 
+#     spread(Var2, value, fill = NA)
+
+temp = cnv %>%
+  group_by(Var1, clt) %>%
+  mutate(val = mean(value)) %>%
+  ungroup() %>%
+  dplyr::select(Var1, val, clt) %>%
+  unique() %>%
+  as.data.frame()
+
+
+temp$Var1 = as.character(temp$Var1)
+temp$clt = as.character(temp$clt)
+
+# ggplot(temp[temp$Var1 %in% c("EGFR", "TP53"), ], aes(x=clt, y=val, fill=Var1)) +
+#   facet_wrap(.~Var1, scales = "free") +
+#   geom_bar(stat = "identity") +
+#   theme(
+#     legend.position = "none",
+#     axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+#   )
+```
+
+
+```{r fig.height=4, fig.width=8}
+temp$Type = ifelse(temp$val > 0, "Amp", "Del")
+temp$cell = sapply(temp$clt, function(x) {
+  str_split(x, "_")[[1]][1]
+})
+
+
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+cell_color = c(
+    wes_palette("Darjeeling1"), 
+    wes_palette("Moonrise3"),
+    wes_palette("Darjeeling2"),
+    wes_palette("Moonrise1")
+)[1:length(unique(meta$cell_name1))]
+
+names(cell_color) = sort(unique(meta$cell_short))
+
+
+for (i in c("EGFR", "TP53")) {
+  
+    temp_data = temp[temp$Var1 == i, ]
+    temp_data = temp_data[order(temp_data$val, decreasing = T), ]
+    
+    temp_data$clt = factor(temp_data$clt, levels = unique(temp_data$clt))
+    
+    
+    a = sapply(temp_data$cell, function(x) { cell_color[[x]] })
+    
+    p <- ggplot(temp_data, aes(x=clt, y=val, fill=Type)) +
+      # facet_wrap(.~cell, scales = "free") +
+      geom_bar(stat = "identity") +
+      theme_bw(base_family = "Arial Unicode MS") +
+      theme(
+        legend.position = "none",
+        panel.background = element_blank(),
+        panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 10, colour = a),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 15, hjust = 0.5)
+      ) +
+      scale_fill_manual(values = c("Amp"="red", "Del"="blue")) +
+      labs(title = i, x="", y="")
+    
+    print(p)
+    
+    ggsave(
+        filename = full.path("11_CNV/subclone", paste0(i, ".pdf")),
+        plot = p, width = 8, height = 4, device = cairo_pdf
+    )
+}
+```
+
+
+```{r fig.height=4, fig.width=8}
+temp$Type = ifelse(temp$val > 0, "Amp", "Del")
+temp$cell = sapply(temp$clt, function(x) {
+  str_split(x, "_")[[1]][1]
+})
+
+
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+cell_color = c(
+    wes_palette("Darjeeling1"), 
+    wes_palette("Moonrise3"),
+    wes_palette("Darjeeling2"),
+    wes_palette("Moonrise1")
+)[1:length(unique(meta$cell_name1))]
+
+names(cell_color) = sort(unique(meta$cell_short))
+
+
+for (i in c("EGFR", "TP53")) {
+  
+    temp_data = temp[temp$Var1 == i, ]
+    temp_data = temp_data[order(temp_data$val, decreasing = T), ]
+    
+    temp_data$clt = factor(temp_data$clt, levels = unique(temp_data$clt))
+    
+    
+    a = sapply(temp_data$cell, function(x) { cell_color[[x]] })
+    
+    p <- ggplot(temp_data[temp_data$val > 0, ], aes(x=clt, y=val, fill=Type)) +
+      # facet_wrap(.~cell, scales = "free") +
+      geom_bar(stat = "identity") +
+      theme_bw(base_family = "Arial Unicode MS") +
+      theme(
+        legend.position = "none",
+        panel.background = element_blank(),
+        panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 10, colour = a),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 15, hjust = 0.5)
+      ) +
+      scale_fill_manual(values = c("Amp"="red", "Del"="blue")) +
+      labs(title = i, x="", y="")
+    
+    print(p)
+    
+    ggsave(
+        filename = full.path("11_CNV/subclone", paste0(i, "_sel.pdf")),
+        plot = p, width = 4, height = 4, device = cairo_pdf
+    )
+}
+```
+
+
+
+
+```{r fig.height=4, fig.width=4}
+temp$Type = ifelse(temp$val > 0, "Amp", "Del")
+temp$cell = sapply(temp$clt, function(x) {
+  str_split(x, "_")[[1]][1]
+})
+
+
+pair = list(
+  "KRAS" = c("Mφ"), "BRAF"=c("AT2", "NE"), "EGFR"=c("AT2", "NE"), "MET"=c("AT2", "Basal", "NE"), "ERBB2"=c("NE")
+)
+
+
+for (i in unique(temp$Var1)) {
+  
+  if (!i %in% names(pair)) {
+    next
+  }
+  
+  for (j in pair[[i]]) {
+      temp_data = temp[temp$Var1 == i & temp$cell == j, ]
+      temp_data = temp_data[order(temp_data$val, decreasing = T), ]
+      
+      temp_data$clt = factor(temp_data$clt, levels = unique(temp_data$clt))
+      
+      p <- ggplot(temp_data, aes(x=clt, y=val, fill=Type)) +
+        # facet_wrap(.~cell, scales = "free") +
+        geom_bar(stat = "identity") +
+        theme_bw(base_family = "Arial Unicode MS") +
+        theme(
+          legend.position = "none",
+          panel.grid = element_blank(),
+          panel.background = element_blank(),
+          axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 10),
+          axis.text.y = element_text(size = 12),
+          plot.title = element_text(size = 15, hjust = 0.5)
+        ) +
+        scale_fill_manual(values = c("Amp"="red", "Del"="blue")) +
+        labs(title = i, x="", y="")
+      
+      print(p)
+      
+      ggsave(
+          filename = full.path("11_CNV/subclone", paste0(i, "_", j, ".pdf")),
+          plot = p, width = 4, height = 4, device = cairo_pdf
+      )
+  }
+}
+```
+
+
+```{r fig.height=12, fig.width=12}
+for (i in unique(temp$Var1)) {
+  
+  temp_data = temp[temp$Var1 == i, ]
+  temp_data = temp_data[order(temp_data$val, decreasing = T), ]
+  
+  temp_data$clt = factor(temp_data$clt, levels = unique(temp_data$clt))
+  
+  p <- ggplot(temp_data, aes(x=clt, y=val, fill=Type)) +
+    facet_wrap(.~cell, scales = "free") +
+    geom_bar(stat = "identity") +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+    ) +
+    scale_fill_manual(values = c("Amp"="red", "Del"="blue")) +
+    labs(title = i)
+  
+  print(p)
+}
+```
+
+
+```{r}
+seurat_pipeline <- function(obj, cluster=F) {
+    library(reticulate)
+    mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@raw.data), value = TRUE)
+    percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+    
+    obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+    
+    pcs = min(100, min(nrow(obj@raw.data), ncol(obj@raw.data)) - 1)
+    
+    obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+    obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+    obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+    obj <- RunPCA(object = obj, pc.genes = obj@var.genes, do.print = FALSE, pcs.compute = pcs)
+    
+    # obj <- RunHarmony(obj, c("batch", "PatientID"))
+    
+    # kee = import("kneed")
+    # n.pcs = kee$KneeLocator(
+    #     1:ncol(obj@dr$pca@cell.embeddings),
+    #     apply(obj@dr$pca@cell.embeddings, 2, sd),
+    #     curve='convex',
+    #     direction='decreasing'
+    # )
+    # n.pcs = n.pcs$knee
+    
+    n.pcs = 10
+    
+    # obj <- RunTSNE(
+    #     object = obj, 
+    #     dims.use = 1:n.pcs, 
+    #     do.fast = TRUE, 
+    #     reduction.use = "pca", 
+    #     reduction.name = "tsne",
+    #     perplexity=min(30, floor(pcs / 3) + 1)
+    # )
+    obj <- RunUMAP(
+        object = obj, 
+        dims.use = 1:n.pcs, 
+        do.fast = TRUE, 
+        reduction.use = "pca",
+        n_neighbors = min(30, pcs)
+    )
+    if (cluster) {
+         obj <- FindClusters(
+            object = obj, reduction.type = "pca", dims.use = 1:10, 
+            resolution = c(0.03, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), 
+            print.output = 0, save.SNN = FALSE, force.recalc = TRUE
+        )
+    }
+ 
+    obj
+}
+```
+
+
+
+```{r}
+expr = NULL
+for (i in names(data)) {
+    if (is.null(expr)) {
+        expr = data[[i]]
+    } else {
+        genes = intersect(rownames(expr), rownames(data[[i]]))
+        expr = cbind(expr[genes, ], data[[i]][genes, ])
+    }
+}
+
+expr <- expr[, !colnames(expr) %in% c("chr", "start", "end", "cell", "stop")]
+```
+
+
+```{R}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+obj <- CreateSeuratObject(expr, meta.data = meta)
+obj <- seurat_pipeline(obj)
+```
+
+
+```{r}
+p <- DimPlot(obj, reduction.use = "umap", group.by = "cell_short")
+ggsave(filename = full.path("11_CNV/each_cells/CNV/all_cells/all.pdf"), plot = p, width = 7, height = 6)
+```
+
+```{r fig.height=4, fig.width=4}
+for (i in unique(obj@meta.data$cell_short)) {
+    p <- DimPlot(
+      obj, reduction.use = "umap", 
+      group.by = "cell_short", 
+      cells.use = rownames(obj@meta.data)[obj@meta.data$cell_short == i], 
+      do.label = T, no.legend = T,
+      do.return = T
+    )
+    # print(p)
+    ggsave(
+      filename = full.path("11_CNV/each_cells/CNV/all_cells", paste0(i, ".png")), 
+      plot = p, width = 7, units = "in",
+      height = 6, dpi = 600
+    )
+}
+```
+
+```{r}
+DimPlot(obj, reduction.use = "umap", group.by = "Malignant")
+```
+
+
+
+```{r}
+expr = NULL
+for (i in names(data)) {
+  
+    if (basename(i) %in% immu) {
+        next
+    }
+  
+    if (is.null(expr)) {
+        expr = data[[i]]
+    } else {
+        genes = intersect(rownames(expr), rownames(data[[i]]))
+        expr = cbind(expr[genes, ], data[[i]][genes, ])
+    }
+}
+
+expr <- expr[, !colnames(expr) %in% c("chr", "start", "end", "cell", "stop")]
+```
+
+
+```{R}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+obj <- CreateSeuratObject(expr, meta.data = meta[colnames(expr), ])
+obj <- seurat_pipeline(obj)
+```
+
+```{r}
+DimPlot(obj, reduction.use = "umap", group.by = "cell_short")
+```
+
+```{r fig.height=4, fig.width=4}
+for (i in unique(obj@meta.data$cell_short)) {
+    p <- DimPlot(
+      obj, reduction.use = "umap", 
+      group.by = "cell_short", 
+      cells.use = rownames(obj@meta.data)[obj@meta.data$cell_short == i], 
+      do.label = T, no.legend = T,
+      do.return = T
+    )
+    print(p)
+}
+```
+
+## 把varaible genes找出来
+```{r}
+# 
+markers <- NULL
+for (i in unique(meta$cell_short)) {
+  print(i)
+    
+    temp = FindMarkers(
+      obj, 
+      ident.1 = rownames(meta)[meta$cell_short == i & meta$Malignant == TRUE],
+      ident.2 = rownames(meta)[meta$cell_short == i & meta$Malignant == FALSE],
+      logfc.threshold = 0
+    )
+    
+    temp$cell = i
+    temp$gene = rownames(temp)
+    markers <- rbind(markers, temp)
+}
+
+write.csv(markers, full.path("11_CNV/malignant_markers.csv"))
+```
+
+
+```{r}
+tsi <- readRDS(full.path("02_rds/tsi.rds"))
+
+tau = as.data.frame(tsi@tsData$Tau)
+tau <- tau[, !colnames(tau) %in% c("Mean", "Median", "Max", "SD", "Range")]
+
+temp <- melt(as.matrix(tau))
+temp <- temp[temp$Var2 != "Tau", ]
+temp$Tau <- tau[temp$Var1, "Tau"]
+
+temp <- temp %>%
+  group_by(Var1) %>%
+  top_n(1, wt=value) %>%
+  as.data.frame()
+```
+
+
+```{r}
+markers <- markers[markers$avg_logFC > 0.25 & markers$p_val_adj < 0.05, ]
+
+temp$Malignant <- NULL
+for (i in unique(temp$Var2)) {
+    temp$Malignant[temp$Var2 == i] = temp$Var1[temp$Var2 == i] %in% markers$gene[markers$cell == i]
+}
+
+colnames(temp) <- c("gene", "cell", "expr", "Tau", "Malignant")
+
+write.csv(temp, full.path("11_CNV/cell_markers_malignant.csv"))
+```
+
+### Make CNV umap plot
+```{r}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+```
+
+```{r fig.height=4, fig.width=4}
+library(ggplot2)
+library(ggrastr)
+library(wesanderson)
+
+left = c("Mast", "Mo", "NE", "NK", "Tregs", "CD8", "Cilia", "DC", "Epi")
+
+cols = as.character(wes_palette("Darjeeling1"))[1:2]
+names(cols) <- c("Malignant", "Non-Malignant")
+
+registerDoMC(5)
+foreach (i = list.dirs(full.path("11_CNV/each_cells"), recursive = F)) %dopar% {
+    if (basename(i) == "Basal_wo_ref") { 
+        return()
+    }
+  
+    temp = paste(i, "seurat.rds", sep = "/")
+    
+    if (file.exists(temp)) {
+        obj <- readRDS(temp)
+        
+        # obj@meta.data <- meta[rownames(obj@meta.data), ]
+        
+        umap <- as.data.frame(obj@dr$umap@cell.embeddings)
+        umap$Malignant <- ifelse(meta[rownames(umap), "Malignant"], "Malignant", "Non-Malignant")
+        
+        legend_pos = c(.8, .12)
+        
+        if (basename(i) %in% left) {
+            legend_pos = c(.2, .12)
+        } else if (basename(i) == "ATII") {
+          legend_pos = c(.8, .9)
+        }
+        
+        title = basename(i)
+        if (title== "ATII") {
+          title = "AT2"
+        } else if (title == "Mo") {
+          title = "Mφ"
+        }
+        
+        p <- ggplot(umap, aes(x=UMAP1, y=UMAP2, color=Malignant)) +
+          geom_point_rast(size = 0.1) +
+          theme_bw(base_family = "Arial Unicode MS") +
+          theme(
+              legend.position = legend_pos,
+              legend.background = element_blank(),
+              panel.grid = element_blank(),
+              plot.title = element_text(size = 15, hjust = 0.5),
+              axis.title = element_text(size = 15),
+              axis.text = element_text(size = 12),
+              legend.text = element_text(size = 10),
+              legend.key = element_rect(fill = "transparent", colour = "transparent")
+          ) +
+          labs(color = "", title = title) +
+          guides(
+            color=guide_legend(
+              override.aes = list(size = 5),
+            )
+          ) +
+          scale_color_manual(values = cols)
+        
+        # p <- DimPlot(obj, group.by = "Malignant", do.label = T, no.legend = T, do.return = T)
+        # print(p)
+        ggsave(
+            filename = full.path("11_CNV/umap", paste0(basename(i), ".pdf")),
+            plot = p, width = 4, height = 4, device = cairo_pdf
+        )
+    }
+    
+    
+}
+
+```
+
+
+```{r}
+library(ggplot2)
+library(ggrastr)
+library(wesanderson)
+
+left = c("Mast", "Mo", "NE", "NK", "Tregs", "CD8", "Cilia", "DC", "Epi")
+
+cols = as.character(wes_palette("Darjeeling1"))[1:2]
+names(cols) <- c("Malignant", "Non-Malignant")
+
+registerDoMC(5)
+foreach (i = list.dirs(full.path("11_CNV/each_cells"), recursive = F)) %dopar% {
+    if (basename(i) == "Basal_wo_ref") { 
+        return()
+    }
+  
+    temp = paste(i, "seurat.rds", sep = "/")
+    
+    if (file.exists(temp)) {
+        obj <- readRDS(temp)
+        
+        # obj@meta.data <- meta[rownames(obj@meta.data), ]
+        
+        umap <- as.data.frame(obj@dr$umap@cell.embeddings)
+        umap$Malignant <- ifelse(meta[rownames(umap), "Malignant"], "Malignant", "Non-Malignant")
+        
+        legend_pos = c(.8, .12)
+        
+        if (basename(i) %in% left) {
+            legend_pos = c(.2, .12)
+        } else if (basename(i) == "ATII") {
+          legend_pos = c(.8, .9)
+        }
+        
+        title = basename(i)
+        if (title== "ATII") {
+          title = "AT2"
+        } else if (title == "Mo") {
+          title = "Mφ"
+        }
+        
+        p <- ggplot(umap, aes(x=UMAP1, y=UMAP2, color=Malignant)) +
+          geom_point_rast(size = 0.1) +
+          theme_bw(base_family = "Arial Unicode MS") +
+          theme(
+              legend.position = legend_pos,
+              legend.background = element_blank(),
+              panel.grid = element_blank(),
+              plot.title = element_text(size = 15, hjust = 0.5),
+              axis.title = element_text(size = 15),
+              axis.text = element_text(size = 12),
+              legend.text = element_text(size = 10),
+              legend.key = element_rect(fill = "transparent", colour = "transparent")
+          ) +
+          labs(color = "", title = title) +
+          guides(
+            color=guide_legend(
+              override.aes = list(size = 5),
+            )
+          ) +
+          scale_color_manual(values = cols)
+        
+        # p <- DimPlot(obj, group.by = "Malignant", do.label = T, no.legend = T, do.return = T)
+        # print(p)
+        ggsave(
+            filename = full.path("11_CNV/umap", paste0(basename(i), ".pdf")),
+            plot = p, width = 4, height = 4, device = cairo_pdf
+        )
+    }
+    
+    
+}
+
+```
+
+
+
+#### adjust AT2
+```{r fig.height=5, fig.width=4}
+library(ggsci)
+obj <- readRDS(full.path("11_CNV/each_cells/ATII/seurat_M.rds"))
+        
+# obj@meta.data <- meta[rownames(obj@meta.data), ]
+
+umap <- as.data.frame(obj@dr$umap@cell.embeddings)
+# umap$Malignant <- ifelse(meta[rownames(umap), "Malignant"], "Malignant", "Non-Malignant")
+umap$Malignant <- meta[rownames(umap), "Malignant_tree"]
+
+legend_pos = c(.2, .12)
+
+title = "AT2"
+
+cols = pal_npg("nrc", alpha = 0.7)(length(unique(umap$Malignant)))
+# names(cols) = c(2, 1, "Non", 3, 4, 5, 6, 8, 7, 9)
+
+p <- ggplot(umap, aes(x=UMAP1, y=UMAP2, color=Malignant)) +
+  geom_point_rast(size = 0.1) +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+      aspect.ratio = 1,
+      legend.position = "bottom",
+      legend.background = element_blank(),
+      panel.grid = element_blank(),
+      plot.title = element_text(size = 15, hjust = 0.5),
+      axis.title = element_text(size = 15),
+      axis.text = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      legend.key = element_rect(fill = "transparent", colour = "transparent")
+  ) +
+  labs(color = "", title = title, x="", y="") +
+  guides(
+    color=guide_legend(
+      override.aes = list(size = 5),
+    )
+  ) +
+  scale_color_manual(values = cols)
+  # scale_color_locuszoom()
+
+print(p)
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/AT2_1.pdf"),
+    plot = p, width = 4, height = 5, device = cairo_pdf
+)
+```
+
+
+#### adjust basal
+```{r fig.height=5, fig.width=4}
+library(ggsci)
+library(ggrastr)
+obj <- readRDS(full.path("11_CNV/each_cells/Basal/seurat_M.rds"))
+# obj = seurat_pipeline(obj)
+        
+# obj@meta.data <- meta[rownames(obj@meta.data), ]
+
+umap <- as.data.frame(obj@dr$umap@cell.embeddings)
+# umap$Malignant <- ifelse(meta[rownames(umap), "Malignant"], "Malignant", "Non-Malignant")
+umap$Malignant <- meta[rownames(umap), "Malignant_tree"]
+
+
+title = "Basal"
+
+cols = pal_npg("nrc", alpha = 0.7)(length(unique(umap$Malignant)))
+# names(cols) = c(6, 2, "Non", 1, 4, 7, 5, 3)
+
+p <- ggplot(umap, aes(x=UMAP1, y=UMAP2, color=Malignant)) +
+  geom_point_rast(size = 0.1) +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+      aspect.ratio = 1,
+      legend.position = "bottom",
+      legend.background = element_blank(),
+      panel.grid = element_blank(),
+      plot.title = element_text(size = 15, hjust = 0.5),
+      axis.title = element_text(size = 15),
+      axis.text = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      legend.key = element_rect(fill = "transparent", colour = "transparent")
+  ) +
+  labs(color = "", title = title, x="", y="") +
+  guides(
+    color=guide_legend(
+      override.aes = list(size = 5),
+    )
+  ) +
+  scale_color_manual(values = cols)
+  # scale_color_locuszoom()
+
+p
+
+ggsave(
+    filename = full.path("11_CNV/umap/Basal_1.pdf"),
+    plot = p, width = 4, height = 5, device = cairo_pdf
+)
+```
+
+
+##### Adjust umap coord
+```{r}
+var.genes = obj@var.genes
+var.genes = var.genes[var.genes %in% gene_pos$V6[gene_pos$V1 != 9 & gene_pos$V1 != 14]]
+var.genes = var.genes[!var.genes %in% head(gene_pos$V6[gene_pos$V1 == 19], 500)]
+
+
+temp = apply(obj@raw.data, 1, sd)
+temp = sort(temp, decreasing = T)
+
+plot(density(as.numeric(temp)))
+
+res.pca = prcomp(t(obj@raw.data[ head(names(temp), 2000), ]))
+
+# get_eigenvalue(res.pca)
+pca.var = get_pca_var(res.pca)
+contrib = sort(pca.var$contrib[, 1], decreasing = T)
+
+
+obj <- RunPCA(object = obj, pc.genes = head(names(contrib), 500), do.print = FALSE, pcs.compute = 15)
+obj <- RunUMAP(obj, n_neighbors = 10)
+saveRDS(obj, full.path("11_CNV/each_cells/Basal/seurat.rds"))
+
+```
+
+
+
+```{r}
+# ggsave(
+#     filename = full.path("11_CNV/umap/Basal.pdf"),
+#     plot = p, width = 4, height = 5, device = cairo_pdf
+# )
+```
+
+
+## Driver genes radar plot
+```{r cars}
+meta = readRDS("/mnt/raid64/LungCancer/10x/11_CNV/meta.rds")
+```
+
+
+```{r include=FALSE}
+library(ggplot2)
+library(dplyr)
+library(doMC)
+```
+
+
+```{r}
+meta$Clt = paste(meta$cell_short, meta$Malignant_tree, sep = " - ")
+temp = meta[!is.na(meta$Malignant), ] %>%
+    group_by(Clt, Stage) %>%
+    add_tally() %>%
+    dplyr::select(Clt, Stage, cell_short, n) %>%
+    unique() %>%
+    group_by(Clt) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+```
+
+```{R}
+data = readRDS("LungCancer/10x/11_CNV/data.rds")
+```
+
+
+```{r}
+library(reshape2)
+genes = c(
+  'EGFR', 'KRAS', 'ALK', 'ROS1', 'BRAF', 'MET', 'RET', 'ERBB2', "TP53",
+  "PRKDC", "ATM", "ATR", "TP53", "MDM2", "CDKN1A", "CDKN2A", "NME1", "PTEN"
+)
+
+registerDoMC(10)
+cnv = foreach (i = names(data), .combine = "rbind") %dopar% {
+  temp = data[[i]]
+  temp = temp[, !colnames(temp) %in% c("chr", "start", "end", "cell", "stop")]
+  temp = as.matrix(temp)[intersect(rownames(temp), genes), ]  # 
+  
+  # temp = temp[intersect(rownames(temp), genes), ]
+  # temp = melt(as.matrix(temp))
+  
+  if (i == "ATII") {
+    i = "AT2"
+  } else if (i == "Mo") {
+    i = "Mφ"
+  } else if (i == "Epi") {
+    i = "AT1"
+  }
+  
+  temp_meta = meta[as.character(meta$cell_short) == i, ]
+  temp_meta = temp_meta[!is.na(temp_meta$Malignant_tree), ]
+  
+  res = NULL
+  for (j in unique(temp_meta$Malignant_tree)) {
+      temp1 = as.data.frame(apply(temp[, rownames(temp_meta)[temp_meta$Malignant_tree == j]], 1, mean))
+      colnames(temp1) <- c("CNV")
+      temp1$gene = rownames(temp1)
+      temp1$cell = i
+      temp1$ident = j
+      
+      res = rbind(res, temp1)
+  }
+
+  res
+}
+
+
+
+cnv$clt = paste(meta[as.character(cnv$Var2), "cell_short"], meta[as.character(cnv$Var2), "Malignant_tree"], sep = " - ")
+cnv = cnv[!is.na(meta[as.character(cnv$Var2), "Malignant"]), ]
+
+
+cnv$value = as.numeric(as.character(cnv$value))
+cnv = cnv[!is.na(cnv$value), ]
+
+
+cnv = cnv %>%
+  group_by(Var1, clt) %>%
+  mutate(val = mean(value)) %>%
+  ungroup() %>%
+  dplyr::select(Var1, val, clt) %>%
+  unique() %>%
+  as.data.frame()
+
+
+cnv$Var1 = as.character(cnv$Var1)
+cnv$clt = as.character(cnv$clt)
+```
+
+
+### Radar plot
+
+```{R fig.height=4, fig.width=6}
+dir.create(full.path("11_CNV/radar/bas"), showWarnings = F)
+temp = dcast(cnv, Var1~clt, fun.aggregate = mean, value.var = "val", fill = 0)
+
+cells = sapply(colnames(temp), function(x) { strsplit(x, " - ")[[1]][1] })
+
+for (i in unique(cells)) {
+  
+  if (i == "Var1") {
+    next
+  }
+  print(i)
+  temp1 = temp[, cells %in% c("Var1", i)]
+
+  vals = c(
+    min(temp1[, colnames(temp1) != "Var1"]),
+    0,
+    max(temp1[, colnames(temp1) != "Var1"])
+  )
+  
+  colnames(temp1) <- sapply(colnames(temp1), function(x) {
+    if (str_detect(x, "-")) {
+      str_split(x, " - ")[[1]][2]
+    } else {
+      x
+    }
+  })
+  
+  p <- ggradar(
+    temp1, centre.y = vals[1] - 1, base.size = 1, 
+    values.radar = sapply(vals, function(x) { round(x, digits = 2) }),
+    grid.mid = vals[2],
+    grid.min = vals[1],
+    grid.max = vals[3],
+    font.radar = "Arial Unicode MS",
+    group.line.width = .8,
+    group.point.size = 3
+  )
+
+  print(p)
+  # ggsave(
+  #   filename = full.path("11_CNV/radar/bas/", paste0(i, ".pdf")),
+  #   plot = p, width = 8, height = 8, device = cairo_pdf
+  # )
+  break
+}
+```
+
+
+#### Make the CNV of AT2 and Basal clusters
+
+```{R}
+data = readRDS(full.path("11_CNV/data.rds"))
+at2 <- readRDS(full.path("11_CNV/each_cells/ATII/LUAD/seurat_obj.rds"))
+bas <- readRDS(full.path("11_CNV/each_cells/Basal/LUSC/seurat_obj.rds"))
+```
+
+
+```{r}
+library(reshape2)
+genes = c(
+  'EGFR', 'KRAS', 'ALK', 'ROS1', 'BRAF', 'MET', 'RET', 'ERBB2', "TP53",
+  "PRKDC", "ATM", "ATR", "TP53", "MDM2", "CDKN1A", "CDKN2A", "NME1", "PTEN"
+)
+
+registerDoMC(10)
+cnv = foreach (i = names(data), .combine = "rbind") %dopar% {
+  temp = data[[i]]
+  temp = temp[, !colnames(temp) %in% c("chr", "start", "end", "cell", "stop")]
+  temp = as.matrix(temp[intersect(rownames(temp), genes), ])
+  
+  # temp = temp[intersect(rownames(temp), genes), ]
+  temp = melt(as.matrix(temp))
+  
+  if (i == "ATII") {
+    i = "AT2"
+  } else if (i == "Mo") {
+    i = "Mφ"
+  } else if (i == "Epi") {
+    i = "AT1"
+  }
+  temp$cell = i
+  temp
+}
+```
+
+
+### Radar plot of AT2
+
+```{r}
+at2@meta.data$ident = as.numeric(at2@meta.data$res.0.03) + 1
+at2@meta.data$cell = rownames(at2@meta.data)
+bas@meta.data$ident = as.numeric(obj@meta.data$res.0.2) + 1
+bas@meta.data$cell = rownames(bas@meta.data)
+
+cnv = cnv[cnv$Var2 %in% c(rownames(at2@meta.data), rownames(bas@meta.data)), ]
+
+temp = rbind(at2@meta.data[, c("cell", "ident")], bas@meta.data[, c("cell", "ident")])
+
+
+cnv <- merge(cnv, temp, by.x = "Var2", by.y = "cell")
+
+cnv$value = as.numeric(as.character(cnv$value))
+cnv = cnv[!is.na(cnv$value), ]
+
+
+cnv = cnv %>%
+  group_by(Var1, ident, cell) %>%
+  mutate(val = mean(value)) %>%
+  ungroup() %>%
+  dplyr::select(Var1, val, ident, cell) %>%
+  unique() %>%
+  as.data.frame()
+
+
+cnv$Var1 = as.character(cnv$Var1)
+cnv$ident = as.character(cnv$ident)
+```
+
+
+```{R fig.height=4, fig.width=6}
+dir.create(full.path("11_CNV/radar/bas"), showWarnings = F)
+
+
+for (i in unique(unique(cnv$cell))) {
+  temp = dcast(cnv[cnv$cell == i, ], Var1~ident, fun.aggregate = mean, value.var = "val", fill = 0)
+  
+  if (i == "Var1") {
+    next
+  }
+  print(i)
+  
+  
+  if (i == "AT2") {
+    temp = temp[!temp$Var1 %in% c("PRKDC", "CDKN1A"), ]
+  }
+  
+  temp1 = temp # [, cells %in% c("Var1", i)]
+
+  vals = c(
+    min(temp1[, colnames(temp1) != "Var1"]),
+    0,
+    max(temp1[, colnames(temp1) != "Var1"])
+  )
+  
+  colnames(temp1) <- sapply(colnames(temp1), function(x) {
+    if (str_detect(x, "-")) {
+      str_split(x, " - ")[[1]][2]
+    } else {
+      x
+    }
+  })
+  
+  p <- ggradar(
+    temp1, centre.y = vals[1] - 1, base.size = 1, 
+    values.radar = sapply(vals, function(x) { round(x, digits = 2) }),
+    grid.mid = vals[2],
+    grid.min = vals[1],
+    grid.max = vals[3],
+    font.radar = "Arial Unicode MS",
+    group.line.width = .8,
+    group.point.size = 3
+  )
+
+  print(p)
+  # ggsave(
+  #   filename = full.path("11_CNV/radar/bas/", paste0(i, ".pdf")),
+  #   plot = p, width = 8, height = 8, device = cairo_pdf
+  # )
+}
+```
+
+
+```{r}
+ggplot(cnv, aes(x=ident, y=val, color=Var1)) +
+  geom_point() +
+  facet_grid(.~cell, space = "free", scales = "free") +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 15),
+    strip.text = element_text(size = 15),
+    legend.text = element_text(size = 15)
+  ) +
+  labs(x="", y="Mean (infered CNAs)", color = "")
+```
+
+
+```{R fig.height=4, fig.width=6}
+temp = dcast(cnv, Var1~clt, fun.aggregate = mean, value.var = "val", fill = 0)
+
+cells = sapply(colnames(temp), function(x) { strsplit(x, " - ")[[1]][1] })
+temp1 = temp[, cells %in% c("Var1", "Basal")]
+
+
+vals = c(
+  min(temp1[, colnames(temp1) != "Var1"]),
+  0,
+  max(temp1[, colnames(temp1) != "Var1"])
+)
+
+ggradar(
+  temp1, centre.y = vals[1] - 1, base.size = 1, 
+  values.radar = sapply(vals, function(x) { round(x, digits = 2) }),
+  grid.mid = vals[2],
+  grid.min = vals[1],
+  grid.max = vals[3],
+  font.radar = "Arial Unicode MS",
+  group.line.width = .8,
+  group.point.size = 3
+)
+```
+
+
+
+## Piechart
+```{r}
+meta$Disease = str_replace_all(meta$Disease, "_Normal", "")
+
+temp <- meta[!is.na(meta$Malignant_tree), ] %>%
+  group_by(cell_short, Malignant_tree, Disease) %>%
+  add_tally() %>%
+  dplyr::select(cell_short, Malignant_tree, Disease, n) %>%
+  unique() %>%
+  group_by(cell_short, Malignant_tree) %>%
+  mutate(p = n / sum(n)) %>%
+  as.data.frame()
+```
+
+
+
+```{R fig.height=3, fig.width=3}
+library(ggpubr)
+
+dir.create("LungCancer/10x/subclone_pie/", showWarnings = F, recursive = T)
+for(i in unique(temp$cell_short)) {
+  for (j in unique(temp$Malignant_tree)) {
+      temp1 = temp[as.character(temp$cell_short) == i & temp$Malignant_tree == j, ]
+      temp1 = na.omit(temp1)
+      
+
+      if (nrow(temp1) > 0) {
+        temp1$labs = paste0(temp1$Disease, "(", round(temp1$p * 100, digits = 2), "%)")
+      
+        p <- ggpie(temp1, 
+              "p", label = 'labs',
+             lab.pos = "in", lab.font = "white",
+             fill = "Disease", color = "white",
+             palette = c("LUAD" = "#0084D1",  "LUSC"="#A0C807")
+        )
+        
+        ggsave(
+          filename = paste0("LungCancer/10x/subclone_pie/", i, "_", j, ".pdf"),
+          width = 3, height = 3, device = cairo_pdf, plot = p
+        )
+        rm(temp1)
+      }
+  }
+}
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

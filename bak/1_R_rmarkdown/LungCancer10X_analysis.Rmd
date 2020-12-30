@@ -1,0 +1,676 @@
+---
+title: "LungCancer10X_analysis"
+author: "Yiming Zhang"
+date: "2019/3/5"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "/mnt/raid62/Lung_cancer_10x/"
+knitr::opts_knit$set(root.dir = root.dir)
+
+cols = 3
+size = 10
+dpi = 600
+filenames = list()
+```
+
+```{r cars}
+load_packages <- function() {
+    library(here)
+    library(gridExtra)
+    library(dplyr)
+    library(grid)
+    library(monocle)
+    library(reshape2)
+    library(pheatmap)
+    library(wesanderson)
+    library(cowplot)
+    library(AUCell)
+}
+
+suppressPackageStartupMessages(load_packages())
+```
+
+## Read seurat obj
+
+```{r}
+# obj <- readRDS(here("00_data_ingest", "04_rds_generated", "seurat_obj_selected_patients_harmony.rds"))
+# 
+# markers <- read.xlsx(here("00_data_ingest", "03_annotation_csv", "20190410_gene_markers.xlsx"), sheet = 5)
+
+# markers <- read.xlsx("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190410_gene_markers.xlsx", sheet = 5)
+
+cell_names <- read.xlsx(here("00_data_ingest", "03_annotation_csv", "20190410_gene_markers.xlsx"), sheet = 4)
+
+# cell_names <- read.xlsx("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190410_gene_markers.xlsx", sheet = 4)
+
+obj@meta.data$cluster_id <- obj@meta.data$res.0.6
+obj@meta.data$cell_name <- obj@meta.data$res.0.6
+
+for (i in 1:nrow(cell_names)) {
+  idx = obj@meta.data$res.0.6 == cell_names[i, 1]
+  
+  obj@meta.data$cluster_id[idx] <- rep(paste(cell_names[i, 2], cell_names[i, 1], sep = "_"), sum(idx))
+  
+  obj@meta.data$cell_name[idx] <- rep(as.character(cell_names[i, 2]), sum(idx))
+}
+
+write.csv(obj@meta.data, "/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190412_seurat_meta.csv")
+
+```
+
+
+## 统计每种不同细胞系中，不同疾病类型的细胞数量
+```{r}
+
+# function to calculate freq or percentage by two select elements
+# :param object: seurat obj
+# :param first_ele: str, first select element, main elements
+# :param second_ele: str, second select element
+# :return dataframe of three columns, var1 -> first element, var2 -> second element, value -> percentage
+make_perc_plot <- function(object, first_ele, second_ele, percentage = FALSE) {
+    data <- object[, c("cluster_id", first_ele, second_ele)] 
+    
+    res = data.frame("var1"=NA, "var2"=NA, "value"=NA)
+    for (i in unique(data[, first_ele])) {
+        temp <- data[data[, first_ele] == i, ]
+        
+        uniq_second_ele = unique(as.vector(data[, second_ele]))
+        temp_res = as.data.frame(matrix(NA, nrow = length(uniq_second_ele), ncol=3))
+
+        for (j in 1:length(uniq_second_ele)) {
+            temp_val <- sum(data[, second_ele] == uniq_second_ele[j] & data[, first_ele] == i)
+            
+            if (percentage) {
+                temp_val <- temp_val / nrow(temp)
+            }
+            
+            temp_res[j, ] <- c(i, uniq_second_ele[j], temp_val) 
+        }
+        
+        colnames(temp_res) <- colnames(res)
+        
+        res <- rbind(temp_res, res)
+    }
+    
+    res <- na.omit(res)
+    res <- res[res[,3] > 0,]
+    res[, 3] <- as.numeric(res[, 3])
+    return(res)
+}
+
+```
+
+#### 1. 简单看下每种细胞中不同Stage的细胞数量多少，便于后续筛选用于比对的细胞数
+
+```{r fig.height=12, fig.width=8}
+# function to draw barplot and heatmap
+# :param data: Seurat obj@meta.data
+make_heatmap_of_cells <- function(data, title="Total") {
+    
+    # make bar plot
+    uniq_stage <- unique(data[, c("PatientID", "Stage")])
+    uniq_stage <- as.data.frame(table(uniq_stage$Stage))
+    
+    p1 <- ggplot(data = uniq_stage, aes(x=Var1, y=Freq)) + geom_bar(stat = "identity") + labs(x="Stage", y="Num.", title = title)
+    
+    # make heatmap
+    data <- make_perc_plot(data, first_ele = "cell_name", second_ele = "Stage")
+    data <- acast(data, var1~var2)
+    data[is.na(data)] <- 0
+    data <- data[, order(colnames(data))]
+    p2 <- pheatmap(log10(data + 1), cluster_cols = FALSE, silent = TRUE)
+    
+    filenames[[paste0("first_", i)]] <- here("03_analysis_plots", paste("heatmap_", i, ".png", sep = ""))
+    
+    png(filename = filenames[[paste0("first_", i)]], width = 8, height = 12, res = dpi, units = "in")
+    grid.arrange(grobs = list(p1, p2[[4]]))
+    dev.off()
+    
+    knitr::include_graphics(filenames[[paste0("first_", i)]])
+}
+```
+
+
+#### 2. 统计下每中细胞所涉及到的cluster中不同的类别的细胞比例是多少
+
+```{r fig.height=12, fig.width=8}
+
+for(cell_name in unique(obj@meta.data$cell_name)) {
+    
+    print(cell_name)
+    meta <- obj@meta.data[obj@meta.data$cell_name == cell_name,]
+    patient <- make_perc_plot(meta, first_ele = "cluster_id", second_ele = "PatientID", percentage = TRUE)
+    disease <- make_perc_plot(meta, first_ele = "cluster_id", second_ele = "Disease", percentage = TRUE)
+    cells <- make_perc_plot(meta, first_ele = "cluster_id", second_ele = "cell_name")
+    
+    # make levels for order of plots
+    levels <- c()
+    for (i in sort(as.numeric(unique(meta$cluster_id)), decreasing = TRUE)) {
+        levels <- c(levels, i)
+    }
+    
+    patient$var1 <- factor(patient$var1, levels)
+    p1 <- ggplot(patient, aes(x=var1, y=value, fill = var2)) +
+        geom_bar(stat = "identity", position = position_stack()) + 
+        coord_flip() +
+        labs(x=cell_name, y = "Fraction of cells") +
+        theme(legend.position = "top", axis.title.y = element_text(angle = 0)) + 
+        guides(fill=guide_legend(
+            title="Patient", 
+            ncol = 4,
+            title.position = "top"
+            )) +
+        scale_fill_manual(values=wes_palette("Zissou1", length(unique(patient$var2)), type = "continuous"))
+    
+    disease$var1 <- factor(disease$var1, levels)
+    p2 <- ggplot(disease, aes(x=var1, y=value, fill = var2)) +
+        geom_bar(stat = "identity", position = position_stack()) + 
+        coord_flip() +
+        labs(x="", y = "Fraction of cells") +
+        theme(
+            legend.position = "top", 
+            axis.title.y = element_text(angle = 0),
+            legend.justification = "center"
+            ) + 
+        guides(fill=guide_legend(
+            title="Disease", 
+            nrow = 10,
+            title.position = "top"
+            )) +
+        scale_fill_manual(values=wes_palette("Darjeeling1", length(unique(disease$var2)), type = "continuous"))
+    
+    cells$var1 <- factor(cells$var1, levels)
+    cells$var2 <- ""
+    p3 <- ggplot(cells, aes(x=var1, y=log10(value + 1), fill = var2)) +
+        geom_bar(stat = "identity") + 
+        coord_flip() +
+        labs(x="", y = "log10(Number of cells + 1)") +
+        theme(legend.position = "top", axis.title.y = element_text(angle = 0)) + 
+        guides(fill=guide_legend(
+            title="", 
+            nrow = 10,
+            title.position = "top"
+            )) +
+        scale_fill_manual(values=wes_palette("GrandBudapest1", nrow(cells), type = "continuous"))
+    
+    meta$cluster_id = factor(meta$cluster_id, levels)
+    p4 <- ggplot(meta, aes(x = cluster_id, y = log10(nGene + 1), fill = cluster_id)) + 
+        geom_boxplot() + 
+        coord_flip() +
+        labs(x="") +
+        theme(legend.position = "top", axis.title.y = element_text(angle = 0)) + 
+        guides(fill=guide_legend(title="Clusters", nrow = 10, ncol=5)) +
+        scale_fill_manual(values=wes_palette("Moonrise3", length(unique(meta$cluster_id)), type = "continuous"))
+    
+    phage <- meta[!is.na(meta$Phage) & meta$Phage != "", ]
+    phage %>% select(cluster_id, Phage) %>% group_by(cluster_id) %>% count(Phage) -> phage
+    p5 <- ggplot(phage, aes(x = cluster_id, y = log10(n), fill = Phage)) + 
+        geom_bar(stat = "identity", position = position_stack()) +
+        geom_text(aes(label=n), position = position_stack(vjust = 0.5)) +
+        coord_flip() + 
+        scale_fill_manual(values=wes_palette("Royal2", length(unique(phage$Phage)), type = "continuous")) +
+        theme(legend.position = "top", axis.title.y = element_text(angle = 0)) + 
+        guides(fill=guide_legend(title="", nrow = 10, ncol=5))
+
+    cell_name = gsub("\\s", "_", cell_name)
+    filenames[[paste("barplot", cell_name, sep = "_")]] <- here("03_analysis_plots", paste("barplot_", cell_name, ".png", sep = ""))
+    png(filename=filenames[[paste("barplot", cell_name, sep = "_")]], res = dpi, width = 20, height = 15, units = "in")
+    grid.newpage()
+    p <- cbind(ggplotGrob(p1), ggplotGrob(p2), ggplotGrob(p5), ggplotGrob(p3), ggplotGrob(p4), size = "last")
+    grid.draw(p)
+    dev.off()
+    
+    # knitr::include_graphics(filenames[[paste("barplot", cell_name, sep = "_")]])
+}
+
+```
+
+
+#### 3. 每个Stage随机选取每种细胞各1000个（不足1000全部选用），看其tSNE分布是否均匀
+
+```{r}
+
+for(i in unique(obj@meta.data$Stage)) {
+    print(i)
+    meta <- data.frame()
+    
+    for (j in unique(obj@meta.data$cluster_id)) {
+        temp <- obj@meta.data[obj@meta.data$Stage == i & obj@meta.data$cluster_id == j, ]
+        
+        if (nrow(temp) > 1000) {
+            meta <- rbind(meta, temp[sample(1:nrow(temp), 1000, replace = FALSE),])
+        } else {
+            meta <- rbind(meta, temp)
+        }
+    }
+    
+    p <- DimPlot(
+        obj,
+        reduction.use = "tSNE",
+        pt.size = 0.01,
+        cells.use = rownames(meta),
+        group.by = "PatientID",
+        do.label = TRUE,
+        no.legend = FALSE,
+        plot.title = i,
+        do.return = TRUE
+    )
+    ggsave(filename = here("03_analysis_plots", paste("tSNE_", gsub("\\s+", "_", i), ".png", sep = "")), plot = p, width = 8, height = 6, dpi = dpi)
+}
+
+```
+
+
+#### 4. 腺癌几个不同时期的细胞数量和分布情况
+```{r}
+
+for(i in unique(obj@meta.data$Phage)) {
+    print(i)
+    if ( i == "" || is.na(i) ) {
+        
+    } else {
+        meta <- data.frame()
+    
+        for (j in unique(obj@meta.data$cluster_id)) {
+            temp <- obj@meta.data[obj@meta.data$Phage == i & obj@meta.data$cluster_id == j, ]
+            
+            if (nrow(temp) > 1000) {
+                meta <- rbind(meta, temp[sample(1:nrow(temp), 1000, replace = FALSE),])
+            } else {
+                meta <- rbind(meta, temp)
+            }
+        }
+        
+        p <- DimPlot(
+            obj,
+            reduction.use = "tSNE",
+            pt.size = 0.01,
+            cells.use = rownames(meta),
+            group.by = "cell_name",
+            do.label = TRUE,
+            no.legend = TRUE,
+            plot.title = i,
+            do.return = TRUE
+        )
+        ggsave(filename = here("03_analysis_plots", paste("tSNE_phage_", gsub("\\s+", "_", i), ".png", sep = "")), plot = p, width = 6, height = 6, dpi = dpi)
+    }
+}
+
+```
+
+
+
+-----
+
+### Fig 1. tSNE的重合图
+
+```{r fig.height=6, fig.width=6}
+temp <- obj@meta.data
+
+temp <- cbind(temp, obj@dr$tsne@cell.embeddings[rownames(temp),])
+
+p1 <- ggplot(temp, aes(x=tSNE_1, y=tSNE_2, color = Tissue)) + 
+    geom_point(size = 0.01, alpha = .1) + 
+    xlim(-18, 18) +
+    ylim(-18, 18) +
+    guides(colour = guide_legend(override.aes = list(size=5, alpha=1), ncol = 4)) +
+    theme(legend.position = c(0.15, 0.03), legend.title = element_blank()) +
+    labs(title = "Sample origin")
+
+p1
+```
+
+```{r fig.height=6, fig.width=6}
+p2 <- ggplot(temp, aes(x=tSNE_1, y=tSNE_2, color = PatientID)) + 
+    geom_point(size = 0.01, alpha = .1) + 
+    guides(colour = guide_legend(override.aes = list(size=10, alpha=1))) +
+    labs(title = "Patient") + 
+    theme(legend.position = "none", legend.title = element_blank()) +
+    xlim(-18, 18) +
+    ylim(-18, 18)
+p2
+```
+
+```{r fig.height=6, fig.width=6}
+temp1 <- as.data.frame(temp %>% dplyr::select(tSNE_1, tSNE_2, cell_name) %>% group_by(cell_name) %>% summarize(x = median(x = tSNE_1), y = median(x = tSNE_2)) %>% unique())
+
+
+p3 <- ggplot(temp, aes(x=tSNE_1, y=tSNE_2, color = cell_name)) + 
+    geom_point(size = 0.01, alpha = .1) + 
+    geom_text(data = temp1, aes(label = cell_name, x = x, y = y), colour = "black", check_overlap = FALSE) + 
+    theme(legend.position = "none") +
+    labs(title = "Cell type") +
+    xlim(-18, 18) +
+    ylim(-18, 18)
+
+p3
+
+```
+
+
+```{r fig.height=6, fig.width=6}
+exp <- Matrix::colSums(obj@raw.data)
+temp$count <- exp[rownames(temp)]
+
+p4 <- ggplot(temp, aes(x=tSNE_1, y=tSNE_2, colour = log10(count + 1))) + 
+    geom_point(size = 0.01) + 
+    scale_color_gradientn(colours = c("grey", "blue")) +
+    labs(title = "Transcript count") +
+    xlim(-18, 18) +
+    ylim(-18, 18) +
+    theme(legend.position = c(0.01, 0.18), legend.title = element_blank()) +
+    annotate(geom = "text", label="log10(count + 1)", x = -15, y = -17.8)
+
+p4
+```
+
+```{r fig.height=6, fig.width=24}
+p <- plot_grid(p1, p2, p3, p4, labels = "", align = 'h', rel_widths = c(1, 1, 1, 1), ncol = 4)
+
+ggsave(filename = "/mnt/raid62/Lung_cancer_10x/01_figures/analysis/01_tsne.png", plot = p, width = 24, height = 6, units = "in", dpi = dpi)
+```
+
+
+---
+
+### Fig 2. 不同事件的百分比图
+
+1. Sample origin
+```{r fig.height=18, fig.width=6}
+temp1 <- as.data.frame(temp %>% dplyr::select(Tissue, res.0.6, cell_name) %>% group_by(res.0.6, Tissue) %>% add_tally() %>% unique() %>% group_by(res.0.6) %>% mutate(freq = n / sum(n)))
+
+
+# plot_order <- temp1[order(temp1$cell_name, as.numeric(temp1$res.0.6)), "res.0.6"]
+# 
+# 
+# temp1$plot_order <- factor(temp1$res.0.6, levels = unique(plot_order))
+# 
+# 
+# ggplot(temp1, aes(x = plot_order, y = freq, fill = Tissue)) +
+#     geom_bar(stat = "identity") +
+#     facet_wrap(cell_name~., scales = "free_y", nrow = 1) +
+#     coord_flip()
+
+cell_names <- unique(temp1$cell_name)
+
+plots = list()
+rel_height = c()
+for (i in 1:length(cell_names)) {
+    temp2 <- temp1[temp1$cell_name == cell_names[i], ]
+    rel_height[i] <- length(unique(temp2$res.0.6))
+    if (i == 1) {
+        plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = freq, fill = Tissue)) +
+            geom_bar(stat = "identity")  +
+            coord_flip() +
+            labs(x="", y="") +
+            theme(
+                legend.position = "top",
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+                axis.ticks.x=element_blank()
+            )
+    } else if (i == length(cell_names)) {
+          plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = freq, fill = Tissue)) +
+            geom_bar(stat = "identity")  +
+            coord_flip() +
+            labs(x="", y="Fraction of cells") +
+            theme(
+                legend.position = "none"
+            )
+    } else {
+        plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = freq, fill = Tissue)) +
+            geom_bar(stat = "identity")  +
+            coord_flip() +
+            labs(x="", y="") +
+            theme(
+                legend.position = "none",
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+                axis.ticks.x=element_blank()
+            )
+    }
+}
+
+p1 <- plot_grid(plotlist=plots, labels = "", ncol = 1, rel_heights = rel_height)
+
+```
+
+```{r fig.height=30, fig.width=6}
+temp1 <- as.data.frame(temp %>% dplyr::select(PatientID, res.0.6, cell_name) %>% group_by(res.0.6,PatientID) %>% add_tally() %>% unique() %>% group_by(res.0.6) %>% mutate(freq = n / sum(n)))
+
+
+cell_names <- unique(temp1$cell_name)
+
+plots = list()
+for (i in 1:length(cell_names)) {
+    temp2 <- temp1[temp1$cell_name == cell_names[i], ]
+
+    if (i == 1) {
+        plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = freq, fill = PatientID)) + 
+            geom_bar(stat = "identity")  + 
+            coord_flip() +
+            labs(x="", y="") +
+            theme(
+                legend.position = "top", 
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+                axis.ticks.x=element_blank()
+            )
+    } else if (i == length(cell_names)) {
+          plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = freq, fill = PatientID)) + 
+            geom_bar(stat = "identity")  + 
+            coord_flip() +
+            labs(x="", y="Fraction of cells") +
+            theme(
+                legend.position = "none"
+            ) 
+    } else {
+        plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = freq, fill = PatientID)) + 
+            geom_bar(stat = "identity")  + 
+            coord_flip() +
+            labs(x="", y="") +
+            theme(
+                legend.position = "none", 
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+                axis.ticks.x=element_blank()
+            )
+    }
+}
+    
+p2 <- plot_grid(plotlist=plots, labels = "", ncol = 1, rel_heights = rel_height)
+```
+
+```{r fig.height=18, fig.width=6}
+temp1 <- as.data.frame(temp %>% dplyr::select(res.0.6, cell_name) %>% group_by(res.0.6) %>% add_tally() %>% unique())
+
+plots = list()
+for (i in 1:length(cell_names)) {
+    temp2 <- temp1[temp1$cell_name == cell_names[i], ]
+
+    if (i == 1) {
+        plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = n)) + 
+            geom_bar(stat = "identity")  + 
+            coord_flip() +
+            labs(x="", y="") +
+            theme(
+                legend.position = "top", 
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+                axis.ticks.x=element_blank()
+            )
+    } else if (i == length(cell_names)) {
+          plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = n)) + 
+            geom_bar(stat = "identity")  + 
+            coord_flip() +
+            labs(x="", y="Number of cells") +
+            theme(
+                legend.position = "none"
+            ) 
+    } else {
+        plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = n)) + 
+            geom_bar(stat = "identity")  + 
+            coord_flip() +
+            labs(x="", y="") +
+            theme(
+                legend.position = "none", 
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+                axis.ticks.x=element_blank()
+            )
+    }
+}
+    
+p3 <- plot_grid(plotlist=plots, labels = "", ncol = 1, rel_heights = rel_height)
+```
+
+```{r fig.height=18, fig.width=6}
+plots = list()
+for (i in 1:length(cell_names)) {
+    temp2 <- temp[temp$cell_name == cell_names[i], ]
+
+    if (i == 1) {
+        plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = nGene)) + 
+            geom_boxplot() + 
+            scale_y_log10() +
+            coord_flip() +
+            labs(x="", y="") +
+            theme(
+                legend.position = "top", 
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+                axis.ticks.x=element_blank()
+            )
+    } else if (i == length(cell_names)) {
+          plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = nGene)) + 
+            geom_boxplot() + 
+            scale_y_log10() +
+            coord_flip() +
+            labs(x="", y="Number of genes (log10 scale)") +
+            theme(
+                legend.position = "none"
+            ) 
+    } else {
+        plots[[i]] <- ggplot(temp2, aes(x = res.0.6, y = nGene)) + 
+            geom_boxplot() + 
+            scale_y_log10() +
+            coord_flip() +
+            labs(x="", y="") +
+            theme(
+                legend.position = "none", 
+                axis.title.x=element_blank(),
+                axis.text.x=element_blank(),
+                axis.ticks.x=element_blank()
+            )
+    }
+}
+
+p4 <- plot_grid(plotlist=plots, labels = "", ncol = 1, rel_heights = rel_height)
+```
+
+```{r fig.height=30, fig.width=24}
+plot_grid(plotlist = list(p1, p2, p3, p4), labels = "", nrow = 1, rel_heights = c(1.1, 1.5, 1, 1))
+```
+
+```{r}
+temp <- cbind(temp, obj@dr$umap@cell.embeddings[rownames(temp), ])
+```
+
+---
+### Fig3 AUCell
+
+```{r}
+cells_rankings <- readRDS(here("00_data_ingest", "04_rds_generated", "AUCell_cells_rankings_all.rds"))
+
+cells_assignment <- readRDS(here("00_data_ingest", "04_rds_generated", "AUCell_cells_assignment_all.rds"))
+
+cells_AUC <- readRDS(here("00_data_ingest", "04_rds_generated", "AUCell_cells_auc_al.rds"))
+
+expMatrix <- readRDS(here("00_data_ingest", "00_raw_data", "raw_counts_clean.rds"))
+
+tsne <- readRDS(here("00_data_ingest", "04_rds_generated", "seurat_harmony_tsne.rds"))
+
+```
+
+```{r}
+for (i in 1:nrow(cells_AUC)) {
+    print(cells_AUC[i, ]@NAMES)
+    png(here("01_figures/analysis/aucell", paste(cells_AUC[i, ]@NAMES, ".png", sep = "")), res = 600, width = 6, height = 6, units = "in")
+    AUCell_plotTSNE(tSNE=tsne$Y, cellsAUC=cells_AUC[i, ], exprMat = expMatrix, plots = c("binaryAUC"))
+    dev.off()
+}
+```
+
+
+---
+
+### Fig4 各cluster的数量热图
+```{r fig.height=15, fig.width=30}
+temp <- as.data.frame(obj@meta.data %>% dplyr::select(cluster_id, PatientID) %>% dplyr::group_by(cluster_id, PatientID) %>% add_tally())
+
+temp <- reshape2::acast(temp, cluster_id~PatientID)
+
+pheatmap::pheatmap(temp, cluster_rows = F, cluster_cols = F, display_numbers = T, fontsize=15, number_format = "%d")
+```
+
+```{r fig.height=15, fig.width=15}
+temp <- obj@meta.data
+temp$new <- as.character(temp$Tissue)
+
+temp$new[temp$Tissue == "Tumor"] <- as.character(temp$Disease[as.character(temp$Tissue) == "Tumor"])
+
+temp$new[temp$new == ""] <- "Unknown"
+
+temp <- as.data.frame(temp %>% dplyr::select(cluster_id, new) %>% dplyr::group_by(cluster_id, new) %>% add_tally())
+
+temp <- reshape2::acast(temp, cluster_id~new)
+
+pheatmap::pheatmap(temp, cluster_rows = F, cluster_cols = F, display_numbers = T, fontsize=15, number_format = "%d")
+```
+
+---
+
+### Split whole cells into different seurat object
+
+```{r}
+output_dir = "/mnt/raid62/Lung_cancer_10x/00_data_ingest/04_rds_generated/seurat_obj"
+
+meta <- read.csv("/mnt/raid62/Lung_cancer_10x/00_data_ingest/03_annotation_csv/20190412_seurat_meta.csv", row.names = 1)
+
+
+for (i in unique(meta$cell_name)) {
+    print(i)
+    
+    temp <- meta[meta$cell_name == i, ]
+    
+    temp <- CreateSeuratObject(raw.data=expMatrix[, rownames(temp)], project = i, meta.data = temp)
+    
+    saveRDS(temp, paste(output_dir, gsub(" ", "_", i), sep = "/"))
+}
+```
+
+---
+
+### 先拿Basal开刀
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

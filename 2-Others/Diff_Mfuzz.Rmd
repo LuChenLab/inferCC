@@ -1,0 +1,508 @@
+---
+title: "Diff_Mfuzz"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_knit$set(root.dir = "LungCancer10x/03_each_cells/LUSC/Basal/")
+```
+
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(reshape2)
+library(ComplexHeatmap)
+library(wesanderson)
+library(circlize)
+library(openxlsx)
+```
+
+### 调整不同的mfuzz图形
+
+1. 热图 已有
+2. 散点折线图，不行：患者没有横跨两个时期的，因此无法串联起来
+3. violinplot
+
+
+```{r eval=FALSE, include=FALSE}
+markers <- read.xlsx("markers_by_stage.xlsx", rowNames = T)
+markers <- markers[markers$p_val_adj < 0.05 & markers$avg_logFC > 0.5, ]
+
+nms = unique(markers$gene)
+ig_genes = c(grep("^IGJ", nms, v=T), 
+             grep("^IGH",nms,v=T),
+             grep("^IGK", nms, v=T), 
+             grep("^IGL", nms, v=T))
+
+bad_genes = unique(c(grep("^MT-", nms, v=T), grep("^MTMR", nms, v=T), grep("^MTND", nms, v=T),"NEAT1","TMSB4X", "TMSB10", ig_genes))
+
+markers <- markers[!markers$gene %in% bad_genes, ]
+
+mfuzz = markers[, c("ident", "gene")]
+colnames(mfuzz)[1] = "Clt"
+
+write.csv(mfuzz, "mfuzz/results.csv")
+```
+
+```{r}
+mfuzz <- read.csv("mfuzz/results.csv", row.names = 1)
+
+obj <- readRDS("seurat.rds")
+```
+
+
+Basal中，M.III的基因可能不够好，人为再筛选一道
+```{r}
+mfuzz = rbind(mfuzz[mfuzz$Clt %in% c("I", "II"), ], mfuzz[mfuzz$Clt == "III", ] %>% tail(20))
+```
+
+
+1. 热图
+```{R fig.height=5, fig.width=5}
+# make heatmap
+meta = NULL
+
+for(i in sort(unique(obj@meta.data$Stage))) {
+    temp_meta = obj@meta.data[obj@meta.data$Stage == i, ]
+    
+    temp_meta = temp_meta[order(temp_meta$PatientID), ]
+    
+    meta = rbind(meta, temp_meta)
+}
+
+
+colors = c(
+    wes_palette("Darjeeling1"), 
+    wes_palette("Darjeeling2"), 
+    wes_palette("Moonrise1"), 
+    wes_palette("Moonrise3"),
+    wes_palette("Royal1"),
+    wes_palette("Royal1")
+)
+
+
+ra_col = rev(colors)[1:length(unique(mfuzz$Clt))]
+names(ra_col) <- unique(mfuzz$Clt)
+
+# top anno
+temp = meta[, "Stage", drop = F]
+temp$pos = 1:nrow(temp)
+
+temp = temp %>% group_by(Stage) %>% mutate(m = round(mean(pos))) %>% dplyr::select(Stage, m) %>% unique()
+
+
+ta = HeatmapAnnotation(
+    stage = anno_mark(
+        at = temp$m,
+        labels = temp$Stage
+    ),
+    Stage = meta$Stage,
+    col = list(
+        Stage = c(
+            "I"="#65A9A3", 
+            "II"="#4A933E",
+            "III"="#EC7A21",
+            "IV"="#D73F47",
+            "LUAD_Normal"="#FECC1B", 
+            "LUSC_Normal"="#778793"
+        )
+    ),
+    show_legend = F,
+    show_annotation_name = F
+)
+
+temp = mfuzz[, "Clt", drop = F]
+temp$Clt = paste0("M.", temp$Clt)
+temp$pos = 1:nrow(temp)
+temp = temp %>% 
+    group_by(Clt) %>% 
+    mutate(m = round(mean(pos))) %>% 
+    dplyr::select(Clt, m) %>% 
+    unique()
+
+ra = rowAnnotation(
+    cel = anno_mark(
+        at = temp$m, 
+        labels = temp$Clt,
+        side = "column"
+    ),
+    Mfuzz=mfuzz$Clt,
+    col = list(
+        Mfuzz=ra_col
+    ),
+    show_legend = F,
+    show_annotation_name = F
+)
+
+
+temp = meta[, "PatientID", drop = F]
+temp$pos = 1:nrow(temp)
+
+temp = temp %>% group_by(PatientID) %>%
+    mutate(m = round(mean(pos))) %>%
+    dplyr::select(PatientID, m) %>% unique()
+
+patient_color = colors[1:length(unique(meta$PatientID))]
+names(patient_color) = sort(as.character(unique(meta$PatientID)))
+
+ha = HeatmapAnnotation(
+    Patient=as.character(meta$PatientID),
+    cel = anno_mark(
+        at = temp$m, 
+        labels = temp$PatientID,
+        side = "bottom"
+    ),
+    
+    col=list(
+        Patient=patient_color
+    ),
+    show_legend = F,
+    show_annotation_name = F
+)
+
+col_fun = colorRamp2(c(-4, 0, 4), c("blue", "white", "red"))
+
+
+Heatmap(
+    obj@scale.data[mfuzz$gene, rownames(meta)], 
+    cluster_rows = F, 
+    cluster_columns = F, 
+    show_heatmap_legend = F,
+    show_row_names = F, 
+    show_column_names = F,
+    name="Expr",
+    col = col_fun,
+    bottom_annotation = ha,
+    left_annotation = ra,
+    top_annotation = ta
+)
+```
+
+
+2. 散点折线图，按照module和stage取均值
+
+
+整合数据
+```{r}
+expr = obj@scale.data[mfuzz$gene, ]
+expr = melt(as.matrix(expr))
+expr$stage = obj@meta.data[expr$Var2, "Stage"]
+expr$patient = obj@meta.data[expr$Var2, "PatientID"]
+expr$mfuzz_id = mfuzz[expr$Var1, "Clt"]
+```
+
+
+```{r}
+data = expr %>% 
+    group_by(patient, mfuzz_id, stage) %>% 
+    mutate(m = mean(value)) %>% 
+    dplyr::select(patient, mfuzz_id, stage, m) %>%
+    unique()
+```
+
+
+```{r fig.height=4, fig.width=12}
+ggplot(data, aes(x=stage, y=m, color=patient, group=1)) + 
+    geom_point() +
+    facet_grid(.~mfuzz_id) +
+    geom_smooth(method = "loess")
+```
+
+
+3. violin plot，按照患者，mfuzz和stage取均值
+```{r}
+data = expr %>% 
+    group_by(patient, mfuzz_id, stage) %>% 
+    mutate(m = mean(value)) %>% 
+    dplyr::select(patient, mfuzz_id, stage, m) %>%
+    unique()
+```
+
+
+```{r fig.height=6, fig.width=18}
+ggplot(expr, aes(x=stage, y=value, color = patient)) + 
+    geom_boxplot() +
+    facet_grid(.~mfuzz_id, scales = "free")
+```
+
+
+```{r}
+obj <- readRDS("seurat.rds")
+```
+
+
+```{R}
+stage_colors = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "LUAD_Normal"="#FECC1B", "LUSC_Normal"="#778793")
+disease_colors = c("LUAD" = "#0084D1", "LUAD_Normal"="#FECC1B", "Normal"="#73BDFF", "LUSC_Normal"="#778793", "LUSC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B")
+tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+colors = c(stage_colors, disease_colors, tissue_colors)
+
+
+
+make_tsne_plot <- function(
+    object, 
+    color="Disease", 
+    alpha=0.8, 
+    colors=colors, 
+    pt.size = 0.1, 
+    guide_ncol=1,
+    reduction.use = "tsne",
+    text_size = 10,
+    axis_size = 12,
+    axis_title_size = 15,
+    title_size = 20,
+    legend.position = "none"
+) {
+    meta = object@meta.data
+
+    coord = object@dr[[reduction.use]]@cell.embeddings
+    colnames(coord) = c("x", "y")
+
+    meta = merge(meta, coord, by = 0)
+
+    p <- ggplot() + 
+        geom_point_rast(
+            eval(parse(text = paste0('aes(x=x, y=y, color=', color, ')'))), 
+            data=meta, 
+            alpha=alpha, 
+            size=pt.size
+        ) +
+        coord_equal() +
+        # SetXAxisGG() +
+        # SetYAxisGG() +
+        # SetLegendPointsGG(x = 6) +
+        # SetLegendTextGG(x = 12) +
+        no.legend.title +
+        theme_bw() +
+        # NoGrid() +
+        theme(
+            plot.title = element_text(hjust = 0.5, size = title_size), 
+            legend.position = legend.position,
+            axis.text = element_text(size = axis_size),
+            axis.title = element_text(size = axis_title_size),
+            legend.text = element_text(size = axis_size)
+        ) +
+        guides(color = guide_legend(ncol=guide_ncol, override.aes = list(size = 10, alpha = 1))) +
+        scale_color_manual(values=colors)
+
+    if (reduction.use == "tsne") {
+        p <- p + labs(x="tSNE_1", y="tSNE_2")
+    } else if (reduction.use == "umap") {
+        p <- p + labs(x="UMAP1", y="UMAP2")
+    }
+    
+    return(p)
+}
+environment(make_tsne_plot) <- asNamespace('Seurat')
+
+
+make_scatterpie_plot <- function(
+    object, 
+    color="Disease", 
+    alpha=0.8, 
+    colors=colors, 
+    pt.size = 0.1, 
+    guide_ncol=1,
+    reduction.use = "tsne",
+    r=0.05,
+    legend.position="none",
+    legend.direction="horizontal",
+    legend.breaks=waiver(),
+    text_size = 10,
+    axis_size = 12,
+    axis_title_size = 15,
+    title_size = 20
+) {
+    meta = object@meta.data
+
+    coord = object@dr[[reduction.use]]@cell.embeddings
+    colnames(coord) = c("x", "y")
+
+    meta = merge(meta, coord, by = 0)
+
+    scatter = eval(
+        parse(
+            text=paste0(
+                "meta %>% group_by(res.0.8, ", color, ") %>% add_tally() %>% group_by(res.0.8) %>% mutate(x1 = median(x), y1 = median(y), perc = n / sum(n)) %>% dplyr::select(res.0.8, x1, y1, perc, ", color, ") %>% unique()"
+            )
+        )
+    )
+
+    colnames(scatter)[colnames(scatter) == color] = "group"
+
+    scatter = dcast(scatter, res.0.8 + x1 + y1 ~ group, value.var="perc")
+
+    scatter[is.na(scatter)] = 0
+    scatter$r = min(max(meta$x) - min(meta$x), max(meta$y) - min(meta$y)) * r
+    
+    print(head(scatter))
+
+    clt_color = gg_color_hue(length(unique(meta$res.0.8)))
+    names(clt_color) = 1:length(unique(meta$res.0.8))
+    
+    p <- ggplot() + 
+        geom_point_rast(
+            aes(x=x, y=y, color=factor(res.0.8)), 
+            data=meta, 
+            alpha=alpha, 
+            size=pt.size
+        ) +
+        geom_scatterpie(
+            aes(
+                x=x1,
+                y=y1, 
+                group=res.0.8,
+                r=r
+            ),
+            data=scatter,
+            cols=as.character(unique(meta[, color])),
+            color=NA
+        ) +
+        coord_equal() +
+        geom_text(
+            aes(x=x1, y=y1 - r - 0.5, label=res.0.8),
+            data=scatter,
+            size = text_size
+        ) +
+        theme_bw() +
+        theme(
+            plot.title = element_text(hjust = 0.5, size = title_size), 
+            legend.position = legend.position,
+            axis.text = element_text(size = axis_size),
+            axis.title = element_text(size = axis_title_size),
+            legend.text = element_text(size = axis_size),
+            # legend.background = element_blank()
+            legend.direction=legend.direction,
+            legend.spacing.x = unit(0.1, 'cm')
+        ) +
+        guides(
+            fill = guide_legend(
+                ncol=guide_ncol, 
+                override.aes = list(size = 3, alpha = 1)
+            )
+        ) +
+        scale_color_manual(values=clt_color, breaks = c()) + 
+        scale_fill_manual(values=colors, breaks = legend.breaks)
+
+    if (reduction.use == "tsne") {
+        p <- p + labs(x="tSNE_1", y="tSNE_2", color="", fill = "")
+    } else if (reduction.use == "umap") {
+        p <- p + labs(x="UMAP1", y="UMAP2", color="", fill="")
+    }
+
+    return(p)
+}
+
+```
+
+
+```{R}
+library(ggrastr)
+library(scatterpie)
+
+r = 0.01
+text_size = 1
+axis_size = 12
+axis_title_size = 15
+title_size = 20
+
+dir.create("font_sizes", showWarnings = F)
+
+registerDoMC(20)
+foreach(i = seq(1:15)) %dopar% {
+  print(i)
+
+  text_size = text_size + i
+  axis_size = axis_size + i
+  axis_title_size = axis_title_size + i
+  title_size = title_size + i
+  r = r + 0.01 * i
+  
+  p <- make_tsne_plot(
+     obj,
+    color="Stage", 
+    colors=colors,
+    reduction.use = "umap", 
+    text_size = text_size,
+    axis_size = axis_size,
+    axis_title_size = axis_title_size,
+    title_size = title_size,
+    legend.position = c(0.1, 0.1)
+  )
+  
+  ggsave(
+    filename = paste0(
+      "font_sizes/umap_font_size_",
+      "_text_size_", text_size,
+      "_axis_size_", axis_size,
+      "_axis_title_size_", axis_title_size,
+      "_title_size_", title_size,
+      ".pdf"
+    ),
+    plot = p,
+    width = 6,
+    height = 6,
+    units = "in"
+  )
+  
+  p <- make_scatterpie_plot(
+    obj,
+    color="Stage", 
+    colors=colors,
+    reduction.use = "umap", 
+    text_size = text_size,
+    axis_size = axis_size,
+    axis_title_size = axis_title_size,
+    title_size = title_size,
+    r = r,
+    legend.position = c(0.1, 0.1)
+  )
+  
+  ggsave(
+    filename = paste0(
+      "font_sizes/scatter_font_size_",
+      "_text_size_", text_size,
+      "_axis_size_", axis_size,
+      "_axis_title_size_", axis_title_size,
+      "_title_size_", title_size,
+      ".pdf"
+    ),
+    plot = p,
+    width = 6,
+    height = 6,
+    units = "in"
+  )
+}
+
+```
+
+```{r}
+data = data.frame(x=1:51, y = rep(1, 51))
+
+ggplot(
+  data, 
+  aes(x = x, y = y, fill = x)
+) + 
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "#C6FFDD", high = "#f7797d") +
+  scale_y_continuous(breaks = data$x, labels=data$x)
+
+
+col_fun = colorRamp2(c(1, 51), c("#C6FFDD", "#f7797d"))
+
+for(i in 1:51) {
+  print(paste(i, col_fun(i)))
+}
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

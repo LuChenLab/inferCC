@@ -1,0 +1,3549 @@
+---
+title: "DEGs_related"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+
+
+```{R include=FALSE}
+library(Seurat)
+library(doMC)
+library(stringr)
+library(ComplexHeatmap)
+library(circlize)
+library(dplyr)
+library(openxlsx)
+library(reshape2)
+
+extrafont::loadfonts()
+```
+
+
+```{r}
+obj <- readRDS(full.path("02_rds/seurat_obj.rds"))
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+```
+
+
+## Markers 
+```{r pressure, echo=FALSE}
+registerDoMC(4)
+markers <- foreach(i=unique(meta$cell_short), .combine = "rbind") %dopar% {
+    temp = meta[meta$cell_short == i & meta$Disease == "LUAD", ]
+    
+    ident.1 = rownames(temp)[temp$Malignant]
+    ident.2 = rownames(temp)[!temp$Malignant]
+    
+    temp = FindMarkers(obj, ident.1 = ident.1, ident.2 = ident.2, logfc.threshold = 0)
+    
+    temp$gene = rownames(temp)
+    temp$cell = i
+    temp$ident = "LUAD"
+    return(temp)
+}
+
+write.csv(markers, full.path("11_CNV/scRNA_AD_M_vs_NM.csv"))
+```
+
+
+```{r pressure, echo=FALSE}
+registerDoMC(4)
+markers <- foreach(i=unique(meta$cell_short), .combine = "rbind") %dopar% {
+    temp = meta[meta$cell_short == i & meta$Disease == "LUSC", ]
+    
+    ident.1 = rownames(temp)[temp$Malignant]
+    ident.2 = rownames(temp)[!temp$Malignant]
+    
+    temp = FindMarkers(obj, ident.1 = ident.1, ident.2 = ident.2, logfc.threshold = 0)
+    
+    temp$gene = rownames(temp)
+    temp$cell = i
+    temp$ident = "LUSC"
+    return(temp)
+}
+
+write.csv(markers, full.path("11_CNV/scRNA_SC_M_vs_NM.csv"))
+```
+
+
+```{r pressure, echo=FALSE}
+registerDoMC(4)
+markers <- foreach(i=unique(meta$cell_short), .combine = "rbind") %dopar% {
+    temp = meta[meta$cell_short == i & meta$Malignant, ]
+    
+    ident.1 = rownames(temp)[temp$Disease == "LUAD"]
+    ident.2 = rownames(temp)[temp$Disease == "LUSC"]
+    
+    temp = FindMarkers(obj, ident.1 = ident.1, ident.2 = ident.2, logfc.threshold = 0)
+    
+    temp$gene = rownames(temp)
+    temp$cell = i
+    temp$ident = "AD_vs_SC"
+    return(temp)
+}
+
+
+write.csv(markers, full.path("11_CNV/scRNA_AD_vs_SC_M.csv"))
+```
+
+
+```{R include=FALSE}
+extrafont::loadfonts()
+```
+
+
+
+### Bulk plot
+
+```{r}
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+```
+
+```{r}
+bulk_expr <- read.xlsx(full.path("09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+bulk_expr <- bulk_expr[, str_detect(colnames(bulk_expr), "LU(AD|SC)")]
+bulk_expr <- t(scale(t(bulk_expr)))
+
+
+bulk_lfc <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"))
+bulk_lfc <- bulk_lfc[bulk_lfc$Type != "Not", ]
+bulk_lfc <- bulk_lfc[order(bulk_lfc$log2FoldChange), ]
+bulk_lfc <- bulk_lfc[bulk_lfc$symbol %in% rownames(expr), ]
+bulk_lfc$log2FoldChange <- -1 * bulk_lfc$log2FoldChange
+rownames(bulk_lfc) = bulk_lfc$gene_id
+```
+
+
+```{r fig.height=8, fig.width=4}
+col_fun = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+sel = c(-25, -26, -35, -27, -18, -13, -9, -11, -6, -20, -36)
+
+h <- Heatmap(
+    bulk_expr[bulk_lfc$gene_id, sel],
+    cluster_rows = F,
+    cluster_columns = T,
+    column_split = str_replace_all(colnames(bulk_expr[, sel]), "\\d+", ""),
+    show_row_names = F, show_column_names = F,
+    use_raster = T, border = T,
+    col = col_fun, 
+    name = "Differential\nexpression",
+    column_title_gp = gpar(fontfamily = "Arial Unicode MS", fontsize = 15),
+    heatmap_legend_param = list(
+        labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+        title_gp = gpar(fontfamily = "Arial Unicode MS")
+    )
+)
+
+co = column_order(h)
+
+# pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/bulk.pdf"), width = 3, height = 6)
+draw(h)
+# dev.off()
+```
+
+
+
+
+
+```{R fig.height=8, fig.width=6}
+set.seed(42)
+
+for (i in unique(meta$cell_short)) {
+    temp_meta <- meta[meta$Disease %in% c("LUAD", "LUSC") & meta$cell_short == i, ]
+    
+    temp_meta$Cells = rownames(temp_meta)
+    
+    temp_meta <- temp_meta %>%
+        group_by(Disease) %>%
+        sample_n(300, replace = T) %>%
+        unique() %>%
+        as.data.frame()
+
+    temp_expr = as.matrix(log10(expr[bulk_lfc$symbol, temp_meta$Cells] + 1))
+    temp_expr = temp_expr - mean(temp_expr)
+    
+    
+    h <- Heatmap(
+        temp_expr,
+        cluster_rows = F,
+        cluster_columns = F,
+        column_split = temp_meta$Disease,
+        show_row_names = F, show_column_names = F,
+        use_raster = T, border = T,
+        # col = col_fun, 
+        name = "Differential\nexpression",
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    )
+    
+    pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap", paste0(i, ".pdf")), width = 4, height = 6)
+    draw(h)
+    dev.off()
+}
+
+
+```
+
+### Make average
+```{r}
+bulk_expr <- read.xlsx(full.path("09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+bulk_expr <- bulk_expr[, str_detect(colnames(bulk_expr), "LU(AD|SC)")]
+bulk_expr <- bulk_expr[, sel]
+
+temp = melt(as.matrix(bulk_expr[bulk_lfc$gene_id, ]))
+temp$Disease = str_replace_all(temp$Var2, "\\d+", "")
+temp$symbol = bulk_lfc[temp$Var1, "symbol"]
+temp$ident = "Bulk"
+
+temp <- temp %>%
+    group_by(Disease, symbol, ident) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Disease, symbol, value, ident) %>%
+    unique() %>%
+    as.data.frame()
+
+
+temp_expr = expr[bulk_lfc$symbol, rownames(meta)[meta$Disease %in% c("LUAD")]]
+temp_expr = as.data.frame(rowSums(temp_expr) / ncol(temp_expr))
+colnames(temp_expr) <- "value"
+temp_expr$symbol = rownames(temp_expr)
+temp_expr$Disease = "LUAD"
+temp_expr$ident = "scRNA"
+
+
+temp_sc = expr[bulk_lfc$symbol, rownames(meta)[meta$Disease %in% c("LUSC")]]
+temp_sc = as.data.frame(rowSums(temp_sc) / ncol(temp_sc))
+colnames(temp_sc) <- "value"
+temp_sc$symbol = rownames(temp_expr)
+temp_sc$Disease = "LUSC"
+temp_sc$ident = "scRNA"
+
+
+temp <- rbind(temp, temp_expr[, colnames(temp)])
+temp <- rbind(temp, temp_sc[, colnames(temp)])
+
+temp$ident = paste(temp$ident, temp$Disease)
+
+temp <- dcast(temp, symbol~ident, value.var = "value", fun.aggregate = mean, fill = 0)
+rownames(temp) <- temp$symbol
+temp <- temp[, colnames(temp) != "symbol"]
+```
+
+
+```{r fig.height=8, fig.width=4}
+pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/bulk_average.pdf"), width = 3, height = 6)
+Heatmap(
+    log10(temp[bulk_lfc$symbol, 1:2] + 1) - 2, 
+    cluster_columns = F, 
+    cluster_rows = F,
+    # col = col_fun,
+    show_row_names = F
+)
+dev.off()
+```
+
+```{r fig.height=8, fig.width=4}
+pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/scRNA_average.pdf"), width = 3, height = 6)
+Heatmap(
+    t(scale(t(temp[bulk_lfc$symbol, 3:4]))), 
+    cluster_columns = F, 
+    cluster_rows = F,
+    # col = col_fun,
+    show_row_names = F
+)
+dev.off()
+```
+
+
+```{r}
+# full.path("11_CNV/scRNA_AD_vs_SC_M.csv")
+# full.path("09_bulk/RNA_seq/scRNA_AD_vs_SC.csv")
+sc_lfc <- read.csv(full.path("11_CNV/scRNA_AD_vs_SC_M.csv"), row.names = 1, stringsAsFactors = F)
+# sc_lfc$avg_logFC = -1 * sc_lfc$avg_logFC
+```
+
+
+```{R}
+
+temp = bulk_lfc[, c("log2FoldChange", "symbol")]
+rownames(temp) <- temp$symbol
+
+temp_lfc <- dcast(sc_lfc, gene~cell, value.var = "avg_logFC", fun.aggregate = mean)
+
+temp_lfc$Bulk = temp[temp_lfc$gene, "log2FoldChange"]
+temp_lfc <- temp_lfc[!is.na(temp_lfc$Bulk), ]
+temp_lfc <- temp_lfc[order(temp_lfc$Bulk), colnames(temp_lfc) != "gene"]
+
+
+binary_mtx <- as.data.frame(apply(temp_lfc, 2, function(x) {
+
+    tmp <- cut(x,
+               breaks = c(-Inf, seq(-4.5, 4.5, 1), Inf),
+               right = FALSE)
+    
+    tmp_res <- plyr::mapvalues(from = levels(tmp),
+                               to = 1:length(levels(tmp)),
+                               x = tmp)
+    tmp_res
+}))
+
+
+cols <- structure(rev(RColorBrewer::brewer.pal(11, "RdBu")), names = 1:11)
+
+
+Heatmap(
+    binary_mtx,
+    show_row_names = F,
+    cluster_rows = F,
+    cluster_columns = F,
+    show_column_names = T,
+    col = cols,
+    name = "Log2FoldChange_bin"
+)
+```
+
+
+```{R fig.height=6, fig.width=2}
+for (i in unique(sc_lfc$cell)) {
+    temp = bulk_lfc[, c("log2FoldChange", "symbol")]
+    rownames(temp) <- temp$symbol
+    
+    temp_lfc <- sc_lfc[sc_lfc$cell == i, ] %>%
+        group_by(gene) %>%
+        mutate(Single = mean(avg_logFC)) %>%
+        dplyr::select(gene, Single) %>%
+        unique() %>%
+        as.data.frame()
+    
+    temp_lfc$Bulk = temp[temp_lfc$gene, "log2FoldChange"]
+    temp_lfc <- na.omit(temp_lfc)
+    temp_lfc <- temp_lfc[order(temp_lfc$Bulk), ]
+    
+    binary_mtx <- as.data.frame(apply(temp_lfc[, c("Bulk", "Single")], 2, function(x) {
+    
+        tmp <- cut(x,
+                   breaks = c(-Inf, seq(-4.5, 4.5, 1), Inf),
+                   right = FALSE)
+        
+        tmp_res <- plyr::mapvalues(from = levels(tmp),
+                                   to = 1:length(levels(tmp)),
+                                   x = tmp)
+        tmp_res
+    }))
+    
+    
+    cols <- structure(rev(RColorBrewer::brewer.pal(11, "RdBu")), names = 1:11)
+    
+    
+    h <- Heatmap(
+        binary_mtx,
+        show_row_names = F,
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        col = cols,
+        name = i,
+        column_title = i,
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS", fontsize = 12),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    )
+    
+    pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap", paste0(i, "_logFC.pdf")), width = 2, height = 6)
+    draw(h)
+    dev.off()
+}
+```
+
+
+#### single cell as ref
+```{R fig.height=6, fig.width=2}
+library(wesanderson)
+bulk_lfc <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"))
+bulk_lfc$log2FoldChange <- -1 * bulk_lfc$log2FoldChange
+rownames(bulk_lfc) = make.unique(bulk_lfc$symbol)
+sc_lfc <- read.csv(full.path("11_CNV/scRNA_AD_vs_SC_M.csv"), row.names = 1, stringsAsFactors = F)
+
+
+for (i in unique(sc_lfc$cell)) {
+
+    temp_lfc <- sc_lfc[sc_lfc$cell == i, ] %>%
+        filter(abs(avg_logFC) > 0.25 & p_val_adj < 0.05) %>%
+        group_by(gene) %>%
+        mutate(Single = mean(avg_logFC)) %>%
+        dplyr::select(gene, Single) %>%
+        unique() %>%
+        as.data.frame()
+    
+    temp_lfc$Bulk = bulk_lfc[temp_lfc$gene, "log2FoldChange"]
+    temp_lfc <- na.omit(temp_lfc)
+    temp_lfc <- temp_lfc[order(temp_lfc$Single), ]
+    
+    
+    binary_mtx <- as.data.frame(apply(temp_lfc[, c("Bulk", "Single")], 2, function(x) {
+
+        tmp <- cut(x,
+                   breaks = c(-Inf, seq(-2, 2, length.out = 9), Inf),
+                   right = FALSE)
+
+        tmp_res <- plyr::mapvalues(from = levels(tmp),
+                                   to = 1:length(levels(tmp)),
+                                   x = tmp)
+        tmp_res
+    }))
+
+    cols <- structure(rev(RColorBrewer::brewer.pal(11, "RdBu")), names = 1:11)
+
+
+    h <- Heatmap(
+        binary_mtx,
+        show_row_names = F,
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = T,
+        col = cols,
+        name = i,
+        column_title = i,
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS", fontsize = 12),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    )
+
+    pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/logFC_ref_sc", paste0(i, "_logFC.pdf")), width = 2, height = 6)
+    draw(h)
+    dev.off()
+}
+```
+
+
+#### single cell with bulk, non immune
+```{R fig.height=6, fig.width=6}
+bulk_lfc <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"))
+bulk_lfc$log2FoldChange <- -1 * bulk_lfc$log2FoldChange
+rownames(bulk_lfc) = make.unique(bulk_lfc$symbol)
+sc_lfc <- read.csv(full.path("11_CNV/scRNA_AD_vs_SC_M.csv"), row.names = 1, stringsAsFactors = F)
+
+
+immune = sort(c( "Gran", "B","Mast", "DC", "CD4", "CD8", "NK", "Mo", "Tregs"))
+non_immune = sort(unique(sc_lfc$cell))
+non_immune = non_immune[!non_immune %in% immune]
+
+
+temp_lfc <- sc_lfc[abs(sc_lfc$avg_logFC) > 0.25 & sc_lfc$p_val_adj < 0.05, ]
+temp_lfc <- temp_lfc[temp_lfc$cell %in% non_immune, ]
+temp_lfc <- temp_lfc[order(temp_lfc$cell, -temp_lfc$avg_logFC), ]
+
+temp_mtx <- as.data.frame(matrix(0, nrow = nrow(temp_lfc), ncol = length(non_immune)))
+
+colnames(temp_mtx) <- non_immune
+temp_mtx$gene <- temp_lfc$gene
+
+
+for (i in 1:nrow(temp_lfc)) {
+    temp_mtx[i, temp_lfc[i, "cell"]] = temp_lfc[i, "avg_logFC"]
+}
+
+temp_mtx$Bulk <- bulk_lfc[temp_mtx$gene, "log2FoldChange"]
+temp_mtx <- temp_mtx[, colnames(temp_mtx) != "gene"]
+temp_mtx[is.na(temp_mtx)] = 0
+
+binary_mtx <- as.data.frame(apply(temp_mtx, 2, function(x) {
+
+    tmp <- cut(x,
+               breaks = c(
+                   -Inf, 
+                   seq(-1, 1, length.out = 9),
+                   # unique(c(
+                   #     seq(min(as.numeric(x)), 0, length.out = 5), 
+                   #     seq(0, max(as.numeric(x)), length.out = 5)
+                   # )), 
+                   Inf
+                ),
+               right = FALSE)
+    
+    tmp_res <- plyr::mapvalues(from = levels(tmp),
+                               to = 1:length(levels(tmp)),
+                               x = tmp)
+    tmp_res
+}))
+
+
+cols <- structure(rev(RColorBrewer::brewer.pal(11, "RdBu")), names = 1:11)
+
+
+h <- Heatmap(
+    binary_mtx,
+    show_row_names = F,
+    cluster_rows = F,
+    cluster_columns = F,
+    show_column_names = T,
+    row_split = temp_lfc$cell,
+    col = cols, border = T,
+    name = "Non\nImmune",
+    column_title_gp = gpar(fontfamily = "Arial Unicode MS", fontsize = 12),
+    heatmap_legend_param = list(
+        labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+        title_gp = gpar(fontfamily = "Arial Unicode MS")
+    ),
+    use_raster = T
+)
+
+pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/non_immune.pdf"), width = 6, height = 6)
+draw(h)
+dev.off()
+```
+
+
+
+```{R fig.height=6, fig.width=6}
+temp_lfc <- sc_lfc[abs(sc_lfc$avg_logFC) > 0.25 & sc_lfc$p_val_adj < 0.05, ]
+temp_lfc <- temp_lfc[temp_lfc$cell %in% immune, ]
+temp_lfc <- temp_lfc[order(temp_lfc$cell, -temp_lfc$avg_logFC), ]
+
+temp_mtx <- as.data.frame(matrix(0, nrow = nrow(temp_lfc), ncol = length(immune)))
+
+colnames(temp_mtx) <- immune
+temp_mtx$gene <- temp_lfc$gene
+
+
+for (i in 1:nrow(temp_lfc)) {
+    temp_mtx[i, temp_lfc[i, "cell"]] = temp_lfc[i, "avg_logFC"]
+}
+
+temp_mtx$Bulk <- bulk_lfc[temp_mtx$gene, "log2FoldChange"]
+temp_mtx <- temp_mtx[, colnames(temp_mtx) != "gene"]
+
+binary_mtx <- as.data.frame(apply(temp_mtx, 2, function(x) {
+    
+    tmp <- cut(x,
+               breaks = c(-Inf, seq(-1, 1, length.out = 9), Inf),
+               right = FALSE)
+    
+    tmp_res <- plyr::mapvalues(from = levels(tmp),
+                               to = 1:length(levels(tmp)),
+                               x = tmp)
+    tmp_res
+}))
+
+
+cols <- structure(rev(RColorBrewer::brewer.pal(11, "RdBu")), names = 1:11)
+
+
+h <- Heatmap(
+    binary_mtx,
+    show_row_names = F,
+    cluster_rows = F,
+    cluster_columns = F,
+    show_column_names = T,
+    border = T,
+    row_split = temp_lfc$cell,
+    col = cols,
+    name = "Immune",
+    column_title_gp = gpar(fontfamily = "Arial Unicode MS", fontsize = 12),
+    heatmap_legend_param = list(
+        labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+        title_gp = gpar(fontfamily = "Arial Unicode MS")
+    ),
+    use_raster = T
+)
+    
+pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/immune.pdf"), width = 6, height = 6)
+draw(h)
+dev.off()
+```
+
+## AD vs SC, split dot plot
+
+```{r}
+meta = readRDS(full.path("11_CNV/meta.rds"))
+expr = readRDS(full.path("02_rds/all_cell_expr.rds"))
+
+obj <- readRDS(full.path("02_rds/seurat_obj.rds"))
+
+meta$clt = str_replace_all(meta$Disease, "_Normal", "")
+meta$clt = paste(meta$cell_short, meta$clt, sep = "_")
+meta$clt[meta$Malignant == F | is.na(meta$Malignant)] = ""
+
+obj@meta.data = meta
+
+temp_obj = CreateSeuratObject(
+    obj@raw.data[, rownames(obj@meta.data)[obj@meta.data$clt != ""]],
+    meta.data = obj@meta.data[obj@meta.data$clt != "", ]
+)
+temp_obj@scale.data = obj@scale.data[, rownames(obj@meta.data)[obj@meta.data$clt != ""]]
+```
+
+
+```{r}
+sc_lfc <- read.csv(full.path("11_CNV/scRNA_AD_vs_SC_M.csv"), row.names = 1, stringsAsFactors = F)
+
+sc_lfc <- sc_lfc %>%
+    filter(abs(avg_logFC) > 0.25 & p_val_adj < 0.05) %>%
+    group_by(cell) %>%
+    top_n(10, wt = abs(avg_logFC)) %>%
+    as.data.frame()
+```
+
+```{r}
+PercentAbove <- function(x, threshold){
+    return(length(x = x[x > threshold]) / length(x = x))
+}
+
+
+ModifiedDotData <- function(
+    object,
+    group.by,
+    markers,
+    cols.use = c("lightgrey", "blue"),
+    col.min = -2.5,
+    col.max = 2.5,
+    dot.min = 0,
+    dot.scale = 6,
+    scale.by = 'radius'
+) {
+    scale.func <- switch(
+        EXPR = scale.by,
+        'size' = scale_size,
+        'radius' = scale_radius,
+        stop("'scale.by' must be either 'size' or 'radius'")
+    )
+    if (!missing(x = group.by)) {
+        object <- SetAllIdent(object = object, id = group.by)
+    }
+    
+    genes.plot <- intersect(row.names(object@raw.data), markers$gene)
+    
+    data.to.plot <- data.frame(FetchData(
+        object = object, 
+        vars.all = genes.plot, 
+        use.scaled = T
+        # cells.use = cells.use
+    ))
+    
+    print(dim(data.to.plot))
+    
+    colnames(x = data.to.plot) <- genes.plot
+    data.to.plot$cell <- rownames(x = data.to.plot)
+    data.to.plot$id <- object@ident
+    
+    data.to.plot %>% gather(
+        key = genes.plot,
+        value = expression,
+        -c(cell, id)
+    ) -> data.to.plot
+    
+    print(dim(data.to.plot))
+    data.to.plot %>%
+        dplyr::group_by(id, genes.plot) %>%
+        dplyr::summarize(
+            avg.exp = mean(expm1(x = expression)),
+            pct.exp = PercentAbove(x = expression, threshold = 0)
+        ) -> data.to.plot
+    
+    print(dim(data.to.plot))
+    data.to.plot %>%
+        dplyr::ungroup() %>%
+        dplyr::group_by(genes.plot) %>%
+        dplyr::mutate(avg.exp.scale = scale(x = avg.exp)) %>%
+        dplyr::mutate(avg.exp.scale = MinMax(
+            data = avg.exp.scale,
+            max = col.max,
+            min = col.min
+        )) ->  data.to.plot
+    data.to.plot$genes.plot <- factor(
+        x = data.to.plot$genes.plot,
+        levels = rev(x = genes.plot)
+    )
+    data.to.plot$genes.plot <- factor(
+      x = data.to.plot$genes.plot,
+      levels = rev(x = sub(pattern = "-", replacement = ".", x = genes.plot))
+    )
+    data.to.plot$pct.exp[data.to.plot$pct.exp < dot.min] <- NA
+    data.to.plot$pct.exp <- data.to.plot$pct.exp * 100
+    data.to.plot <- merge(data.to.plot, markers, by.x = "genes.plot", by.y = "gene")
+
+    return(data.to.plot)
+}
+
+```
+
+
+```{r}
+temp = ModifiedDotData(
+    temp_obj, group.by = "clt", 
+    markers = sc_lfc
+)
+```
+
+
+```{r}
+saveRDS(temp_obj, full.path("11_CNV/DEGs/seurat_obj_for_dotplot.rds"))
+saveRDS(temp, full.path("11_CNV/DEGs/data_for_dotplot_AD_SC_M.rds"))
+```
+
+
+```{R}
+for (i in unique(temp$cell)) {
+    print(i)
+    mi = i
+    if (i == "ATII") {
+        mi = "AT2"
+    } else if (i == "Mo") {
+        mi = "Mφ"
+    }
+    
+    temp1 = temp[temp$cell == i & temp$id %in% paste(mi, c("LUAD", "LUSC"), sep = "_"), ]
+    temp1 = temp1[order(temp1$avg_logFC, decreasing = T), ]
+    temp1$pal = paste(temp1$id, temp1$avg.exp.scale)
+    
+    pal = c()
+    for (i in unique(temp1$id)) {
+        colfunc <- colorRampPalette(c("grey75", ifelse(str_detect(i, "LUAD"), "blue", "red")))
+        temp_ident = sort(unique(temp1$avg.exp.scale))
+        temp_pal = colfunc(length(temp_ident))
+        names(temp_pal) = paste(i, temp_ident)
+        pal = c(pal, temp_pal)
+    }
+    
+    p <- ggplot(
+        temp1, 
+        aes(x=genes.plot, y=id, size = pct.exp, color = pal)
+    ) +
+        geom_point() +
+        scale_color_manual(values = pal) +
+        labs(x = "", y = "") +
+        theme_bw(base_family = "Arial Unicode MS") +
+        theme(
+            panel.grid = element_blank(),
+            axis.text = element_text(size = 12),
+            axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+            legend.text = element_text(size = 8),
+            legend.title = element_text(size = 10),
+        ) +
+        guides(color = FALSE)
+    
+    
+    ggsave(
+        filename = full.path("11_CNV/DEGs/dotplot", paste0(mi, ".pdf")),
+        plot = p, width = 6, height = 2.5,
+        device = cairo_pdf
+    )
+}
+
+```
+
+
+
+
+### Heatmap of DEGs
+
+#### Format single cell degs
+
+```{R}
+col = c("Down" = "blue", "Up" = "red", "Unchanged" = "#E0E0E0")
+alter_fun = list(
+    Unchanged = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(2, "pt"), h-unit(2, "pt"), 
+            gp = gpar(fill = col["Unchanged"], col = NA))
+    },
+    # big blue
+    Up = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(2, "pt"), h-unit(2, "pt"), 
+            gp = gpar(fill = col["Up"], col = NA))
+    },
+    # big red
+    Down = function(x, y, w, h) {
+        grid.rect(x, y, w-unit(2, "pt"), h-unit(2, "pt"), 
+            gp = gpar(fill = col["Down"], col = NA))
+    }
+)
+
+heatmap_legend_param = list(
+    title = "", 
+    at = c("Up", "Unchanged", "Down"), 
+    labels = c("Upregulated", "Unchanged", "Downregulated"),
+    labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+    title_gp = gpar(fontfamily = "Arial Unicode MS")
+)
+```
+
+
+```{r fig.height=6, fig.width=12}
+ad <- read.csv(full.path("11_CNV/scRNA_AD_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+sc <- read.csv(full.path("11_CNV/scRNA_SC_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+
+sc_lfc <- rbind(ad, sc)
+
+sc_lfc$ident1 = 0
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25] = 1
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC < -0.25] = -1
+```
+
+
+```{r}
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V5))
+gene_pos$V6 <- make.unique(as.character(gene_pos$V6))
+
+bulk_ad <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"), sheet = 2)
+bulk_sc <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"), sheet = 3)
+
+bulk_ad$ident = "LUAD"
+bulk_sc$ident = "LUSC"
+
+bulk <- as.data.frame(rbind(bulk_ad, bulk_sc))
+bulk$symbol <- gene_pos[bulk$gene_id, "V6"]
+
+
+bulk$ident1 = 0
+bulk$ident1[bulk$log2FoldChange > 1 & bulk$padj < 0.05] = 1
+bulk$ident1[bulk$log2FoldChange < -1 & bulk$padj < 0.05] = -1
+bulk$cell = "Bulk"
+
+# bulk <- dcast(bulk, ident~symbol, value.var = "ident1", fill = 0, fun.aggregate = mean)
+
+temp_sc = sc_lfc[, c("avg_logFC", "gene", "cell", "ident", "ident1")]
+temp_bk = bulk[, c("log2FoldChange", "symbol", "cell", "ident", "ident1")]
+colnames(temp_bk)[1:2] = colnames(temp_sc)[1:2]
+
+temp = rbind(temp_sc, temp_bk)
+temp = dcast(temp, cell+ident~gene, value.var = "ident1", fill = 0, fun.aggregate = mean)
+
+temp = temp[, c(T, T, apply(temp[temp$cell != "Bulk", !colnames(temp) %in% c("cell", "ident")], 2, function(col) { !all(col == 0) }))]
+temp = as.data.frame(temp)
+rownames(temp) <- make.unique(temp$cell)
+
+temp$cell = str_replace_all(str_replace_all(temp$cell, "Mo", "Mφ"), "ATII", "AT2")
+```
+
+
+
+```{r}
+immu_cells = c(
+    "Tregs", "Mφ", "CD8", "Mast", "NK",
+    "CD4", "DC", "B", "Gran"
+)
+
+
+non_immune <- unique(temp$cell)
+non_immune <- non_immune[!non_immune %in% c(immu_cells, "Bulk")]
+
+mtx = temp
+mtx = mtx[, c(T, T, apply(mtx[mtx$cell != "Bulk", !colnames(mtx) %in% c("cell", "ident")], 2, function(col) { 
+    !all(col == 0)
+}))]
+
+mtx$cell <- factor(mtx$cell, levels = c(sort(non_immune), sort(immu_cells), "Bulk"))
+
+
+temp_mtx = mtx[ order( mtx[,3], mtx[,4] ),]
+
+
+mat = temp_mtx
+mat[mat == 0] = "Unchanged"
+mat[mat == 1] = "Up"
+mat[mat == -1] = "Down"
+```
+
+
+
+```{R fig.height=6, fig.width=12}
+ha = rowAnnotation(
+    Disease = mat$ident,
+    Type = sapply(mat$cell, function(x) {
+        if (x %in% non_immune) {
+            return("Stromal")
+        } else if (x %in% immu_cells) {
+            return("Immune")
+        }else {
+            return ("Bulk")
+        }
+    }),
+    col = list(
+        Disease=c("LUAD" = "#0084D1",  "LUSC"="#A0C807"),
+        Type = c(
+            "Immune"="#E9B0B7",
+            "Stromal"="#90D0E0",
+            "Bulk"="#F8D067"
+        )
+    ),
+    show_annotation_name = F,
+    show_legend = T,
+    annotation_legend_param = list(
+        labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+        title_gp = gpar(fontfamily = "Arial Unicode MS")
+    )
+)
+
+
+h <- Heatmap(
+    t(apply(mtx[, !colnames(mtx) %in% c("cell", "ident")], 1, as.numeric)),
+    name = "",
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = F, show_row_names = F,
+    row_split = mtx$cell,
+    row_title_rot = 0,
+    clustering_method_columns = "ward.D"
+)
+
+co = column_order(h)
+mat_plot = mat[, !colnames(mat) %in% c("cell", "ident")]
+
+h <- oncoPrint(
+    mat_plot[, co], 
+    alter_fun = alter_fun, 
+    col = col,
+    heatmap_legend_param = heatmap_legend_param,
+    show_pct = F, show_row_names = F,
+    top_annotation = NULL,
+    row_title_rot = 0,
+    right_annotation = rowAnnotation(
+        rbar = anno_oncoprint_barplot(
+            type = c("Up", "Down"), border = T,
+            axis_param = list(gp = gpar(fontfamily = "Arial Unicode MS"))
+        ),
+        annotation_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    ),
+    left_annotation = ha,
+    row_split = mat$cell,
+    row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+    column_title_gp = gpar(fontfamily = "Arial Unicode MS")
+)
+
+
+cairo_pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/heatmap_comprare.pdf"), width = 12, height = 6)
+draw(h)
+dev.off()
+# co <- column_order(h)
+# ro <- row_order(h)
+```
+
+
+```{r fig.height=6, fig.width=12}
+immu_cells = c(
+    "Tregs", "Mo", "CD8", "Mast", "NK",
+    "CD4", "DC", "B", "Gran"
+)
+
+
+mtx = temp[temp$cell %in% c(immu_cells, "Bulk"), ]
+mtx = mtx[, c(T, T, apply(mtx[mtx$cell %in% immu_cells, !colnames(mtx) %in% c("cell", "ident")], 2, function(col) { 
+    !all(col == 0)
+}))]
+
+mtx$cell <- factor(mtx$cell, levels = c(sort(immu_cells), "Bulk"))
+
+
+mat = mtx
+mat[mat == 0] = "Unchanged"
+mat[mat == 1] = "Up"
+mat[mat == -1] = "Down"
+
+
+ha = rowAnnotation(
+    Disease = mat$ident,
+    col = list(Disease=c("LUAD" = "#0084D1",  "LUSC"="#A0C807")),
+    show_annotation_name = F,
+    show_legend = T,
+    annotation_legend_param = list(
+        labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+        title_gp = gpar(fontfamily = "Arial Unicode MS")
+    )
+)
+
+
+h <- Heatmap(
+    t(apply(mtx[, !colnames(mtx) %in% c("cell", "ident")], 1, as.numeric)), 
+    name = "", 
+    cluster_rows = F, 
+    cluster_columns = T,
+    show_column_names = F, show_row_names = F,
+    row_split = mtx$cell,
+    row_title_rot = 0,
+    clustering_method_columns = "ward.D"
+)
+
+co = column_order(h)
+mat_plot = mat[, !colnames(mat) %in% c("cell", "ident")]
+
+h <- oncoPrint(
+    mat_plot[, co], 
+    alter_fun = alter_fun, 
+    col = col,
+    heatmap_legend_param = heatmap_legend_param,
+    show_pct = F, show_row_names = F,
+    top_annotation = NULL,
+    right_annotation = rowAnnotation(
+        rbar = anno_oncoprint_barplot(
+            type = c("Up", "Down"), border = T,
+            axis_param = list(gp = gpar(fontfamily = "Arial Unicode MS"))
+        ),
+        annotation_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    ),
+    left_annotation = ha,
+    row_split = str_replace_all(str_replace_all(mat$cell, "Mo", "Mφ"), "ATII", "AT2"),
+    row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+    column_title_gp = gpar(fontfamily = "Arial Unicode MS")
+)
+
+cairo_pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/heatmap_comprare_immune.pdf"), width = 12, height = 6)
+draw(h)
+dev.off()
+```
+
+
+
+
+```{r}
+mtx = temp[temp$cell %in% c(non_immune, "Bulk"), ]
+mtx = mtx[, c(T, T, apply(mtx[, !colnames(mtx) %in% c("cell", "ident")], 2, function(col) { sum(abs(as.numeric(col))) > 0 }))]
+mtx$cell = factor(mtx$cell, levels = c(sort(non_immune), "Bulk"))
+
+
+mat = mtx
+mat[mat == 0] = "Unchanged"
+mat[mat == 1] = "Up"
+mat[mat == -1] = "Down"
+
+
+ha = rowAnnotation(
+    Disease = mat$ident,
+    col = list(Disease=c("LUAD" = "#0084D1",  "LUSC"="#A0C807")),
+    show_annotation_name = F,
+    show_legend = T,
+    annotation_legend_param = list(
+        labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+        title_gp = gpar(fontfamily = "Arial Unicode MS")
+    )
+)
+
+
+h <- Heatmap(
+    t(apply(mtx[, !colnames(mtx) %in% c("cell", "ident")], 1, as.numeric)), 
+    name = "", 
+    cluster_rows = F, 
+    cluster_columns = T,
+    show_column_names = F, show_row_names = F,
+    row_split = mtx$cell,
+    row_title_rot = 0,
+    clustering_method_columns = "ward.D2"
+)
+
+co = column_order(h)
+mat_plot = mat[, !colnames(mat) %in% c("cell", "ident")]
+
+h <- oncoPrint(
+    mat_plot[, co], 
+    alter_fun = alter_fun, 
+    col = col,
+    heatmap_legend_param = heatmap_legend_param,
+    show_pct = F, show_row_names = F,
+    top_annotation = NULL,
+    right_annotation = rowAnnotation(
+        rbar = anno_oncoprint_barplot(
+            type = c("Up", "Down"), border = T,
+            axis_param = list(gp = gpar(fontfamily = "Arial Unicode MS"))
+        ),
+        annotation_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        )
+    ),
+    left_annotation = ha,
+    row_split = str_replace_all(str_replace_all(mat$cell, "Mo", "Mφ"), "ATII", "AT2"),
+    row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+    column_title_gp = gpar(fontfamily = "Arial Unicode MS")
+)
+
+cairo_pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/heatmap_comprare_non_immune.pdf"), width = 12, height = 6)
+draw(h)
+dev.off()
+```
+
+
+
+
+
+## Dotplot of overlap levels
+
+```{r}
+ad <- read.csv(full.path("11_CNV/scRNA_AD_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+sc <- read.csv(full.path("11_CNV/scRNA_SC_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+
+sc_lfc <- rbind(ad, sc)
+
+sc_lfc$ident1 = 0
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25] = 1
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC < -0.25] = -1
+
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V5))
+gene_pos$V6 <- make.unique(as.character(gene_pos$V6))
+
+bulk_ad <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"), sheet = 2)
+bulk_sc <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"), sheet = 3)
+
+bulk_ad$ident = "LUAD"
+bulk_sc$ident = "LUSC"
+
+bulk <- as.data.frame(rbind(bulk_ad, bulk_sc))
+bulk$symbol <- gene_pos[bulk$gene_id, "V6"]
+
+
+bulk$ident1 = 0
+bulk$ident1[bulk$log2FoldChange > 1 & bulk$padj < 0.05] = 1
+bulk$ident1[bulk$log2FoldChange < -1 & bulk$padj < 0.05] = -1
+bulk$cell = "Bulk"
+
+# bulk <- dcast(bulk, ident~symbol, value.var = "ident1", fill = 0, fun.aggregate = mean)
+
+temp_sc = sc_lfc[, c("avg_logFC", "gene", "cell", "ident", "ident1")]
+temp_bk = bulk[, c("log2FoldChange", "symbol", "cell", "ident", "ident1")]
+colnames(temp_bk)[1:2] = colnames(temp_sc)[1:2]
+
+temp = rbind(temp_sc, temp_bk)
+
+temp = temp[temp$ident1 != 0, c("gene", "cell", "ident", "ident1")] %>%
+    group_by(cell, ident1, gene) %>%
+    add_tally() %>%
+    unique() %>%
+    as.data.frame()
+
+temp$ident[temp$n == 2] = "Overlapped"
+
+temp <- temp[, colnames(temp) != "n"] %>%
+    unique() %>%
+    group_by(cell, ident1, ident) %>%
+    add_tally() %>%
+    dplyr::select(cell, ident1, ident, n) %>%
+    unique() %>%
+    group_by(cell, ident1) %>%
+    mutate(p = n / sum(n) * 100) %>%
+    as.data.frame()
+
+immu_cells = c(
+    "Tregs", "Mo", "CD8", "Mast", "NK",
+    "CD4", "DC", "B", "Gran"
+)
+
+temp$Immu = ifelse(temp$cell %in% immu_cells, "Immune", "Non-Immune")
+temp$Immu[temp$cell == "Bulk"] = "Bulk"
+```
+
+
+```{r fig.height=7, fig.width=4}
+temp$ident <- factor(temp$ident, levels = c("LUSC", "Overlapped", "LUAD"))
+temp$cell[temp$cell == "ATII"] = "AT2"
+temp$cell[temp$cell == "Epi"] = "AT1"
+
+p <- ggplot(temp[temp$ident1 == 1, ], aes(x=p, y=cell, fill = ident, label = n)) +
+  geom_bar(stat = "identity") +
+  geom_text(position = position_stack(vjust = 0.5)) +
+  facet_grid(Immu~., scales = "free", space = "free") +
+    scale_size(range = c(0, 10)) +
+    labs(x = "", y="", fill="") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        # axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        strip.text = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.position = "bottom"
+    ) +
+  scale_fill_manual(values = c("LUAD" = "#0084D1",  "LUSC"="#A0C807", "Overlapped"="red")) 
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/DEGs_heatmap/dotplot_overlap.pdf"),
+    width = 4, height = 7, device = cairo_pdf
+)
+```
+
+
+
+```{r fig.height=7, fig.width=4}
+p <- prop.test(
+    c(
+        sum(temp$n[temp$Immu == "Stromal" & temp$ident == "Overlapped" & temp$ident1 == 1]),
+        sum(temp$n[temp$Immu != "Stromal" & temp$ident == "Overlapped" & temp$ident1 == 1])
+    ),
+    c(
+        sum(temp$n[temp$Immu == "Stromal"]),
+        sum(temp$n[temp$Immu != "Stromal"])
+    )
+)
+
+print(p$p.value)
+
+
+temp$cell = str_replace_all(str_replace_all(temp$cell, "Mo", "Mφ"), "ATII", "AT2")
+
+p <- ggplot(temp[temp$ident1 == 1, ], aes(x=ident, y=cell, size = p)) +
+    geom_point() +
+    facet_grid(Immu~., scales = "free", space = "free") +
+    scale_size(range = c(0, 10)) +
+    labs(x = "", y=paste0("p.value = ", format(p$p.value, scitific = T, digits = 2)), size = "") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        strip.text = element_text(size = 15),
+        legend.text = element_text(size = 15)
+    )
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/DEGs_heatmap/dotplot_overlap.pdf"),
+    width = 4, height = 7, device = cairo_pdf
+)
+```
+
+
+## OncoPrint of Stage specific genes
+
+```{R}
+files = list.files(full.path("11_CNV/each_cells/"), pattern = "stage_markers.csv", recursive = T, full.names = T)
+
+stage = NULL
+for (f in files) {
+    disease = basename(dirname(f))
+    cell = basename(dirname(dirname(f)))
+    
+    if (disease %in% c("LUAD", "LUSC")) {
+        temp = read.csv(f, row.names = 1, stringsAsFactors = F)
+        
+        temp$cell = str_replace_all(str_replace_all(cell, "Mo", "Mφ"), "ATII", "AT2")
+        temp$disease = disease
+        
+        stage = rbind(stage, temp)
+    }
+}
+
+
+stage$type = 0
+stage$type[stage$avg_logFC > 0.25 & stage$p_val_adj < 0.05] = 1
+stage$type[stage$avg_logFC < -0.25 & stage$p_val_adj < 0.05] = -1
+
+
+temp = dcast(stage, cell+ident+disease~gene, value.var = "type", fill = 0, fun.aggregate = mean)
+
+temp = temp[, c(T, T, T, apply(temp[, !colnames(temp) %in% c("cell", "ident", "disease")], 2, function(col) { !all(col == 0) }))]
+temp = as.data.frame(temp)
+rownames(temp) <- make.unique(temp$cell)
+```
+
+
+```{r}
+immu_cells = c(
+    "Tregs", "Mφ", "CD8", "Mast", "NK",
+    "CD4", "DC", "B", "Gran"
+)
+
+
+non_immune <- as.character(unique(temp$cell))
+non_immune <- non_immune[!non_immune %in% c(immu_cells, "Bulk")]
+
+
+temp$cell <- factor(as.character(temp$cell), levels = c(sort(non_immune), sort(immu_cells)))
+
+
+ident = sort(unique(temp$ident))
+
+registerDoMC(4)
+heatmap_list = foreach (i = ident) %dopar% {
+    mat = temp[temp$ident == i, ]
+    mat = mat[, c(T, T, T, apply(mat[, !colnames(mat) %in% c("cell", "ident", "disease")], 2, function(col) { sum(abs(as.numeric(col))) > 0 }))]
+    
+    num_rm_cells = abs(nrow(mat) - sum(temp$ident == ident[1]))
+    
+    if (num_rm_cells > 0) {
+        lack_cells = paste(temp$cell[temp$ident == ident[1]], temp$disease[temp$ident == ident[1]])
+        lack_cells = lack_cells[!lack_cells %in% paste(mat$cell, mat$disease)]
+        temp_mat = as.data.frame(matrix(data = 0, nrow = length(lack_cells), ncol = ncol(mat)))
+        colnames(temp_mat) = colnames(mat)
+        temp_mat$cell = sapply(lack_cells, function(x) {
+            str_split(x, "\\s")[[1]][1]
+        })
+        temp_mat$ident = i
+        temp_mat$disease = sapply(lack_cells, function(x) {
+            str_split(x, "\\s")[[1]][2]
+        })
+        mat = rbind(mat, temp_mat)
+        mat = mat[order(mat$cell, mat$disease), ]
+        rm(temp_mat)
+        
+        mat$cell = factor(mat$cell, levels = c(sort(non_immune), sort(immu_cells)))
+    }
+    
+    rownames(mat) <- paste(mat$cell, mat$disease)
+    
+    if (i == ident[1]) {
+        ha = rowAnnotation(
+            Type = ifelse(mat$cell %in% immu_cells, "Immune", "Stromal"),
+            Disease = mat$disease,
+            col = list(
+                Disease=c("LUAD" = "#0084D1",  "LUSC"="#A0C807"),
+                Type = c("Immune"="#E9B0B7", "Stromal"="#90D0E0")
+            ),
+            show_annotation_name = F,
+            show_legend = T,
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+
+    } else {
+        ha = rowAnnotation(
+            Disease = mat$disease,
+            col = list(Disease=c("LUAD" = "#0084D1",  "LUSC"="#A0C807")),
+            show_annotation_name = F,
+            show_legend = T,
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        )
+    }
+
+    
+    h <- Heatmap(
+        t(apply(mat[, !colnames(mat) %in% c("cell", "ident", "disease")], 1, as.numeric)), 
+        name = "", 
+        cluster_rows = F, 
+        cluster_columns = T,
+        show_column_names = F, show_row_names = F,
+        row_split = mat$cell,
+        row_title_rot = 0,
+        clustering_method_columns = "ward.D"
+    )
+    
+    co = column_order(h)
+
+    mat_plot = mat[, !colnames(mat) %in% c("cell", "ident", "disease")]
+    
+    mat_plot[mat_plot == 0] = "Unchanged"
+    mat_plot[mat_plot == 1] = "Up"
+    mat_plot[mat_plot == -1] = "Down"
+    
+    
+    h <- oncoPrint(
+        mat_plot[, co], 
+        name = i,
+        alter_fun = alter_fun, 
+        col = col,
+        show_heatmap_legend = i == ident[1], 
+        heatmap_legend_param = list(
+            title = "", 
+            at = c("Up", "Unchanged", "Down"), 
+            labels = c("Upregulated", "Unchanged", "Downregulated"),
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS")
+        ),
+        show_pct = F, show_row_names = F,
+        top_annotation = NULL,
+        right_annotation = rowAnnotation(
+            rbar = anno_oncoprint_barplot(
+                type = c("Up", "Down"), border = T,
+                axis_param = list(gp = gpar(fontfamily = "Arial Unicode MS"))
+            ),
+            annotation_legend_param = list(
+                labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+                title_gp = gpar(fontfamily = "Arial Unicode MS")
+            )
+        ),
+        left_annotation = ha,
+        row_split = mat$cell,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        row_title_rot = 0,
+        column_title = i,
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS", fontsize = 15)
+    )
+    
+    h
+}
+
+
+
+ht_list = heatmap_list[[1]] + heatmap_list[[2]] + heatmap_list[[3]] + heatmap_list[[4]]
+```
+
+
+```{r  fig.height=6, fig.width=12}
+cairo_pdf(full.path("09_bulk/RNA_seq/DEGs_heatmap/heatmap_stage_specific.pdf"), width = 12, height = 6)
+draw(ht_list, merge_legend = TRUE)
+dev.off()
+```
+
+
+### Network of cells
+
+```{r}
+make_network_of_DEGs <- function(lfc, seed = 42) {
+    set.seed(seed)
+    temp <- merge(lfc[, c("gene", "cell")], lfc[, c("gene", "cell")], by = "gene")
+
+    temp <- temp[temp$cell.x != temp$cell.y, ]
+    
+    temp <- temp %>%
+        group_by(cell.x, cell.y) %>%
+        add_tally() %>%
+        as.data.frame()
+    
+    
+    temp1 = lfc %>%
+        group_by(cell) %>%
+        add_tally() %>%
+        dplyr::select(cell, n) %>%
+        unique() %>%
+        as.data.frame()
+    
+    rownames(temp1) <- temp1$cell
+    
+    # print(temp1)
+    
+    g = graph_from_data_frame(temp[, c("cell.x", "cell.y", "n")], directed = TRUE, vertices = NULL)
+    
+    data <- fortify(g)
+    data$count <- log10(temp1[as.character(data$vertex.names), "n"] + 1)
+    data$n[is.na(data$n)] = 1
+    data$n = log10(data$n + 1)
+    
+    immu = c(
+        "B", "CD4", "CD8", "DC","Gran",
+        "Mast", "Mo", "NK", "Tregs", "Mφ"
+    )
+        
+    data$Type = "Non-immune"
+    data$Type[data$vertex.names %in% immu] <- "Immune"
+    
+    ggplot(
+        data, 
+        aes(x = x, y = y, xend = xend, yend = yend, label = vertex.names)
+    ) +
+        geom_edges(color = "grey25", aes(alpha = n)) +
+        geom_nodes(aes(color = Type, size = count)) +
+        geom_nodetext_repel(
+            size = 6,
+            fontface = "bold", 
+            box.padding = unit(1, "lines")
+        ) +
+        theme_blank(base_family = "Arial Unicode MS") +
+        theme(
+            legend.position = "none",
+            legend.text = element_text(size = 10)
+        ) +
+        scale_color_manual(values = c(
+            "Immune"="#E9B0B7",
+            "Non-immune"="#90D0E0"
+        )) +
+        labs(
+            size = "Total num. of interaction", 
+            alpha = "Num. of interaction",
+            color = ""
+        ) +
+        guides(size = F, alpha = F) +
+        scale_size(range = c(1, 30)) +
+        scale_alpha(range = c(0.01, 1))
+}
+```
+
+
+```{R fig.height=6, fig.width=6}
+library(igraph)
+library(ggnetwork)
+
+
+sc_lfc <- read.csv(full.path("11_CNV/scRNA_AD_vs_SC_M.csv"), row.names = 1, stringsAsFactors = F)
+
+temp_lfc <- sc_lfc[sc_lfc$p_val_adj < 0.05 & abs(sc_lfc$avg_logFC) > 0.25, ]
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/DEGs_heatmap/network_AD_vs_SC.pdf"),
+    plot = make_network_of_DEGs(temp_lfc),
+    width = 6, height = 6
+)
+```
+
+```{R fig.height=6, fig.width=6}
+sc_lfc <- read.csv(full.path("11_CNV/scRNA_AD_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+
+temp_lfc <- sc_lfc[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25, ]
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/DEGs_heatmap/network_AD.pdf"),
+    plot = make_network_of_DEGs(temp_lfc),
+    width = 6, height = 6
+)
+```
+
+
+```{R fig.height=6, fig.width=6}
+sc_lfc <- read.csv(full.path("11_CNV/scRNA_SC_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+
+temp_lfc <- sc_lfc[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25, ]
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/DEGs_heatmap/network_SC.pdf"),
+    plot = make_network_of_DEGs(temp_lfc),
+    width = 6, height = 6
+)
+```
+
+
+
+## Ontology
+
+```{R}
+ad <- read.csv(full.path("11_CNV/scRNA_AD_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+sc <- read.csv(full.path("11_CNV/scRNA_SC_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+
+sc_lfc <- rbind(ad, sc)
+
+sc_lfc$ident1 = 0
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25] = 1
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC < -0.25] = -1
+
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V5))
+gene_pos$V6 <- make.unique(gene_pos$V6)
+
+bulk_ad <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"), sheet = 2)
+bulk_sc <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"), sheet = 3)
+
+bulk_ad$ident = "LUAD"
+bulk_sc$ident = "LUSC"
+
+bulk <- as.data.frame(rbind(bulk_ad, bulk_sc))
+bulk$symbol <- gene_pos[bulk$gene_id, "V6"]
+
+
+bulk$ident1 = 0
+bulk$ident1[bulk$log2FoldChange > 1 & bulk$padj < 0.05] = 1
+bulk$ident1[bulk$log2FoldChange < -1 & bulk$padj < 0.05] = -1
+bulk$cell = "Bulk"
+```
+
+
+```{r include=FALSE}
+library(clusterProfiler)
+library(DOSE)
+library(org.Hs.eg.db)
+```
+
+### GO
+
+```{r}
+c5 <- read.gmt(full.path("c5.all.v7.0.symbols.gmt"))
+
+for (d in c("LUAD", "LUSC")) {
+    print(d)
+    gsea = list()
+    for (i in unique(sc_lfc$cell[sc_lfc$ident == d])) {
+        print(i)
+        
+        temp = sc_lfc[sc_lfc$ident == d & sc_lfc$cell == i, ]
+     
+        geneList = temp$avg_logFC
+        names(geneList) <- temp$gene
+        
+        gsea[[i]] = GSEA(sort(geneList, decreasing = T), TERM2GENE=c5, verbose=FALSE)
+    }
+    
+    
+    temp = bulk[bulk$ident == d, ]
+    geneList = temp$log2FoldChange
+    names(geneList) <- temp$symbol
+    
+    gsea[["Bulk"]] = GSEA(sort(geneList, decreasing = T), TERM2GENE=c5, verbose=FALSE)
+    
+    
+    saveRDS(gsea, full.path("09_bulk/RNA_seq", paste0("DEGs_", d, "_gsea.rds")))
+}
+```
+
+
+```{R}
+
+wb = createWorkbook()
+
+gsea = readRDS(full.path("09_bulk/RNA_seq/DEGs_LUAD_gsea.rds"))
+addWorksheet(wb, "LUAD")
+data = NULL
+for (i in names(gsea)) {
+    
+    temp = as.data.frame(gsea[i])
+    
+    if (nrow(temp) > 0) {
+        colnames(temp) <- str_replace_all(colnames(temp), paste0(i, "\\."), "")
+        temp$ident = i
+        data = rbind(data, temp)
+    }
+}
+
+writeData(wb, 1, data)
+
+
+gsea = readRDS(full.path("09_bulk/RNA_seq/DEGs_LUSC_gsea.rds"))
+addWorksheet(wb, "LUSC")
+data = NULL
+for (i in names(gsea)) {
+    
+    temp = as.data.frame(gsea[i])
+    
+    if (nrow(temp) > 0) {
+        colnames(temp) <- str_replace_all(colnames(temp), paste0(i, "\\."), "")
+        temp$ident = i
+        data = rbind(data, temp)
+    }
+}
+
+writeData(wb, 2, data)
+
+saveWorkbook(wb, full.path("09_bulk/RNA_seq/DEGs_gsea.xlsx"), overwrite = T)
+```
+
+
+## GO
+```{r}
+go = NULL
+for (d in c("LUAD", "LUSC")) {
+    print(d)
+
+    for (i in unique(sc_lfc$cell[sc_lfc$ident == d])) {
+        print(i)
+        
+        temp = sc_lfc[sc_lfc$ident == d & sc_lfc$cell == i & sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25, ]
+        
+        if (is.null(temp)) {
+            next
+        }
+     
+        tryCatch({
+            temp = enrichGO(
+                temp$gene,
+                OrgDb = org.Hs.eg.db, 
+                keyType       = 'SYMBOL',
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05
+            )
+            
+            temp = simplify(temp)
+            
+            temp = as.data.frame(temp)
+            
+            if (nrow(temp) > 0) {
+                temp$cell = i
+                temp$Disease = d
+                go = rbind(go, temp)
+            }
+        }, error = function(e) {})
+    }
+    
+    
+    temp = bulk[bulk$ident == d & bulk$padj < 0.05 & bulk$log2FoldChange > 1, ]
+    
+    temp = enrichGO(
+        temp$gene_id,
+        OrgDb = org.Hs.eg.db, 
+        keyType       = 'ENSEMBL',
+        ont           = "BP",
+        pAdjustMethod = "BH",
+        pvalueCutoff  = 0.01,
+        qvalueCutoff  = 0.05
+    )
+    
+    temp = simplify(temp)
+    
+    temp = as.data.frame(temp)
+    
+    if (nrow(temp) > 0) {
+        temp$cell = "Bulk"
+        temp$Disease = d
+        go = rbind(go, temp)
+    }
+}
+
+write.csv(go, full.path("09_bulk/RNA_seq/DEGs_go.csv"))
+```
+
+
+### common upregulated and common downregulated genes
+```{R}
+ad <- read.csv(full.path("11_CNV/scRNA_AD_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+sc <- read.csv(full.path("11_CNV/scRNA_SC_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+
+sc_lfc <- rbind(ad, sc)
+
+sc_lfc$ident1 = 0
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25] = 1
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC < -0.25] = -1
+```
+
+
+```{r}
+temp = sc_lfc[sc_lfc$ident1 != 0 & !sc_lfc$cell %in% immu, ] %>%
+    dplyr::select(gene, ident, ident1) %>%
+    unique() %>%
+    group_by(ident1, gene) %>%
+    add_tally() %>%
+    dplyr::select(ident1, gene, n) %>%
+    unique() %>%
+    as.data.frame()
+
+
+luad = enrichGO(
+    temp$gene[temp$n > 1 & temp$ident1 == 1],
+    OrgDb = org.Hs.eg.db, 
+    keyType       = 'SYMBOL',
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.01,
+    qvalueCutoff  = 0.05
+)
+
+luad = simplify(luad)
+res = as.data.frame(luad)
+res$Type = "Common up"
+
+
+lusc = enrichGO(
+    temp$gene[temp$n > 1 & temp$ident1 == -1],
+    OrgDb = org.Hs.eg.db, 
+    keyType       = 'SYMBOL',
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.01,
+    qvalueCutoff  = 0.05
+)
+
+lusc = simplify(lusc)
+temp = as.data.frame(lusc)
+temp$Type = "Common down"
+
+res = rbind(res, temp)
+```
+
+
+```{r}
+temp = sc_lfc[sc_lfc$ident1 == 1, ] %>%
+    group_by(ident, gene) %>%
+    add_tally() %>%
+    dplyr::select(ident, gene, n) %>%
+    unique() %>%
+    as.data.frame()
+
+
+luad = enrichGO(
+    temp$gene[temp$n == 1 & temp$ident == "LUAD"],
+    OrgDb = org.Hs.eg.db, 
+    keyType       = 'SYMBOL',
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.01,
+    qvalueCutoff  = 0.05
+)
+
+luad = simplify(luad)
+luad = as.data.frame(luad)
+luad$Type = "LUAD"
+
+res = rbind(res, luad)
+
+
+lusc = enrichGO(
+    temp$gene[temp$n == 1 & temp$ident == "LUSC"],
+    OrgDb = org.Hs.eg.db, 
+    keyType       = 'SYMBOL',
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.01,
+    qvalueCutoff  = 0.05
+)
+
+lusc = simplify(lusc)
+lusc = as.data.frame(lusc)
+lusc$Type = "LUSC"
+
+res = rbind(res, lusc)
+
+write.csv(res, full.path("11_CNV/DEGs/common_genes_go.csv"))
+```
+
+
+
+## KEGG
+```{r}
+kegg = NULL
+do = NULL
+for (d in c("LUAD", "LUSC")) {
+    print(d)
+
+    for (i in unique(sc_lfc$cell[sc_lfc$ident == d])) {
+        print(i)
+        
+        temp = sc_lfc[sc_lfc$ident == d & sc_lfc$cell == i & sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25, ]
+        
+        if (is.null(temp)) {
+            next
+        }
+     
+        tryCatch({
+            
+            eg = bitr(temp$gene, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+            
+            temp = enrichKEGG(
+                eg$ENTREZID,
+                organism = "hsa", keyType = "kegg",
+                pvalueCutoff = 0.05,  pAdjustMethod = "BH", 
+                minGSSize = 10, maxGSSize = 500, 
+                qvalueCutoff = 0.2, use_internal_data = FALSE
+            )
+            
+            temp = as.data.frame(temp)
+            
+            if (nrow(temp) > 0) {
+                temp$cell = i
+                temp$Disease = d
+                kegg = rbind(kegg, temp)
+            }
+            
+            
+            x <- enrichDO(
+                gene  = eg$ENTREZID,
+                ont = "DO", pvalueCutoff  = 0.05,
+                pAdjustMethod = "BH", minGSSize = 5, 
+                maxGSSize = 500, qvalueCutoff  = 0.05
+            )
+            
+            x = as.data.frame(x)
+            if (nrow(x) > 0) {
+                x$cell = i
+                x$Disease = d
+                do = rbind(do, x)
+            }
+            
+            
+        }, error = function(e) {})
+    }
+    
+    
+    temp = bulk[bulk$ident == d & bulk$padj < 0.05 & bulk$log2FoldChange > 1, ]
+    
+    eg = bitr(temp$gene_id, fromType = "ENSEMBL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+            
+    temp = enrichKEGG(
+        eg$ENTREZID,
+        organism = "hsa", keyType = "kegg",
+        pvalueCutoff = 0.05,  pAdjustMethod = "BH", 
+        minGSSize = 10, maxGSSize = 500, 
+        qvalueCutoff = 0.2, use_internal_data = FALSE
+    )
+    
+    temp = as.data.frame(temp)
+    
+    if (nrow(temp) > 0) {
+        temp$cell = "Bulk"
+        temp$Disease = d
+        kegg = rbind(kegg, temp)
+    }
+    
+    x <- enrichDO(
+        gene  = eg$ENTREZID,
+        ont = "DO", pvalueCutoff  = 0.05,
+        pAdjustMethod = "BH", minGSSize = 5, 
+        maxGSSize = 500, qvalueCutoff  = 0.05
+    )
+    
+    x = as.data.frame(x)
+    if (nrow(x) > 0) {
+        x$cell = "Bulk"
+        x$Disease = d
+        do = rbind(do, x)
+    }
+    
+}
+
+write.csv(kegg, full.path("09_bulk/RNA_seq/DEGs_kegg.csv"))
+write.csv(do, full.path("09_bulk/RNA_seq/DEGs_do.csv"))
+```
+
+
+### Make do plot of 
+
+```{r}
+do = read.csv(full.path("09_bulk/RNA_seq/DEGs_do.csv"), row.names = 1, stringsAsFactors = F)
+
+do$Disease[do$cell == "Bulk"] = "Bulk"
+
+# temp = do[do$Description == "non-small cell lung carcinoma", ]
+do$GeneRatio <- sapply(do$GeneRatio, function(x) {
+    x = str_split(x, "/")[[1]]
+    as.numeric(x[1]) / as.numeric(x[2])
+})
+
+```
+
+```{R fig.height=6, fig.width=8}
+library(wesanderson)
+
+set.seed(42)
+temp <- do[do$p.adjust < 0.01, ] %>% 
+  group_by(cell, Disease) %>%
+  top_n(3, wt = GeneRatio) %>%
+  sample_n(size = 3, replace = T) %>%
+  unique() %>%
+  as.data.frame()
+
+temp = unique(rbind(temp, do[do$Description == "non-small cell lung carcinoma", ]))
+
+
+axis_size = 12
+axis_title_size = 20
+title_size = 20
+legend.position="right"
+legend_text_size = 12
+legend_title_size = 15
+
+
+immu <- c( 
+    "B", "CD4", "CD8",
+    "DC", "Mast", "Mo",
+    "NK", "Tregs", "Gran"
+)
+
+non_immu = unique(temp$cell)[!unique(temp$cell) %in% c(immu, "Bulk")]
+
+temp$cell = factor(temp$cell, levels = c("Bulk", sort(non_immu), sort(immu)))
+
+
+pal = rev(wes_palette("Zissou1", 100, type = "continuous"))
+
+p <- ggplot(temp, aes(x=cell, y=Description, size = GeneRatio, color = p.adjust)) +
+    facet_grid(.~Disease, scales = "free", space = "free") +
+    geom_point() +
+    scale_color_gradientn(colours = pal) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+        legend.position = legend.position,
+        axis.text = element_text(size = axis_size),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = axis_size),
+        axis.title = element_text(size = axis_title_size),
+        legend.text = element_text(size = legend_text_size),
+        legend.title = element_text(size = legend_title_size),
+        panel.grid = element_blank(),
+        strip.text = element_text(size = 15)
+    ) +
+    labs(x = "", title = "", y= "")
+
+p
+
+
+ggsave(
+    filename = full.path("09_bulk/RNA_seq/non_small_do.pdf"),
+    plot = p, width = 8, height = 6
+)
+```
+
+
+## Make plot of GO
+```{R}
+go <- read.csv(full.path("09_bulk/RNA_seq/DEGs_go.csv"), row.names = 1, stringsAsFactors = F)
+go$GeneRatio <- sapply(go$GeneRatio, function(x) {
+    x = str_split(x, "/")[[1]]
+    as.numeric(x[1]) / as.numeric(x[2])
+})
+
+go$Disease[go$cell == "Bulk"] = "Bulk"
+```
+
+
+
+### LUAD
+
+```{r}
+my_theme <- ggplot2::theme(
+    plot.title = element_text(hjust = 0.5, face="bold", size = 15),
+    axis.text = element_text(size = 8),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
+    axis.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 10),
+    panel.grid = element_blank()
+)
+
+
+immu <- c( 
+    "B", "CD4", "CD8",
+    "DC", "Mast", "Mo",
+    "NK", "Tregs", "Gran"
+)
+```
+
+
+```{R fig.height=10, fig.width=12}
+library(wesanderson)
+
+set.seed(42)
+temp <- go[go$p.adjust < 0.01, ] %>% 
+  group_by(cell, Disease) %>%
+  top_n(3, wt = GeneRatio) %>%
+  sample_n(size = 3, replace = T) %>%
+  unique() %>%
+  as.data.frame()
+
+
+axis_size = 12
+axis_title_size = 20
+title_size = 20
+legend.position="right"
+legend_text_size = 12
+legend_title_size = 15
+
+
+immu <- c( 
+    "B", "CD4", "CD8",
+    "DC", "Mast", "Mo",
+    "NK", "Tregs", "Gran"
+)
+
+non_immu = unique(temp$cell)[!unique(temp$cell) %in% c(immu, "Bulk")]
+
+temp$cell = factor(temp$cell, levels = c("Bulk", sort(non_immu), sort(immu)))
+
+
+pal = rev(wes_palette("Zissou1", 100, type = "continuous"))
+
+p <- ggplot(temp, aes(x=cell, y=Description, size = GeneRatio, color = p.adjust)) +
+    facet_grid(.~Disease, scales = "free", space = "free") +
+    geom_point() +
+    scale_color_gradientn(colours = pal) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+        legend.position = legend.position,
+        axis.text = element_text(size = axis_size),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = axis_size),
+        axis.title = element_text(size = axis_title_size),
+        legend.text = element_text(size = legend_text_size),
+        legend.title = element_text(size = legend_title_size),
+        panel.grid = element_blank()
+    ) +
+    labs(x = "", title = "", y= "")
+
+p
+
+
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/non_small_do.pdf"),
+#     plot = p, width = 8, height = 4
+# )
+```
+
+
+```{r fig.height=6, fig.width=8}
+# plot(density(go$GeneRatio[go$Disease == "LUAD"]))
+# 
+# 
+# temp = go %>%
+#     filter(Disease == "LUAD" & nchar(Description) < 50) %>%
+#     group_by(cell) %>%
+#     top_n(10, wt=GeneRatio) %>%
+#     top_n(10, wt = -p.adjust) %>%
+#     as.data.frame()
+# 
+# temp$Immu <- ifelse(temp$cell %in% immu, "Immune", "Non-Immune")
+# temp$Immu[temp$cell == "Bulk"] <- "Bulk"
+# 
+# p <- ggplot(temp[temp$Immu == "Non-Immune", ], aes(x=cell, y=Description, size=GeneRatio, color=p.adjust)) +
+#     geom_point() +
+#     facet_grid(.~Immu, scales = "free_x", space = "free") +
+#     theme_bw(base_family = "Arial Unicode MS") +
+#     my_theme +
+#     theme(
+#         panel.grid = element_blank()
+#     ) +
+#     scale_color_gradientn(colours=rev(wes_palette("Zissou1", 100, type = "continuous"))) +
+#     labs(x="")
+# 
+# 
+# p
+# 
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/DEGs_go_LUAD.pdf"),
+#     plot = p, width = 8, height = 6
+# )
+```
+
+
+```{r fig.height=6, fig.width=8}
+# plot(density(go$GeneRatio[go$Disease == "LUSC"]))
+# 
+# 
+# temp = go %>%
+#     filter(Disease == "LUSC" & nchar(Description) < 50) %>%
+#     group_by(cell) %>%
+#     top_n(10, wt=GeneRatio) %>%
+#     top_n(5, wt = -p.adjust) %>%
+#     as.data.frame()
+# 
+# temp$Immu <- ifelse(temp$cell %in% immu, "Immune", "Non-Immune")
+# temp$Immu[temp$cell == "Bulk"] <- "Bulk"
+# 
+# p <- ggplot(temp[temp$Immu == "Non-Immune", ], aes(x=cell, y=Description, size=GeneRatio, color=p.adjust)) +
+#     geom_point() +
+#     facet_grid(.~Immu, scales = "free_x", space = "free") +
+#     theme_bw(base_family = "Arial Unicode MS") +
+#     my_theme +
+#     theme(
+#         panel.grid = element_blank()
+#     ) +
+#     scale_color_gradientn(colours=rev(wes_palette("Zissou1", 100, type = "continuous"))) +
+#     labs(x="")
+# 
+# ggsave(
+#     filename = full.path("09_bulk/RNA_seq/DEGs_go_LUSC.pdf"),
+#     plot = p, width = 8, height = 6
+# )
+```
+
+
+
+### Upset R
+```{R fig.height=4, fig.width=4}
+library(UpSetR)
+
+listInput = list()
+
+temp1 = temp[temp$Disease == "LUAD", ]
+
+for (i in 1:nrow(temp1)) {
+    listInput[[temp1[i, "cell"]]] = str_split(temp1[i, "geneID"], "/")[[1]]
+}
+
+names(listInput) <- str_replace_all(str_replace_all(names(listInput), "ATII", "AT2"), "Mo", "Mφ")
+
+
+flag_palette <- c("black", "#FF883E", "#ce2b37", "#009246",
+                  "white", "#0055A4", "#FCD116")
+
+pal <- flag_palette[1:length(listInput)]
+names(pal) <- names(listInput)
+
+
+cairo_pdf(full.path("09_bulk/RNA_seq/non_small_do_LUAD_venn.pdf"), width = 4, height = 4)
+par(family = "Arial Unicode MS")
+listInput %>%
+  venn::venn(zcolor = pal[names(.)], 
+             cexil = 1,
+             cexsn = 1.5,
+             ilcs=1,
+             sncs=1.5)
+dev.off()
+
+# upset(fromList(listInput), order.by = "freq")
+```
+
+
+```{R}
+library(UpSetR)
+
+listInput = list()
+
+temp1 = temp[temp$Disease == "LUSC", ]
+
+for (i in 1:nrow(temp1)) {
+    listInput[[temp1[i, "cell"]]] = str_split(temp1[i, "geneID"], "/")[[1]]
+}
+names(listInput) <- str_replace_all(str_replace_all(names(listInput), "ATII", "AT2"), "Mo", "Mφ")
+
+
+flag_palette <- c("black", "#FF883E", "#ce2b37", "#009246",
+                  "white", "#0055A4", "#FCD116")
+
+pal <- flag_palette[1:length(listInput)]
+names(pal) <- names(listInput)
+
+
+cairo_pdf(full.path("09_bulk/RNA_seq/non_small_do_LUSC_venn.pdf"), width = 4, height = 4)
+par(family = "Arial Unicode MS")
+listInput %>%
+  venn::venn(zcolor = pal[names(.)],
+             cexil = 1,
+             cexsn = 1.5,
+             ilcs=1,
+             sncs=1.5)
+dev.off()
+
+# upset(fromList(listInput), order.by = "freq")
+```
+
+
+```{r}
+# For general data manipulation and exploratory visualisation
+library(tidyverse)
+
+# To plot Venn diagrams
+library(Vennerable)
+library(venn)
+
+flags_data <- read.csv(full.path("test.csv"))
+
+
+# This procedure is a bit awkward and possibly not the smartest, 
+# you can visualise it step by step to get a sense of what it does
+flags_list = flags_data %>%
+    # Change the dataframe to a narrow format
+    tidyr::gather(key, value, -country) %>%
+    # Remove the rows with value = 0 
+    # (i.e. when a country does not belong to the set specified in key)
+    dplyr::filter(value > 0) %>%
+    # Remove the value column as it is not needed
+    dplyr::select(-value) %>%
+    # Group the data by key and create a new column
+    # with all the countries that are associated to each key
+    dplyr::group_by(key) %>% 
+    dplyr::do(data = as.character(.$country)) %>% 
+    # Convert to a named list of lists
+    base::with(set_names(data, key))
+
+flag_palette <- c("black" = "black",
+                  "orange" = "#FF883E",
+                  "red" = "#ce2b37",
+                  "green" = "#009246",
+                  "white" = "white",
+                  "blue" = "#0055A4",
+                  "gold" = "#FCD116")
+
+#library(venn)
+flags_list %>%
+  magrittr::extract(!(names(.) %in% c("bars", "stripes", "no sections"))) %>%
+  # the option zcolor can be used to set a predetermined colour for each subset; 
+  # the palette has to be in the same order as the list of sets, so we reorder it
+  venn::venn(zcolor = flag_palette[names(.)], 
+             cexil = 1,
+             cexsn = 1)
+```
+
+
+```{r}
+genes = NULL
+for (i in 1:nrow(temp)) {
+    temp1 = as.data.frame(str_split(temp$geneID[i], "/")[[1]])
+    temp1$cell = temp[i, "cell"]
+    temp1$Disease = temp[i, "Disease"]
+    colnames(temp1)[1] = "ENTREZID"
+    
+    genes = rbind(genes, temp1)
+}
+
+eg = bitr(genes$ENTREZID, fromType = "ENTREZID", toType = "SYMBOL", OrgDb = org.Hs.eg.db)
+rownames(eg) <- eg$ENTREZID
+
+genes$SYMBOL = eg[genes$ENTREZID, "SYMBOL"]
+```
+
+
+```{R}
+ggplot(genes, aes(x=SYMBOL, y=cell, fill=cell)) +
+    geom_bar(stat = "identity") +
+    facet_wrap(.~Disease, scales = "free") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+
+### ATII and Basal by stage
+
+
+```{r}
+obj <- readRDS(full.path("02_rds/seurat_obj.rds"))
+meta = readRDS(full.path("11_CNV/meta.rds"))
+
+find_markers <- function(object, meta, group.by = "Stage", n.cores = 4, min.pct = 0.1) {
+    
+    temp_group <- as.character(sort(unique(object@meta.data[, group.by])))
+    
+    library(doMC)
+    
+    registerDoMC(n.cores)
+    res =foreach(i = temp_group, .combine = "rbind", .errorhandling = "pass") %dopar% {
+        
+        ident.1 = rownames(meta[meta[, group.by] == i & meta$Malignant, ])
+        ident.2 = rownames(meta[meta[, group.by] == i & !meta$Malignant, ])
+        
+        temp <- FindMarkers(
+            object = object, 
+            ident.1 = ident.1,
+            ident.2 = ident.2,
+            logfc.threshold = 0,
+            min.pct = min.pct
+        )
+        
+        temp$ident = i
+        temp$gene = rownames(temp)
+        
+        temp
+    }    
+    return(res)
+}
+
+
+res = NULL
+for (i in unique(meta$cell_short)) {
+    temp = find_markers(obj, meta[meta$cell_short == i, ])
+    
+    if (nrow(temp) > 0) {
+        temp$cell = i
+        res = rbind(res, temp)
+    }
+}
+
+
+
+seurat_pipe <- function(all_obj, pcs = 100) {
+    mito.genes <- grep(pattern = "^MT-", x = rownames(x = all_obj@raw.data), value = TRUE)
+    percent.mito <- Matrix::colSums(all_obj@raw.data[mito.genes, ])/Matrix::colSums(all_obj@raw.data)
+    
+    all_obj <- AddMetaData(object =all_obj, metadata = percent.mito, col.name = "percent.mito")
+    
+    pcs = min(100, min(nrow(all_obj@raw.data), ncol(all_obj@raw.data)) - 1)
+    
+    all_obj <- NormalizeData(object = all_obj, normalization.method = "LogNormalize", scale.factor = 10000)
+    all_obj <- FindVariableGenes(object = all_obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+    all_obj <- ScaleData(object = all_obj, vars.to.regress = c("nUMI", "percent.mito"))
+    all_obj <- RunPCA(object = all_obj, pc.genes = all_obj@var.genes, do.print = FALSE, pcs.compute = pcs)
+    all_obj
+}
+
+
+for (i in c("ATII", "Basal")) {
+    print(i)
+    disease = ifelse(i == "ATII", "LUAD", "LUSC")
+    
+    output_dir = full.path("11_CNV/each_cells", i, disease, "by_stage_M_vs_NM")
+    
+    if (!dir.exists(output_dir)) {
+        dir.create(output_dir, showWarnings = F, recursive = T)
+    }
+    
+    out_rds = paste(output_dir, "seurat_obj.rds", sep = "/")
+    
+    if (file.exists(out_rds)) {
+        obj <- readRDS(out_rds)
+    } else {
+        temp_meta = meta[meta$cell_short == i & str_detect(meta$Disease, disease),]
+      
+        obj <- CreateSeuratObject(expr[, rownames(temp_meta)], meta.data = temp_meta)
+        obj <- seurat_pipe(obj)
+        saveRDS(obj, out_rds)
+    }
+    
+    out_csv = paste(output_dir, "stage_markers.csv", sep = "/")
+    if (file.exists(out_csv)) {
+        markers = find_markers(obj)
+        write.csv(markers, out_csv)
+    } else {
+        markers = find_markers(obj)
+        write.csv(markers, out_csv)
+    }
+}
+```
+
+
+#### ATII
+```{r}
+markers <- read.csv(full.path("11_CNV/each_cells/ATII/LUAD/by_stage_M_vs_NM/stage_markers.csv"), row.names = 1, stringsAsFactors = F)
+markers <- markers[markers$p_val_adj < 0.05 & abs(markers$avg_logFC) > 0.25, ]
+
+markers$Type = "Down"
+markers$Type[markers$avg_logFC > 0.25] = "Up"
+```
+
+
+```{r fig.height=4, fig.width=4}
+temp = markers %>%
+    group_by(ident, Type) %>%
+    add_tally() %>%
+    dplyr::select(ident, Type, n) %>%
+    unique()
+
+
+temp$Type = factor(temp$Type, levels = c("Up", "Down"))
+temp$n[temp$Type == "Down"] <- -1 * temp$n[temp$Type == "Down"]
+
+p <- ggplot(temp, aes(x=ident, y=n, fill=Type, label = abs(n))) +
+    geom_bar(stat = "identity") +
+    geom_text(position = position_stack(vjust = 0.5), size = 5) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        panel.grid = element_blank(),
+        text = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 15),
+        legend.position = "bottom",
+        title = element_text(size = 15),
+    ) +
+    labs(x="", y="", fill="", title = "ATII (LUAD)") +
+    scale_fill_manual(values = c(
+        "Up"=as.character(wes_palette("Darjeeling1"))[4],
+        "Down"=as.character(wes_palette("Darjeeling1"))[2]
+    ))
+
+
+ggsave(
+    filename = full.path("11_CNV/each_cells/ATII/LUAD/by_stage_M_vs_NM/bar_plot.pdf"),
+    plot = p, width = 4, height = 4
+)
+```
+
+
+#### ATII
+```{r}
+markers <- read.csv(full.path("11_CNV/each_cells/Basal/LUSC/by_stage_M_vs_NM/stage_markers.csv"), row.names = 1, stringsAsFactors = F)
+markers <- markers[markers$p_val_adj < 0.05 & abs(markers$avg_logFC) > 0.25, ]
+
+markers$Type = "Down"
+markers$Type[markers$avg_logFC > 0.25] = "Up"
+```
+
+
+```{r fig.height=4, fig.width=4}
+temp = markers %>%
+    group_by(ident, Type) %>%
+    add_tally() %>%
+    dplyr::select(ident, Type, n) %>%
+    unique()
+
+
+temp$Type = factor(temp$Type, levels = c("Up", "Down"))
+temp$n[temp$Type == "Down"] <- -1 * temp$n[temp$Type == "Down"]
+
+p <- ggplot(temp, aes(x=ident, y=n, fill=Type, label = abs(n))) +
+    geom_bar(stat = "identity") +
+    geom_text(position = position_stack(vjust = 0.5), size = 5) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        panel.grid = element_blank(),
+        text = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 15),
+        legend.position = "bottom",
+        title = element_text(size = 15),
+    ) +
+    labs(x="", y="", fill="", title = "Basal (LUSC)") +
+    scale_fill_manual(values = c(
+        "Up"=as.character(wes_palette("Darjeeling1"))[4],
+        "Down"=as.character(wes_palette("Darjeeling1"))[2]
+    ))
+
+
+ggsave(
+    filename = full.path("11_CNV/each_cells/Basal/LUSC/by_stage_M_vs_NM/bar_plot.pdf"),
+    plot = p, width = 4, height = 4
+)
+```
+
+
+
+### Venn diagram
+
+#### Cancer specific
+```{r}
+ad <- read.csv(full.path("11_CNV/scRNA_AD_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+sc <- read.csv(full.path("11_CNV/scRNA_SC_M_vs_NM.csv"), row.names = 1, stringsAsFactors = F)
+
+sc_lfc <- rbind(ad, sc)
+
+sc_lfc$ident1 = 0
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC > 0.25] = 1
+sc_lfc$ident1[sc_lfc$p_val_adj < 0.05 & sc_lfc$avg_logFC < -0.25] = -1
+
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- make.unique(as.character(gene_pos$V5))
+gene_pos$V6 <- make.unique(as.character(gene_pos$V6))
+
+bulk_ad <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"), sheet = 2)
+bulk_sc <- read.xlsx(full.path("09_bulk/RNA_seq/Disease_DEGs.xlsx"), sheet = 3)
+
+bulk_ad$ident = "LUAD"
+bulk_sc$ident = "LUSC"
+
+bulk <- as.data.frame(rbind(bulk_ad, bulk_sc))
+bulk$symbol <- gene_pos[bulk$gene_id, "V6"]
+
+
+bulk$ident1 = 0
+bulk$ident1[bulk$log2FoldChange > 1 & bulk$padj < 0.05] = 1
+bulk$ident1[bulk$log2FoldChange < -1 & bulk$padj < 0.05] = -1
+bulk$cell = "Bulk"
+
+# bulk <- dcast(bulk, ident~symbol, value.var = "ident1", fill = 0, fun.aggregate = mean)
+
+temp_sc = sc_lfc[, c("avg_logFC", "gene", "cell", "ident", "ident1")]
+temp_bk = bulk[, c("log2FoldChange", "symbol", "cell", "ident", "ident1")]
+colnames(temp_bk)[1:2] = colnames(temp_sc)[1:2]
+
+temp = rbind(temp_sc, temp_bk)
+```
+
+```{R}
+# Load library
+library(VennDiagram)
+
+
+for (j in c(1, -1)) {
+    dir.create(full.path("11_CNV/DEGs/CancerSpecific/", ifelse(j == 1, "Up", "Down")), showWarnings = F, recursive = T)
+}
+
+
+futile.logger::flog.threshold(futile.logger::ERROR, name = "VennDiagramLogger")
+for (i in unique(temp$cell)) {
+    print(i)
+    
+    for (j in c(1, -1)) {
+        # Generate 3 sets of 200 words
+        data = list()
+        for (k in unique(temp$ident)) {
+            data[[k]] = temp$gene[temp$cell == i & temp$ident1 == j & temp$ident == k]
+        }
+        
+        # Chart
+        p <- venn.diagram(
+            x = data,
+            category.names = names(data),
+            filename = NULL, output=F,
+            fill = c("#0084D1", "#A0C807"),
+            fontfamily = "Arial Unicode MS",
+            cex = 1.6,
+            print.mode = c("raw","percent"),
+            cat.cex = 1.6,
+            cat.fontfamily = "Arial Unicode MS"
+        )
+        
+        pdf(full.path("11_CNV/DEGs/CancerSpecific/", ifelse(j == 1, "Up", "Down"), paste0(i, ".pdf")), height = 6, width = 6)
+        grid.draw(p)
+        dev.off()
+    }
+
+}
+
+```
+
+
+#### Cell specific
+```{r}
+library(VennDiagram)
+for (j in c(1, -1)) {
+    dir.create(full.path("11_CNV/DEGs/DiseaseSpecific/", ifelse(j == 1, "Up", "Down")), showWarnings = F, recursive = T)
+}
+
+library(RColorBrewer)
+
+futile.logger::flog.threshold(futile.logger::ERROR, name = "VennDiagramLogger")
+for (i in c("LUAD", "LUSC")) {
+    cells =  c("ATII", "Epi", "Fib", ifelse(i == "LUAD", "NE", "Basal"))
+   
+
+    print(cells)
+    
+    for (j in c(1, -1)) {
+        data = list()
+        for (k in unique(cells)) {
+            data[[k]] = temp$gene[temp$ident == i & temp$ident1 == j & temp$cell == k]
+        }
+        myCol <- brewer.pal(length(data), "Pastel2")
+        # Chart
+        venn.diagram(
+          x = data,
+          category.names = names(data),
+          filename = full.path("11_CNV/DEGs/DiseaseSpecific/", ifelse(j == 1, "Up", "Down"), paste0(i, "_with_perc.svg")),
+          imagetype = "svg",
+          height = 6, width = 6, units = "in",
+          output=T,
+          fill = myCol,
+          fontfamily = "Arial Unicode MS",
+          cex = 1.6,
+          cat.cex = 1.6,
+          cat.fontfamily = "Arial Unicode MS",
+          print.mode = c("raw","percent")
+        )
+        
+        # Chart
+        venn.diagram(
+          x = data,
+          category.names = names(data),
+          filename = full.path("11_CNV/DEGs/DiseaseSpecific/", ifelse(j == 1, "Up", "Down"), paste0(i, ".svg")),
+          imagetype = "svg",
+          height = 6, width = 6, units = "in",
+          output=T,
+          fill = myCol,
+          fontfamily = "Arial Unicode MS",
+          cex = 1.6,
+          cat.cex = 1.6,
+          cat.fontfamily = "Arial Unicode MS",
+          # print.mode = c("raw","percent")
+        )
+        
+        
+        
+        data = list()
+        for (k in c("B", "CD4", "DC", "Mo", "NK")) {
+            data[[k]] = temp$gene[temp$ident == i & temp$ident1 == j & temp$cell == k]
+        }
+        myCol <- brewer.pal(length(data), "Pastel2")
+
+        # Chart
+        venn.diagram(
+          x = data,
+          category.names = names(data),
+          filename = full.path("11_CNV/DEGs/DiseaseSpecific/", ifelse(j == 1, "Up", "Down"), paste0(i, "_immu.svg")),
+          imagetype = "svg",
+          height = 6, width = 6, units = "in",
+          output=T,
+          fill = myCol,
+          fontfamily = "Arial Unicode MS",
+          cex = 1.6,
+          cat.cex = 1.6,
+          cat.fontfamily = "Arial Unicode MS",
+          print.mode = c("raw","percent")
+        )
+    }
+}
+
+```
+
+
+
+#### Stage specific
+```{R}
+# Load library
+library(VennDiagram)
+for (j in c(1, -1)) {
+    dir.create(full.path("11_CNV/DEGs/StageSpecific/", ifelse(j == 1, "Up", "Down")), showWarnings = F, recursive = T)
+}
+
+markers <- read.csv(full.path("11_CNV/each_cells/ATII/LUAD/by_stage_M_vs_NM/stage_markers.csv"), stringsAsFactors = F)
+ 
+# Generate 3 sets of 200 words
+data = list()
+
+for (i in sort(unique(markers$ident))) {
+    data[[i]] = markers$gene[markers$ident == i & markers$avg_logFC > 0.25 & markers$p_val_adj < 0.05]
+}
+ 
+
+# Chart
+venn.diagram(
+  x = data,
+  category.names = names(data),
+  filename = full.path("11_CNV/DEGs/StageSpecific/Up/ATII.svg"),
+  imagetype = "svg",
+  height = 6, width = 6, units = "in",
+  output=T,
+  fill = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47"),
+  fontfamily = "Arial Unicode MS",
+  cex = 1.6,
+  cat.cex = 1.6,
+  cat.fontfamily = "Arial Unicode MS",
+  print.mode = c("raw","percent")
+)
+
+
+# Generate 3 sets of 200 words
+data = list()
+
+for (i in sort(unique(markers$ident))) {
+    data[[i]] = markers$gene[markers$ident == i & markers$avg_logFC < -0.25 & markers$p_val_adj < 0.05]
+}
+ 
+
+# Chart
+venn.diagram(
+  x = data,
+  category.names = names(data),
+  filename = full.path("11_CNV/DEGs/StageSpecific/Down/ATII.svg"),
+  imagetype = "svg",
+  height = 6, width = 6, units = "in",
+  output=T,
+  fill = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47"),
+  fontfamily = "Arial Unicode MS",
+  cex = 1.6,
+  cat.cex = 1.6,
+  cat.fontfamily = "Arial Unicode MS",
+  print.mode = c("raw","percent")
+)
+
+```
+
+
+```{r}
+markers <- read.csv(full.path("11_CNV/each_cells/Basal/LUSC/by_stage_M_vs_NM/stage_markers.csv"), stringsAsFactors = F)
+ 
+# Generate 3 sets of 200 words
+data = list()
+
+for (i in sort(unique(markers$ident))) {
+    data[[i]] = markers$gene[markers$ident == i & markers$avg_logFC > 0.25 & markers$p_val_adj < 0.05]
+}
+ 
+
+# Chart
+venn.diagram(
+  x = data,
+  category.names = names(data),
+  filename = full.path("11_CNV/DEGs/StageSpecific/Up/Basal.svg"),
+  imagetype = "svg",
+  height = 6, width = 6, units = "in",
+  output=T,
+  fill = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21"),
+  fontfamily = "Arial Unicode MS",
+  cex = 1.6,
+  cat.cex = 1.6,
+  cat.fontfamily = "Arial Unicode MS"
+)
+
+
+# Generate 3 sets of 200 words
+data = list()
+
+for (i in sort(unique(markers$ident))) {
+    data[[i]] = markers$gene[markers$ident == i & markers$avg_logFC < -0.25 & markers$p_val_adj < 0.05]
+}
+ 
+
+# Chart
+venn.diagram(
+  x = data,
+  category.names = names(data),
+  filename = full.path("11_CNV/DEGs/StageSpecific/Down/Basal.svg"),
+  imagetype = "svg",
+  height = 6, width = 6, units = "in",
+  output=T,
+  fill = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21"),
+  fontfamily = "Arial Unicode MS",
+  cex = 1.6,
+  cat.cex = 1.6,
+  cat.fontfamily = "Arial Unicode MS"
+)
+```
+
+
+## Compare Tau
+
+```{r}
+if (file.exists(full.path("02_rds/tsi.rds"))) {
+    tsi <- readRDS(full.path("02_rds/tsi.rds"))
+} else {
+    expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+    meta$cell_short <- as.factor(meta$cell_short)
+    gc()
+    tsi <- tsDataSetFromMatrix(
+        expr[, rownames(meta)], 
+        meta, 
+        ~ cell_short, 
+        type = "expression",
+        convMethod = "log2", 
+        minimum=1, 
+        maximum=8.1238146178618, 
+        mindiff=3,
+        IbMethod = "mingap", 
+        tidy = FALSE, 
+        breaks = NULL
+    )
+    gc()
+    
+    saveRDS(tsi, full.path("02_rds/tsi.rds"))
+}
+```
+
+### 
+```{R fig.height=12, fig.width=12}
+temp1 = temp[temp$ident1 > 0 & temp$cell != "Bulk", ] %>%
+    group_by(ident, gene) %>%
+    add_tally() %>%
+    dplyr::select(cell, gene, ident, n) %>%
+    unique() %>%
+    as.data.frame()
+
+temp1$Tau = tsi@tsData$Tau[temp1$gene, "Tau"]
+
+
+temp1$n = factor(as.character(temp1$n), levels = as.character(sort(unique(temp1$n))))
+
+
+temp1$Immu = ifelse(temp1$cell %in% immu, "Immune", "Stromal")
+temp1$Immu = factor(temp1$Immu, levels = c("Stromal", "Immune"))
+
+
+# temp2 = reshape2::dcast(temp1[temp1$ident == "LUAD" & temp1$n == 1, ], gene~Immu, value.var = "Tau", fun.aggregate = mean, fill = 0)
+```
+
+
+```{r}
+library(ggpubr)
+
+
+my_comparisons <- list( c("ATII", "Mo"), c("NE", "Mo"), c("ATII", "B") )
+
+ggviolin(
+        temp1[temp1$n == 1, ], 
+        x="cell", y="Tau", fill="cell",
+        ggtheme = theme_pubr(base_family = "Arial Unicode MS"),
+        add = "boxplot", add.params = list(fill = "white")
+    ) +
+    facet_grid(ident~Immu, scales = "free", space = "free") +
+    stat_compare_means(comparisons = my_comparisons) +
+    labs(x="") +
+    theme(
+        panel.grid = element_blank(),
+        legend.position = "none",
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 15),
+        axis.text.y = element_text(size = 15),
+        strip.text = element_text(size = 15),
+        axis.title.y = element_text(size = 20)
+    )
+
+```
+
+```{r fig.height=4, fig.width=12}
+my_comparisons <- list( c("ATII", "Mo"), c("NE", "Mo"), c("ATII", "B"), c("NE", "B"))
+
+
+lv = sort(unique(as.character(temp1$cell)))
+lv = c(lv[!lv %in% immu], lv[lv %in% immu])
+temp1$cell = factor(temp1$cell, levels = lv)
+
+
+a = c(rep("#90D0E0", length(unique(temp1$cell)) - length(immu)), rep("#E9B0B7", length(immu)))
+a = rep(a, 2)
+
+
+for (i in unique(temp1$ident)) {
+    temp2 = reshape2::dcast(
+        temp1[temp1$ident == i & temp1$n == 1, ], 
+        gene~Immu, value.var = "Tau", fun.aggregate = mean, fill = 0
+    )
+
+    t = wilcox.test(temp2$`Non-immune`, temp2$Immune)
+    temp1$ident[temp1$ident == i] = paste0(
+        temp1$ident[temp1$ident == i], "(pval=",
+        formatC(t$p.value, format = "e", digits = 2),
+        ")"
+    )
+}
+
+
+
+p <- ggviolin(
+        temp1[temp1$n == 1, ], 
+        x="cell", y="Tau", fill="cell",
+        ggtheme = theme_pubr(base_family = "Arial Unicode MS"),
+        add = "boxplot", add.params = list(fill = "white")
+    ) +
+    facet_grid(.~ident, scales = "free", space = "free") +
+    stat_compare_means(comparisons = my_comparisons, size = 5, label.y.npc = "bottom") +
+    labs(x="") +
+    theme(
+        panel.grid = element_blank(),
+        legend.position = "none",
+        text = element_text(size = 10),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 15, colour = a),
+        axis.text.y = element_text(size = 15),
+        strip.text = element_text(size = 15),
+        axis.title.y = element_text(size = 20)
+    )
+
+
+p
+
+# ggsave(
+#     filename = full.path("11_CNV/DEGs/DiseaseSpecific/tau_down.pdf"),
+#     plot = p, width = 12, height = 4
+# )
+```
+
+
+```{r}
+###############################################################################
+#### violin plot, box_plot with error bar
+###############################################################################
+library(plyr)
+library(tidyr)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+
+
+###############################################################################
+# Function
+###############################################################################
+#对数据进行统计的函数
+#指定分组变量和求值变量后，可计算出不同分组变量(或分组变量间的组合)对应的求值变量的均值，标准差，标准误，置信区间ci
+#汇总数据
+#计算出计数，平均值，标准差，均值的标准误差和置信区间（默认为95％）
+#data：一个数据框
+#measurevar：包含要汇总的变量的列的名称
+#groupvars：包含分组变量的列名称的向量
+#na.rm：一个布尔值，表示是否忽略NA
+## conf.interval：置信区间的百分比范围（默认为95％）
+## Summarizes data.
+## Gives count, mean, standard deviation, standard error of the mean, and confidence interval (default 95%).
+summarySE <- function(
+    data = NULL, ## data: a data frame.
+    measurevar, ## the name of a column that contains the variable to be summariezed
+    groupvars = NULL, ## a vector containing names of columns that contain grouping variables
+    na.rm = FALSE, ## na.rm: a boolean that indicates whether to ignore NA's
+    conf.interval = .95, ## conf.interval: the percent range of the confidence interval (default is 95%)
+    .drop = TRUE) {
+  library(plyr)
+  
+  # New version of length which can handle NA's: if na.rm==T, don't count them
+  length2 <- function (x, na.rm = FALSE) {
+    if (na.rm) {
+      sum(!is.na(x))
+      } else {
+        length(x)
+      }
+    }
+  
+  # This does the summary. For each group's data frame, return a vector with
+  # N, mean, and sd
+  dat <- plyr::ddply(
+    data, 
+    groupvars, 
+    .drop=.drop,
+    .fun = function(xx, col) {
+      quart <- unname(quantile(xx[[col]], c(0.25, 0.5, 0.75), na.rm = na.rm))
+      res <- c(
+        N    = length2(xx[[col]], na.rm=na.rm),
+        Mean = mean   (xx[[col]], na.rm=na.rm),
+        sd   = sd     (xx[[col]], na.rm=na.rm),
+        First_quartile = quart[1],
+        Median = quart[2],
+        Third_quartile = quart[3]
+      )
+    },
+    measurevar
+  )
+  
+  # Rename the "Mean" column    
+  dat <- plyr::rename(dat, c("Mean" = measurevar))
+
+  # Calculate standard error of the mean
+  # Confidence interval multiplier for standard error
+  # Calculate t-statistic for confidence interval:
+  # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+  dat <- 
+    dat %>%
+    mutate(
+      se = sd/N, 
+      ci = se * qt(conf.interval/2 + .5, N-1))
+
+  # dat$se <- dat$sd / sqrt(dat$N)  # Calculate standard error of the mean
+  # # Confidence interval multiplier for standard error
+  # # Calculate t-statistic for confidence interval: 
+  # # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+  # ciMult <- qt(conf.interval/2 + .5, dat$N-1)
+  # dat$ci <- dat$se * ciMult
+  
+  return(dat)
+}
+
+GeomSplitViolin <- ggproto(
+  "GeomSplitViolin", 
+  GeomViolin, 
+  draw_group = function(self, data, ..., draw_quantiles = NULL) {
+    data <- transform(data, 
+                      xminv = x - violinwidth * (x - xmin), 
+                      xmaxv = x + violinwidth * (xmax - x))
+    grp <- data[1,'group']
+    newdata <- plyr::arrange(
+      transform(data, x = if(grp%%2==1) xminv else xmaxv), 
+      if(grp%%2==1) y else -y
+    )
+    newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+    newdata[c(1,nrow(newdata)-1,nrow(newdata)), 'x'] <- round(newdata[1, 'x']) 
+    if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
+      stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <= 1))
+      quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+      aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+      aesthetics$alpha <- rep(1, nrow(quantiles))
+      both <- cbind(quantiles, aesthetics)
+      quantile_grob <- GeomPath$draw_panel(both, ...)
+      ggplot2:::ggname("geom_split_violin", 
+                       grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+    } else {
+      ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+    }
+  }
+)
+
+geom_split_violin <- 
+  function(
+    mapping = NULL, 
+    data = NULL, 
+    stat = "ydensity", 
+    position = "identity", ..., 
+    draw_quantiles = NULL, 
+    trim = TRUE, 
+    scale = "area", 
+    na.rm = FALSE, 
+    show.legend = NA, 
+    inherit.aes = TRUE) {
+  layer(data = data, 
+        mapping = mapping, 
+        stat = stat, 
+        geom = GeomSplitViolin, 
+        position = position, 
+        show.legend = show.legend, 
+        inherit.aes = inherit.aes, 
+        params = list(trim = trim, 
+                      scale = scale, 
+                      draw_quantiles = draw_quantiles, 
+                      na.rm = na.rm, ...)
+  )
+}
+
+my_segment <- function(
+    data = NULL, 
+    measurevar, ## which var to summary
+    groupvars = NULL, ## which vars to group when summary
+    splitvar = NULL, ## which var to split in violin
+    xvar = NULL, ## x axis
+    Color, ## color for Median, Mean, 1st/3rd quarter, default c("blue", "red", "black")
+    na.rm = FALSE,
+    .drop = TRUE,
+    facet = NULL,
+    do.return = FALSE,
+    mean_width = 0.4,
+    quarter_width = 0.25
+    ) {
+  library(plyr)
+  
+  if (missing(Color)) {
+        Color <- c("blue", "red", "black")
+  } else if (!is.vector(Color) | length(Color) < 3) {
+        stop("'Color' error!")
+  }
+  
+  if (length(levels(data[, splitvar])) != 2) {
+        stop("levels of 'splitvar' for split violin should be 2!")
+  }
+    
+
+  if (!is.null(facet) && facet != T) {
+      
+        dat = NULL
+        for (i in unique(data[, facet])) {
+          temp_data = data[data[, facet] == i, ]
+          
+          temp_data[, splitvar] <- factor(as.character(temp_data[, splitvar]))
+          
+          for (j in groupvars) {
+              temp_data[, j] <- factor(as.character(temp_data[, j]))
+          }
+          
+          dat = rbind(
+              dat,
+              my_segment(
+                  data=temp_data, measurevar=measurevar,
+                  groupvars = groupvars, splitvar = splitvar,
+                  xvar = xvar, Color=Color, na.rm = na.rm,
+                  .drop = .drop, facet=T
+              )
+          )
+        }
+
+  } else {
+        lvls <- lapply(data[, groupvars], levels)
+        
+        vars <-
+        syms(
+          c(groupvars, measurevar, "Median", "First_quartile", "Third_quartile")
+        )
+        
+        # New version of length which can handle NA's: if na.rm==T, don't count them
+        length2 <- function(x, na.rm=FALSE) {
+        if (na.rm) {
+          sum(!is.na(x))
+        } else {
+          length(x)
+        }
+        }
+        
+        my_gather <- 
+        function(mydata, key.col, val.col, gather.cols) {
+          new.data <- 
+            tidyr::gather_(
+              data = mydata,
+              key_col = key.col,
+              value_col = val.col,
+              gather_cols = colnames(mydata)[gather.cols])
+          return(new.data)
+          }
+        
+        # This does the summary. For each group's data frame, return a vector with
+        # N, mean, and sd
+        dat <- 
+        ddply(
+          data, 
+          groupvars, 
+          .drop = .drop,
+          .fun = function(xx, col) {
+             quart <- unname(quantile(xx[[col]], c(0.25, 0.5, 0.75), na.rm = na.rm))
+             res <- c(
+               Mean = mean(xx[[col]], na.rm=na.rm),
+               Median = quart[2],
+               First_quartile = quart[1],
+               Third_quartile = quart[3]
+             )
+          },
+          measurevar
+        )
+        
+        # Rename the "mean" column    
+        dat <- plyr::rename(dat, c("Mean" = measurevar))
+        
+        dat <- 
+        dat %>% 
+        my_gather("Type", "Height", (length(groupvars)+1):length(vars)) %>%
+        plyr::dlply(splitvar)
+        
+        dat1 <- dat[[1]]
+        dat1$x_s <- match(dat1[, xvar], lvls[[xvar]]) - ifelse(dat1$Type %in% c(measurevar, "Median"),  mean_width, quarter_width)
+        dat1$x_e <- match(dat1[, xvar], lvls[[xvar]])
+        dat1$cols <- ifelse(dat1$Type %in% c(measurevar, "Median"), Color[1], Color[3])
+        dat1$cols[dat1$Type == measurevar] <- Color[2]
+        
+        dat2 <- dat[[2]]
+        dat2$x_s <- match(dat2[, xvar], lvls[[xvar]])
+        dat2$x_e <- match(dat2[, xvar], lvls[[xvar]]) + ifelse(dat2$Type %in% c(measurevar, "Median"),  mean_width, quarter_width)
+        dat2$cols <- ifelse(dat2$Type %in% c(measurevar, "Median"), Color[1], Color[3])
+        dat2$cols[dat2$Type == measurevar] <- Color[2]
+        
+        dat <- rbind(dat1, dat2)
+        dat$Type[dat$Type %in% c("First_quartile", "Third_quartile")] <- "1st/3rd Quarter"
+        dat$Type[dat$Type == measurevar] <- "Mean"
+        dat$Type <- factor(dat$Type, levels = c("Median", "Mean", "1st/3rd Quarter"))
+      
+        if (!is.null(facet) && facet == T) {
+            return(dat)
+        }
+  }
+    if (do.return) {
+        return(dat)
+    }
+    
+    p <- list(
+        geom_segment(
+          data = dat,
+          aes(
+            x = x_s,
+            xend = x_e,
+            y = Height,
+            yend = Height,
+            color = Type)
+          ),
+        scale_color_manual(values = Color)
+        )
+    
+    return(p)
+}
+```
+
+
+```{r fig.height=3, fig.width=4}
+library(ggpubr)
+# temp1$Immu = as.character(temp1$Immu)
+
+# p <- ggviolin(
+#         temp1[temp1$n != 0, ], 
+#         x="Immu", y="Tau", fill="Immu",
+#         ggtheme = theme_pubr(base_family = "Arial Unicode MS"),
+#         add = "boxplot", add.params = list(fill = "white"),
+#         palette = c("#90D0E0", "#E9B0B7")
+#     ) +
+#     facet_grid(.~ident, scales = "free", space = "free") +
+#     stat_compare_means(comparisons = list(unique(temp1$Immu)), size = 5, label.y.npc = "bottom") +
+#     labs(x="") +
+#     theme(
+#         panel.grid = element_blank(),
+#         legend.position = "none",
+#         text = element_text(size = 10),
+#         axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 15),
+#         axis.text.y = element_text(size = 15),
+#         strip.text = element_text(size = 15),
+#         axis.title.y = element_text(size = 20)
+#     )
+# 
+# 
+# p
+
+temp1$ident = factor(temp1$ident)
+
+
+p <- ggplot(data=temp1[as.character(temp1$n) == '1', ], aes(x=ident, y=Tau, fill=Immu)) + 
+  geom_split_violin(trim=FALSE,color="white") + #绘制分半的小提琴图
+  my_segment(
+      data = temp1[as.character(temp1$n) == '1', ],
+      measurevar="Tau",
+      groupvars=c("ident", "Immu"),
+      splitvar = "Immu",
+      xvar = "ident"
+    ) +
+  scale_fill_manual(values = c("#90D0E0", "#E9B0B7"))+ #设置填充的颜色 c("#56B4E9", "#E69F00") +
+  stat_compare_means(comparisons = list(unique(temp1$Immu)), size = 5, method = "t.test") +
+  stat_compare_means(label.y = 1.1, label = "p.format", size = 4) +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 15)
+  ) +
+  labs(fill = "", x = "", y = "Tau")
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/DEGs/DiseaseSpecific/tau_up_with_mo.pdf"),
+    plot = p, width = 4, height = 3
+)
+```
+
+```{R fig.height=3, fig.width=4}
+temp1$ident = factor(temp1$ident)
+
+
+p <- ggplot(data=temp1[as.character(temp1$n) == '1' & temp1$cell != "Mo", ], aes(x=ident, y=Tau, fill=Immu)) + 
+  geom_split_violin(trim=FALSE,color="white") + #绘制分半的小提琴图
+  my_segment(
+      data = temp1[as.character(temp1$n) == '1', ],
+      measurevar="Tau",
+      groupvars=c("ident", "Immu"),
+      splitvar = "Immu",
+      xvar = "ident"
+    ) +
+  scale_fill_manual(values = c("#90D0E0", "#E9B0B7"))+ #设置填充的颜色 c("#56B4E9", "#E69F00") +
+  stat_compare_means(comparisons = list(unique(temp1$Immu)), size = 5, method = "t.test") +
+  stat_compare_means(label.y = 1.1, label = "p.format", size = 4) +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 15)
+  ) +
+  labs(fill = "", x = "", y = "Tau")
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/DEGs/DiseaseSpecific/tau_up_wo_mo.pdf"),
+    plot = p, width = 4, height = 3
+)
+```
+
+
+### Mo with others
+```{r fig.height=3, fig.width=4}
+
+temp2 = temp1[temp1$Immu == "Immune", ]
+temp2$Immu = ifelse(temp2$cell == "Mo", "Mo", "Others")
+temp2$ident = factor(temp2$ident)
+temp2$Immu = factor(temp2$Immu, levels  = c("Mo", "Others"))
+
+
+
+p <- ggplot(data=temp2[temp2$n == 1, ], aes(x=ident, y=Tau, fill=Immu)) + 
+  geom_split_violin(trim=FALSE,color="white") + #绘制分半的小提琴图
+  my_segment(
+      data = temp2[temp2$n == 1, ],
+      measurevar="Tau",
+      groupvars=c("ident", "Immu"),
+      splitvar = "Immu",
+      xvar = "ident"
+    ) +
+  scale_fill_manual(values = c("#56B4E9", "#E69F00"))+ #设置填充的颜色  +
+  stat_compare_means(comparisons = list(unique(temp1$Immu)), size = 5, method = "t.test") +
+  stat_compare_means(label.y = 1.1, label = "p.format", size = 4) +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 15)
+  ) +
+  labs(fill = "", x = "", y = "Tau")
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/DEGs/DiseaseSpecific/tau_mo.pdf"),
+    plot = p, width = 4, height = 3
+)
+```
+
+
+## Stage
+```{R}
+obj <- readRDS(full.path("11_CNV/each_cells/ATII/LUAD/seurat_obj.rds"))
+
+temp_meta = obj@meta.data
+temp_meta$Stage = factor(temp_meta$Stage, levels = sort(temp_meta$Stage))
+
+tsi <- tsDataSetFromMatrix(
+    obj@raw.data[, rownames(temp_meta)], 
+    temp_meta, 
+    ~ Stage, 
+    type = "expression",
+    convMethod = "log2", 
+    minimum=1, 
+    maximum=8.1238146178618, 
+    mindiff=3,
+    IbMethod = "mingap", 
+    tidy = FALSE, 
+    breaks = NULL
+)
+```
+
+```{r}
+markers <- read.csv(
+    full.path("11_CNV/each_cells/ATII/LUAD/by_stage_M_vs_NM/stage_markers.csv"), 
+    stringsAsFactors = F
+)
+
+markers <- markers[markers$avg_logFC > 0.25 & markers$p_val_adj < 0.05, ]
+
+temp = markers %>%
+    group_by(gene) %>%
+    add_tally() %>%
+    dplyr::select(ident, gene, n) %>%
+    unique() %>%
+    as.data.frame()
+
+temp$Tau = tsi@tsData$Tau[temp$gene, "Tau"]
+
+
+ggviolin(temp[temp$n == 1, ], x="ident", y="Tau")
+```
+
+
+```{R}
+obj <- readRDS(full.path("11_CNV/each_cells/Basal/LUSC/seurat_obj.rds"))
+
+temp_meta = obj@meta.data
+temp_meta$Stage = factor(temp_meta$Stage, levels = sort(temp_meta$Stage))
+
+tsi <- tsDataSetFromMatrix(
+    obj@raw.data[, rownames(temp_meta)], 
+    temp_meta, 
+    ~ Stage, 
+    type = "expression",
+    convMethod = "log2", 
+    minimum=1, 
+    maximum=8.1238146178618, 
+    mindiff=3,
+    IbMethod = "mingap", 
+    tidy = FALSE, 
+    breaks = NULL
+)
+```
+
+```{r}
+markers <- read.csv(
+    full.path("11_CNV/each_cells/Basal/LUSC/by_stage_M_vs_NM/stage_markers.csv"), 
+    stringsAsFactors = F
+)
+
+markers <- markers[markers$avg_logFC > 0.25 & markers$p_val_adj < 0.05, ]
+
+temp = markers %>%
+    group_by(gene) %>%
+    add_tally() %>%
+    dplyr::select(ident, gene, n) %>%
+    unique() %>%
+    as.data.frame()
+
+temp$Tau = tsi@tsData$Tau[temp$gene, "Tau"]
+
+
+ggviolin(temp[temp$n == 1, ], x="ident", y="Tau")
+```
+
+
+
+## Tau value by stages
+```{r}
+library(tsidx)
+
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta$cell_short <- as.factor(meta$cell_short)
+meta$Stage = as.factor(meta$Stage)
+meta$Disease = str_replace_all(meta$Disease, "_Normal", "")
+
+registerDoMC(5)
+tsi = foreach (i = unique(meta$cell_short), .combine = "rbind", .errorhandling = "pass") %dopar% {
+  print(i)
+  
+  res = NULL
+  for (j in c("LUAD", "LUSC")) {
+    
+      temp_meta = meta[meta$cell_short == i & meta$Disease == j, ]
+      temp_meta$Stage = as.factor(as.character(temp_meta$Stage))
+    
+      tsi <- tsDataSetFromMatrix(
+          expr[, rownames(temp_meta)],  # 
+          temp_meta,  #  
+          ~Stage, 
+          type = "expression",
+          convMethod = "log2", 
+          mindiff=3,
+          IbMethod = "mingap", 
+          tidy = FALSE, 
+          breaks = NULL
+      )
+      temp = as.data.frame(tsi@tsData$Tau[, c(
+          "Mean", "Median", "Max", 
+          "SD", "Range", "Tau"
+      )])
+      temp$gene = rownames(temp)
+      temp$disease = j
+      temp$cell = i
+      
+      res = rbind(res, temp)
+  }
+
+  saveRDS(tsi, full.path("11_CNV/DEGs/Tau", paste0(i, "_", j, ".rds")))
+  gc()
+  res
+}
+
+saveRDS(tsi, full.path("11_CNV/DEGs/Tau/tsi.rds"))
+```
+
+
+### Load stage-specific tau value
+```{r}
+tsi = readRDS(full.path("11_CNV/DEGs/Tau/tsi.rds"))
+
+tsi$clt = paste(tsi$cell, tsi$disease)
+tsi$clt = paste(tsi$clt, tsi$gene)
+
+rownames(tsi) <- tsi$clt
+```
+
+
+```{r}
+files = list.files(full.path("11_CNV/each_cells/"), pattern = "stage_markers.csv", recursive = T, full.names = T)
+
+stage = NULL
+for (f in files) {
+    disease = basename(dirname(f))
+    cell = basename(dirname(dirname(f)))
+    
+    if (disease %in% c("LUAD", "LUSC")) {
+        temp = read.csv(f, row.names = 1, stringsAsFactors = F)
+        
+        temp$cell = str_replace_all(str_replace_all(cell, "Mo", "Mφ"), "ATII", "AT2")
+        temp$disease = disease
+        
+        stage = rbind(stage, temp)
+    }
+}
+
+
+stage$type = "Not"
+stage$type[stage$avg_logFC > 0.25 & stage$p_val_adj < 0.05] = "Upregulated"
+stage$type[stage$avg_logFC < -0.25 & stage$p_val_adj < 0.05] = "Downregulated"
+stage$clt = paste(stage$cell, stage$disease)
+stage$clt = paste(stage$clt, stage$gene)
+
+stage$cell[stage$cell == "Epi"] =  "AT1"
+stage$Tau = tsi[stage$clt, "Tau"]
+
+stage$Immu <- ifelse(stage$cell %in% sort(c( "Gran", "B","Mast", "DC", "CD4", "CD8", "NK", "Mo", "Tregs", "Mφ")), "Immune", "Non-immune")
+
+```
+
+
+```{r fig.height=6, fig.width=8}
+p <- ggplot(stage[stage$type == "Upregulated", ], aes(x = cell, y=Tau, fill=ident)) +
+  geom_boxplot() +
+  facet_grid(disease~type+Immu, scales = "free", space = "free") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.grid = element_blank(),
+    strip.text = element_text(size = 15),
+    legend.position = "top",
+    legend.text = element_text(size = 10),
+  ) +
+  labs(x="", y="", fill = "") +
+  scale_fill_manual(values = c(
+    "I"="#65A9A3", "II"="#4A933E", 
+    "III"="#EC7A21", "IV"="#D73F47"
+  ))
+
+ggsave(
+  filename = full.path("11_CNV/DEGs/StageSpecific/tau_up.pdf"),
+  width = 8, height = 6, plot = p, device = cairo_pdf
+)
+```
+
+```{r fig.height=6, fig.width=8}
+p <- ggplot(stage[stage$type == "Downregulated", ], aes(x = cell, y=Tau, fill=ident)) +
+  geom_boxplot() +
+  facet_grid(disease~type+Immu, scales = "free", space = "free") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.grid = element_blank(),
+    strip.text = element_text(size = 15),
+    legend.position = "top",
+    legend.text = element_text(size = 10),
+  ) +
+  labs(x="", y="", fill = "") +
+  scale_fill_manual(values = c(
+    "I"="#65A9A3", "II"="#4A933E", 
+    "III"="#EC7A21", "IV"="#D73F47"
+  ))
+
+
+ggsave(
+  filename = full.path("11_CNV/DEGs/StageSpecific/tau_down.pdf"),
+  width = 8, height = 6, plot = p, device = cairo_pdf
+)
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

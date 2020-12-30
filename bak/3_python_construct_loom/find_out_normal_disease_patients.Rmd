@@ -1,0 +1,69 @@
+---
+title: "Find out patients with normal and disease at same time"
+author: "Ygidtu"
+date: "2019/5/7"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_chunk$set(root.dir = "/Users/zhangyiming/Code/lung_cancer_10x/99_files/")
+```
+
+### read meta info
+```{r}
+library(dplyr)
+library(ggplot2)
+
+setwd("/Users/zhangyiming/Code/lung_cancer_10x/99_files/")
+
+meta = read.csv("20190506_meta.csv")
+
+head(meta)
+```
+
+
+### extract patients with normal and disease sample at same time
+```{R}
+patients_with_normal = unique(meta$PatientID[meta$Disease == "Normal"])
+patients_with_disease = unique(meta$PatientID[meta$Disease %in% c("ADC", "SCC", "LELC", "LCC")])
+
+patients = intersect(patients_with_disease, patients_with_normal)
+
+patients
+```
+
+
+### find out the component of cells each patient
+```{r}
+meta = meta[meta$PatientID %in% patients & meta$Disease != "Other", ]
+
+temp = meta %>% group_by(PatientID, cell_name, Disease) %>% add_tally() %>% unique() %>% group_by(PatientID, cell_name, Disease) %>% mutate(freq = n / sum(n))
+
+temp
+```
+
+```{r fig.height=20, fig.width=20}
+ggplot(temp, aes(x=Disease, y=PatientID, color=freq, size = log10(n))) + geom_point() + facet_grid(Disease~cell_name, scales = "free", space = "free") + theme(axis.text.x = element_text(angle = 90, hjust=1, vjust=0.5))
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

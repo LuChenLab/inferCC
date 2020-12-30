@@ -1,26 +1,21 @@
-# lung_cancer_10x
+# Lung Cancer 10x
+
 Lung cancer 10X analysis
+![main](docs/main.png)
 
-Scripts used in this project
+## DATA AND SOFTWARE AVAILABILITY
 
-1. `0_python`:
-    - Python scripts to call CellRanger, velocyto and scripts to check the sequencing quality
+- All the raw data of scRNA-seq have been deposited in the https://pms.cd120.com/wcd01/index.html.
+
+- All raw counts, TPM matrix, the Seurat object including expression matrix and cell annotation information of single-cell RNA-seq are available in http://lungcancer.chenlulab.com.
+
+
+## Scripts used in this project
+
+1. `0_Preprocessing`: Python scripts to call CellRanger, velocyto and scripts to check the sequencing quality
  
-2. `0_01_seurat`:
-    - R scripts to run Seurat with default parameters, used for conditional exploration
+2. `1-Figures`:Scripts to perform specific analysis and make figures
 
-3. `1_R_markdown`:
-    - Rmarkdown files, the real R code for the whole data process
-        - batch effect correction
-        - cluster identification
-        - cell identification
-        - etc
-    
-4. `2_R_script_each_cell`:
-    - R scripts to analysis different cells
+3. `2-Others`: Some scripts that related to this project
 
-5. `3_python_construct_loom`:
-    - extract data from loom file, and integrate into one
-    
-99. `99_files`:
-    - additional files contains meta info of all the cells etc.
+4. `bak`: Script used in the exploration phase

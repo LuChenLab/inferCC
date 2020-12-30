@@ -1,0 +1,936 @@
+---
+title: "Gene module"
+author: "Zhang Yiming"
+date: "2020/2/14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "LungCancer10x/"
+
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+
+```{r}
+Stage = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "Normal"="#73BDFF")
+Disease = c( 
+    "LUAD" = "#0084D1",  "NL(AD)"="#FECC1B",  "NL"="#778793", 
+    "BSPN"="#C93311",  "NL(SC)"="#778793",  "LUSC"="#A0C807"
+)
+Source = c("In-house"="#F8AFA8",  "East Asians"="#FDDDA0","GTEx"="#73A089", "TCGA"="#877E45")
+
+
+
+
+colors = list(
+    Stage = c(
+        "I"="#65A9A3", 
+        "II"="#4A933E", 
+        "III"="#EC7A21", 
+        "IV"="#D73F47", 
+        "LUAD_Normal"="#FECC1B", 
+        "LUSC_Normal"="#778793"
+    ),
+    Disease = c(
+        "AD" = "#0084D1", 
+        "NL(AD)"="#FECC1B", 
+        "NL(AD"="#778793", 
+        "Normal"="#73BDFF", 
+        "NL(SC)"="#778793", 
+        "SC"="#A0C807",
+        "LC"="#91822B",
+        "NL(LC)"="#EDCAB0",
+        "UPS"="#EBAAA4",
+        "NL(UPS)"="#B43018"
+    ),
+    Batch = c("1"="#E9B0B7", "2"="#90D0E0", "3"="#769982"),
+    Cell = c(
+        "ATII"="#FF0000",
+        "Basal"="#F2AD00",
+        "CD4"="#F98400",
+        "CD8"="#5BBCD6",
+        "Cilia"="#85D4E3",
+        "Club"="#F4B5BD",
+        "DC"="#9C964A",
+        "EC"="#CDC08C",
+        "Epi"="#FAD77B",
+        "Fib"="#ECCBAE",
+        "Mast"="#D69C4E",
+        "Mo"="#ABDDDE",
+        "NK"="#000000",
+        "NE"="#F3DF6C",
+        "Tregs"="#CEAB07",
+        "Mφ"="#046C9A"
+    )
+)
+
+cluster_cols = c(
+    as.character(wes_palette("Zissou1")),
+    as.character(wes_palette("Royal2")),
+    as.character(wes_palette("Royal1")),
+    as.character(wes_palette("Darjeeling2")),
+    as.character(wes_palette("Darjeeling1")),
+    wes_palette("BottleRocket2"),
+    wes_palette("Rushmore1")
+)
+```
+
+## Load Packages
+
+```{r cars, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(wesanderson)
+library(ComplexHeatmap)
+library(circlize)
+library(tsidx)
+library(dplyr)
+library(reshape2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(stringr)
+
+options(stringsAsFactors = F)
+```
+
+## Batch run
+
+```{r eval=FALSE, include=FALSE}
+files = list.files(
+    full.path("03_each_cells/Batch"), 
+    pattern = "seurat.rds", 
+    full.names = T, 
+    recursive = T
+)
+
+
+do_tsidx <- function(obj, maximum=8) {
+    tryCatch({
+         tsi <- tsDataSetFromMatrix(
+            obj@raw.data[, rownames(obj@meta.data)], 
+            obj@meta.data, 
+            ~ Stage, 
+            type = "expression",
+            convMethod = "log2", 
+            minimum=1, 
+            maximum=maximum, 
+            mindiff=ifelse(maximum - 1 < 3, 1, 3),
+            IbMethod = "mingap", 
+            tidy = FALSE, 
+            breaks = NULL
+        )
+         
+         return(tsi)
+    }, error = function(e) {
+        return(do_tsidx(obj, maximum - 1))
+    })
+}
+
+
+
+for (f in files) {
+    obj <- readRDS(f)
+
+    obj@meta.data$Stage <- factor(
+        obj@meta.data$Stage, 
+        levels = intersect(c("I", "II", "III", "IV"), unique(obj@meta.data$Stage))
+    )
+    
+    tsi <- do_tsidx(obj)
+    saveRDS(tsi, paste0(dirname(f), "/tsi.rds"))
+}
+
+```
+
+## Batch plotdensity of tsi
+
+```{R}
+files = list.files(
+    full.path("03_each_cells/Batch"), 
+    pattern = "tsi.rds", 
+    full.names = T, 
+    recursive = T
+)
+
+
+for (f in sort(files)) {
+    cell = basename(dirname(dirname(f)))
+    disease = basename(dirname(f))
+    
+    tsi <- readRDS(f)
+    p <- ggplot(as.data.frame(tsi@tsData$Tau), aes(x=Tau)) + 
+        geom_density() +
+        labs(title = paste0(cell, "(", disease, ")"))
+    
+    print(p)
+}
+```
+
+
+## ATII LUAD
+```{r}
+tsi <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/tsi.rds"))
+
+
+plotHeatmap(tsi, TauMin = 0.75, show_colnames = F)
+```
+
+```{r}
+for (f in files) {
+    cell = basename(dirname(dirname(f)))
+    disease = basename(dirname(f))
+    
+    tsi <- readRDS(f)
+    
+    meta = as.data.frame(tsi@colData)
+    meta = meta[order(meta$Stage), ]
+    
+    meta <- meta %>%
+        dplyr::group_by(Stage) %>%
+        sample(100, replace = T) %>%
+        unique() %>%
+        as.data.frame()
+    
+    tau = as.data.frame(tsi@tsData$Tau)
+    tau = tau[tau$Tau > 0.75, ]
+    
+    rank = melt(as.matrix(tsi@tsData$Rank)[rownames(tau), ])
+    rank = rank %>%
+        group_by(Var1) %>%
+        top_n(1, wt=value) %>%
+        filter(value != 0) %>%
+        unique() %>%
+        as.data.frame()
+    rownames(rank) = rank$Var1
+    
+    sel_gene = intersect(rownames(tau), rownames(rank))
+    
+    
+    tryCatch({
+       　ta = HeatmapAnnotation(
+            Stage = meta$Stage,
+            col = list(Stage=Stage),
+            show_legend = T,
+            show_annotation_name = F,
+            annotation_legend_param = list(
+                labels_gp = gpar(fontsize = 15),
+                title_gp = gpar(fontsize = 20)
+                # grid_height = unit(2, "cm")
+            )
+        )
+    
+        
+        
+        h <- Heatmap(
+            t(scale(t(tsi@rawData[sel_gene, meta$Cells]))),
+            name = "Expr",
+            cluster_rows = F,
+            cluster_columns = F,
+            show_row_names = F,
+            show_column_names = F,
+            row_split = rank[sel_gene, "Var2"],
+            column_split = meta$Stage,
+            col = colorRamp2(c(-3, 0, 3), c("blue", "white", "red")),
+            column_title = paste0(cell, "(", disease, ")"),
+            border = T
+        )
+        
+        draw(h)
+    }, error = function(e) {})
+   
+}
+
+```
+
+```{r}
+make_stage_module_heatmap <- function(
+    data,
+    meta, 
+    module, 
+    col_fun = NULL, 
+    labels_size=15, 
+    title_size = 20, 
+    cluster=F, 
+    do.return=F, 
+    show_row_names = F, 
+    do.random = F,
+    do.balance = T,
+    order.by.patient = T,
+    mark_genes = NULL,
+    cluster_row = T,
+    row_split = NULL,
+    column_title = "",
+    show_disease = F
+) {
+    if (is.null(col_fun)) {
+        col_fun = colorRamp2(c(-5, 0, 5), c("blue", "white", "red"))
+    } 
+    
+    meta$Disease <- as.character(meta$Disease)
+    meta$Disease[meta$Disease == "LUAD"] <- "AD"
+    meta$Disease[meta$Disease == "LUSC"] <- "SC"
+    meta$Disease[meta$Disease == "LUAD_Normal"] <- "NL(AD)"
+    meta$Disease[meta$Disease == "LUSC_Normal"] <- "NL(SC)"
+    meta$Disease[meta$Disease == "Pleiomorphic Normal"] <- "NL(UPS)"
+    meta$Disease[meta$Disease == "Pleiomorphic"] <- "UPS"
+    meta$Disease[meta$Disease == "LULC"] <- "LC"
+    meta$Disease[meta$Disease == "LULC_Normal"] <- "NL(LC)"
+    
+    patient_colors = cluster_cols[1:length(unique(meta$PatientID))]
+    names(patient_colors) <- sort(as.character(unique(meta$PatientID)))
+    module = as.character(module)
+
+    if(do.balance) {
+        minmum_cells = sort(table(meta$Stage), decreasing = F)
+    
+        if (minmum_cells[1] < 100) {
+            minmum_cells = minmum_cells[2]
+        } else {
+            minmum_cells = minmum_cells[1]
+        }
+        
+        
+        meta <- meta %>%
+            group_by(Stage) %>%
+            sample_n(minmum_cells, replace = T) %>%
+            unique() %>%
+            as.data.frame()
+    
+        rownames(meta) <- meta$Cells
+    }
+    
+    
+    set.seed(42)
+    if(order.by.patient) {
+       if (show_disease) {
+            meta <- meta[order(meta$Disease, meta$Stage, meta$PatientID), c("Stage", "Disease", "PatientID")]
+        
+            anno_legend_param = list(
+                Stage=list(
+                    direction = "horizontal", nrow = 1,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                ),
+                PatientID=list(
+                    direction = "horizontal", nrow = 4,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                ),
+                Disease=list(
+                    direction = "horizontal", nrow = 1,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                )
+            )
+       } else {
+            meta <- meta[order(meta$Disease, meta$Stage, meta$PatientID), c("Stage", "PatientID")]
+        
+            anno_legend_param = list(
+                Stage=list(
+                    direction = "horizontal", nrow = 1,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                ),
+                PatientID=list(
+                    direction = "horizontal", nrow = 4,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                )
+            )
+       }
+    } else {
+        if (do.random) {
+            meta = meta[sample(1:nrow(meta)), ]
+        }
+        
+        
+        if(!show_disease) {
+             meta <- meta[order(meta$Disease, meta$Stage), c("Stage"), drop = F]
+             anno_legend_param = list(
+                Stage=list(
+                    direction = "horizontal", nrow = 1,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                )
+            )
+        } else {
+             meta <- meta[order(meta$Disease, meta$Stage), c("Stage", "Disease")]
+             anno_legend_param = list(
+                Stage=list(
+                    direction = "horizontal", nrow = 1,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                ),
+                Disease=list(
+                    direction = "horizontal", nrow = 1,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                )
+            )
+        }
+       
+    }
+
+    # top annotation
+    ta = HeatmapAnnotation(
+        df = meta,
+        col = list(
+            Stage =  colors[["Stage"]],
+            PatientID = patient_colors,
+            Disease = colors[["Disease"]]
+        ),
+        show_legend = T,
+        show_annotation_name = T,
+        annotation_legend_param = anno_legend_param,
+        annotation_name_gp = gpar(fontsize = title_size - 2)
+    )
+    
+    if(!is.null(mark_genes)) {
+        mark_genes = as.character(mark_genes)
+        ra = rowAnnotation(
+            foo = anno_mark(
+                at = which(module %in% mark_genes),
+                labels = module[module %in% mark_genes],
+                which = "row",
+                side = "right"
+            ),
+            show_legend = F, show_annotation_name = F
+        )
+    } else {
+        ra = NULL
+    }
+    
+    module_cols = as.character(wes_palette("GrandBudapest2"))[1:length(unique(row_split))]
+    names(module_cols) <- sort(unique(as.character(row_split)))
+
+    la = rowAnnotation(
+        Module = row_split,
+        col = list(Module =  module_cols),
+        show_legend = T,
+        show_annotation_name = T,
+        annotation_legend_param = list(
+            Module=list(
+                direction = "horizontal", nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            )
+        ),
+        annotation_name_rot = 0,
+        annotation_name_gp = gpar(fontsize = title_size - 2)
+    )
+    
+    h <- Heatmap(
+        name = "Expr",
+        data[as.character(module), rownames(meta)],
+        cluster_rows = cluster_row,
+        cluster_columns = F,
+        show_column_names = F,
+        show_row_names = show_row_names,
+        col = col_fun,
+        top_annotation = ta,
+        left_annotation = la,
+        right_annotation = ra, 
+        column_split = paste(meta$Disease, meta$Stage),
+        row_split = row_split,
+        border = T,
+        column_title = column_title,
+        column_title_gp = gpar(fontsize=ifelse(column_title == "", 0, 20)),
+        row_title_gp = gpar(fontsize = 0),
+        heatmap_legend_param = list(
+            direction = "horizontal",
+            labels_gp = gpar(fontsize = labels_size),
+            title_gp = gpar(fontsize = title_size)
+        )
+    )
+    
+    if(do.return) {
+        return(h)
+    } else {
+        draw(
+            h, 
+            column_title_gp = gpar(fontsize = 20),
+            merge_legend = TRUE, 
+            heatmap_legend_side = "bottom", 
+            annotation_legend_side = "bottom"
+        )
+    }
+}
+
+```
+
+
+## make ATII new module plot
+```{r}
+obj <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/seurat.rds"))
+tsi <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/tsi.rds"))ibrary(dplyr)
+mfuzz <- read.csv(full.path("03_each_cells/Batch/ATII/LUAD/mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+mfuzz_dup = table(mfuzz$gene)
+mfuzz_dup = names(mfuzz_dup)[mfuzz_dup > 1]
+mfuzz <- mfuzz[!mfuzz$gene %in% mfuzz_dup, ]
+
+markers <- read.csv(full.path("03_each_cells/Batch/ATII/LUAD/cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+marekrs <- markers %>%
+    filter(avg_logFC > 0.25 & p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(10, wt = avg_logFC)
+```
+
+
+```{r}
+tau = as.data.frame(tsi@tsData$Tau)
+tau = tau[tau$Tau > 0.75, ]
+
+rank = melt(as.matrix(tsi@tsData$Rank)[rownames(tau), ])
+rank = rank %>%
+    group_by(Var1) %>%
+    top_n(1, wt=value) %>%
+    filter(value != 0) %>%
+    unique() %>%
+    as.data.frame()
+rownames(rank) = rank$Var1draw(
+    h, column_title_gp = gpar(fontsize = 20),
+    merge_legend = TRUE, heatmap_legend_side = "bottom", annotation_legend_side = "bottom"
+)
+rank = rank[rank$Var2 == "III", ]
+
+sel_gene = as.character(rank$Var1)
+```
+
+
+
+```{r fig.height=8, fig.width=10}
+set.seed(42)
+mfuzz_sel = mfuzz %>%
+    group_by(Clt) %>%
+    sample_n(5) %>%
+    as.data.frame()
+
+mfuzz_sel = mfuzz_sel$gene
+
+
+h <- make_stage_module_heatmap(
+    obj@scale.data, 
+    obj@meta.data, 
+    mfuzz$gene,
+    order.by.patient = F,
+    do.random = T,
+    col_fun = colorRamp2(c(-1, 0, 1), c("purple", "black", "yellow")),
+    cluster_row = F,
+    row_split = mfuzz$Clt,
+    mark_genes = c(as.character(marekrs$gene), as.character(mfuzz_sel), "XIST"),
+    do.return = T
+)
+
+
+pdf(full.path("03_each_cells/Batch/ATII/LUAD/mfuzz.pdf"), width = 10, height = 8)
+draw(
+    h, column_title_gp = gpar(fontsize = 20),
+    merge_legend = TRUE, heatmap_legend_side = "bottom", annotation_legend_side = "bottom"
+)
+dev.off()
+
+draw(
+    h, column_title_gp = gpar(fontsize = 20),
+    merge_legend = TRUE, heatmap_legend_side = "bottom", annotation_legend_side = "bottom"
+)
+```
+
+
+```{r}
+go = NULL
+
+for (i in unique(mfuzz$Clt)) {
+    eg = bitr(mfuzz$gene[mfuzz$Clt == i], fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+    
+    temp = enrichGO(
+        eg$ENTREZID,
+        org.Hs.eg.db,
+        ont = "BP"
+    )
+    
+    temp = simplify(temp)
+    
+    temp = as.data.frame(temp)
+    temp$Clt = i
+    go = rbind(go,temp)
+}
+
+go$GeneRatioPercentage <- sapply(go$GeneRatio, function(x) {
+    x = str_split(x, "/")[[1]]
+    as.numeric(as.character(x[1])) / as.numeric(as.character(x[2])) * 100
+}) 
+
+write.csv(go, full.path("03_each_cells/Batch/ATII/LUAD/mfuzz_go.csv"))
+```
+
+
+
+### Test Stage module on bulk deconvolution
+```{r}
+tree <- read.csv(full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), row.names = 1, stringsAsFactors = F)
+
+sc_set <- readRDS(full.path("09_bulk/RNA_seq/MuSic/sc_set.rds"))
+
+est <- read.csv(full.path("09_bulk/RNA_seq/MuSic/All_est.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+```{r echo=FALSE, fig.height=8, fig.width=8}
+### using cutree and max number of samples as label
+make_heatmap_number_merged <- function(
+    data, meta, 
+    scale_dot_size=0.9, 
+    row_split=NULL, column_split=NULL,
+    cluster_rows = T, cluster_columns = T,
+    show_row_names = F, show_column_names = T,
+    show_source=T
+) {
+    col_fun <- colorRamp2(c(0, 0.5, 1), c("blue", "white", "red"))
+    
+    if(show_source) {
+        colors = list(Stage = Stage, Disease = Disease, Source = Source)
+        
+        ra <- rowAnnotation(
+            Disease = meta[rownames(data), "Disease"], Stage = meta[rownames(data), "Stage"], Source = meta[rownames(data), "Source"],
+            col = colors, show_annotation_name = F, show_legend = T
+        )
+    } else {
+        colors = list(Stage = Stage, Disease = Disease)
+        
+        ra <- rowAnnotation(
+            Disease = meta[rownames(data), "Disease"], Stage = meta[rownames(data), "Stage"],
+            col = colors, show_annotation_name = F, show_legend = T
+        )
+    }
+    
+    Heatmap(
+        data,
+        name = "Weight",
+        col = col_fun,
+        right_annotation = ra,
+        # bottom_annotation = ba,
+        show_row_names = show_row_names,
+        show_column_names = show_column_names,
+        row_split = row_split,
+        column_split = column_split,
+        cluster_rows = cluster_rows,
+        cluster_columns = cluster_columns,
+        border = T
+    )
+}
+
+
+make_piechart_of_stages_each_group <- function(tree, meta, ncol=2) {
+    temp = tree
+    temp$Stage = meta[rownames(temp), "Stage"]
+    
+    temp <- temp %>%
+        group_by(Stage, Clt) %>%
+        add_tally() %>%
+        dplyr::select(Clt, Stage, n) %>%
+        unique() %>%
+        group_by(Clt) %>%
+        mutate(label = paste0(Stage, "(", round(n / sum(n) * 100, digits = 2), "%)")) %>%
+        as.data.frame()
+    
+
+    
+    plist = list()
+    for (i in sort(unique(temp$Clt))) {
+        plist[[length(plist) + 1]] <- ggpie(
+            temp[temp$Clt == i, ],
+            "n", 
+            label = "label", 
+            fill = "Stage", 
+            color = "white",
+            palette = Stage,
+            title = i,
+            lab.pos = "in"
+        ) + theme(legend.position = "none")
+    }
+    
+    cowplot::plot_grid(plotlist = plist, ncol = ncol)
+}
+```
+
+
+
+```{r}
+best_ncluster <- function(data, method="wss") {
+    # "silhouette", "wss",  "gap_stat"
+    
+    fviz_nbclust(data, kmeans, method = "wss") +
+        geom_vline(xintercept = 4, linetype = 2)+
+        labs(subtitle = "Elbow method")
+}
+
+
+kmean_cluster <- function(data, k=4, seed=42) {
+    set.seed(seed)
+    
+    temp_kmeans <- kmeans(data, k)
+    temp_tree <- as.data.frame(temp_kmeans$cluster)
+    colnames(temp_tree) <- "Clt"
+    temp_tree
+}
+```
+
+
+## Inhouse
+```{r}
+bulk <- read.xlsx(full.path("09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"), header = F, row.names = 5)
+gene_pos$V6 <- make.unique(as.character(gene_pos$V6))
+rownames(bulk) <- gene_pos[rownames(bulk), "V6"]
+
+
+bulk_meta <- read.xlsx(full.path("09_bulk/RNATAC50commonSample-1119.xlsx"))
+bulk_meta <- bulk_meta[!is.na(bulk_meta$SampleID), ]
+rownames(bulk_meta) <- bulk_meta$SampleID
+bulk_meta$Stage <- str_replace(bulk_meta$Stage, "[^IV]", "")
+
+sel_sample = rownames(tree[tree$Source == "In-house" & tree$Disease == "LUAD" & tree$Clt == 2, ])
+
+bulk_set <- ExpressionSet(as.matrix(bulk[, sel_sample]), phenoData = AnnotatedDataFrame(bulk_meta[sel_sample, ]))
+
+bulk_dec = music_prop(
+    bulk.eset = bulk_set, 
+    sc.eset = sc_set, 
+    clusters = 'cell_short',
+    samples = 'SampleID', 
+    markers = mfuzz$gene,
+    verbose = F
+)
+```
+
+
+```{r echo=FALSE}
+temp_est = bulk_dec$Est.prop.weighted
+
+temp_tree = kmean_cluster(temp_est, k = 4)
+
+
+make_heatmap_number_merged(
+    temp_est,
+    bulk_meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T
+)
+```
+
+
+## TCGA
+
+```{R}
+tcga <- read.csv(full.path("TCGA/Lung.csv"), row.names = 1, stringsAsFactors = F)
+
+
+### read bulk
+tcga_meta <- data.frame(
+    Disease = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][8] }),
+    Stage = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][9] })
+)
+
+rownames(tcga_meta) <- colnames(tcga)
+tcga_meta <- tcga_meta[tcga_meta$Stage != "", ]
+```
+
+```{r}
+sel_sample = rownames(tree[tree$Source == "TCGA" & tree$Disease == "LUAD" & tree$Clt == 1, ])
+ 
+table(tcga_meta[sel_sample, "Stage"])
+```
+
+#### Random select samples by stage
+```{r}
+set.seed(42)
+tcga_meta$Sample = rownames(tcga_meta)
+
+sel_sample = tcga_meta[sel_sample, ] %>%
+    group_by(Stage) %>%
+    sample_n(40, replace = T) %>%
+    unique() %>%
+    as.data.frame()
+
+sel_sample = sel_sample$Sample
+```
+
+
+## Test TCGA on all expression
+```{r include=FALSE}
+
+tcga_set <- ExpressionSet(
+    as.matrix(tcga[, sel_sample]), 
+    phenoData = AnnotatedDataFrame(tcga_meta[sel_sample,])
+)
+
+
+tcga_dec = music_prop(
+    bulk.eset = tcga_set, 
+    sc.eset = sc_set, 
+    clusters = 'Stage',
+    samples = 'SampleID', 
+    markers = mfuzz$gene,
+    verbose = T
+)
+    
+```
+
+### Check samples
+```{r echo=FALSE}
+temp_est = tcga_dec$Est.prop.weighted
+
+temp_tree = kmean_cluster(temp_est, k = 4)
+
+
+make_heatmap_number_merged(
+    temp_est,
+    tcga_meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T
+)
+
+make_piechart_of_stages_each_group(temp_tree, tcga_meta)
+```
+
+
+### modify expression by ATII 
+
+```{r include=FALSE}
+tcga_set <- ExpressionSet(
+    as.matrix(tcga[, sel_sample] / t(est["ATII", sel_sample])), 
+    phenoData = AnnotatedDataFrame(tcga_meta[sel_sample,])
+)
+
+
+tcga_dec = music_prop(
+    bulk.eset = tcga_set, 
+    sc.eset = sc_set, 
+    clusters = 'Stage',
+    samples = 'SampleID', 
+    markers = mfuzz$gene,
+    verbose = T
+)
+```
+
+
+### Check samples
+
+
+
+```{r echo=FALSE}
+temp_est = tcga_dec$Est.prop.weighted
+
+temp_tree = kmean_cluster(temp_est, k = 4)
+
+
+make_heatmap_number_merged(
+    temp_est,
+    tcga_meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T
+)
+
+make_piechart_of_stages_each_group(temp_tree, tcga_meta)
+```
+
+
+### Only use ATII expression to make deconvolution
+```{r include=FALSE}
+
+atii_set = ExpressionSet(
+    as.matrix(sc_set@assayData$exprs[, rownames(sc_set@phenoData@data)[sc_set@phenoData@data$cell_short == "ATII"]]), 
+    phenoData = AnnotatedDataFrame(sc_set@phenoData@data[sc_set@phenoData@data$cell_short == "ATII", ])
+)
+
+
+tcga_set <- ExpressionSet(
+    as.matrix(tcga[, sel_sample]), 
+    phenoData = AnnotatedDataFrame(tcga_meta[sel_sample,])
+)
+
+
+tcga_dec = music_prop(
+    bulk.eset = tcga_set, 
+    sc.eset = atii_set, 
+    clusters = 'Stage',
+    samples = 'SampleID', 
+    markers = mfuzz$gene,
+    verbose = T
+)
+```
+
+
+```{r echo=FALSE}
+temp_est = tcga_dec$Est.prop.weighted
+
+temp_tree = kmean_cluster(temp_est, k = 6)
+
+
+make_heatmap_number_merged(
+    temp_est,
+    tcga_meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T
+)
+
+make_piechart_of_stages_each_group(temp_tree, tcga_meta, ncol = 3)
+```
+
+
+### Only use ATII expression to make deconvolution
+```{r include=FALSE}
+tcga_set <- ExpressionSet(
+    as.matrix(tcga[, sel_sample] / t(est["ATII", sel_sample])), 
+    phenoData = AnnotatedDataFrame(tcga_meta[sel_sample,])
+)
+
+
+tcga_dec = music_prop(
+    bulk.eset = tcga_set, 
+    sc.eset = atii_set, 
+    clusters = 'Stage',
+    samples = 'SampleID', 
+    markers = mfuzz$gene,
+    verbose = T
+)
+```
+
+
+```{r echo=FALSE}
+temp_est = tcga_dec$Est.prop.weighted
+
+temp_tree = kmean_cluster(temp_est, k = 6)
+
+
+make_heatmap_number_merged(
+    temp_est,
+    tcga_meta, 
+    row_split = temp_tree[rownames(temp_est), "Clt"], 
+    # column_split = rownames(temp_tree),
+    cluster_rows = F,
+    cluster_columns = T,
+    show_column_names = T
+)
+
+make_piechart_of_stages_each_group(temp_tree, tcga_meta, ncol=3)
+```
+
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

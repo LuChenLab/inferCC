@@ -1,0 +1,418 @@
+---
+title: "ATAC"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/mnt/raid63/LungCancerData/")
+```
+
+
+
+```{r cars, include=FALSE}
+library(DiffBind)
+library(openxlsx)
+library(stringr)
+library(ATACseqQC)
+library("ChIPseeker")
+library("TxDb.Hsapiens.UCSC.hg19.knownGene")
+library("GenomeInfoDb")
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+
+txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
+```
+
+
+
+```{r pressure, echo=FALSE}
+peaks = list.files("ATAC_seq/CalledPeaks/", pattern = "narrowPeak", full.names = T)
+
+meta = data.frame(
+  SampleID = sapply(peaks, function(x) { str_split(basename(x), "_")[[1]][1] }),
+  Condition = sapply(peaks, function(x) { str_replace_all(str_split(basename(x), "_")[[1]][1], "\\d+", "") }),
+  Peaks = peaks
+)
+
+meta$bamReads = paste0("ATAC_seq/Bam/T_", meta$SampleID, "_selected.bam")
+meta$Exists = sapply(meta$bamReads, file.exists)
+
+meta$Peaks = as.character(meta$Peaks)
+meta$Condition = as.character(meta$Condition)
+meta$bamReads = as.character(meta$bamReads)
+meta$SampleID = as.character(meta$SampleID)
+```
+
+
+
+```{r}
+peaks = list()
+
+for (i in 1:nrow(meta)) {
+    if (file.exists(meta$Peaks[i])) {
+        peaks[[meta$SampleID[i]]] = readPeakFile(meta$Peaks[i])
+    }
+}
+
+merged_peaks <- list()
+for (i in unique(meta$Condition)) {
+    for (j in meta$SampleID[meta$Condition == i]) {
+        temp = merged_peaks[[i]]
+
+        if (is.null(temp)) {
+            temp = peaks[[j]]
+        } else {
+            temp = c(temp, peaks[[j]])
+        }
+        merged_peaks[[i]] = temp
+    }
+}
+```
+
+
+```{r}
+promoter <- getPromoters(txdb, upstream=3000, downstream=3000)
+# seqlevelsStyle(promoter) <- "Ensembl"
+
+tagMatrixList = list()
+for (i in names(merged_peaks)) {
+    tagMatrixList[[i]] = getTagMatrix(merged_peaks[[i]], windows=promoter)
+}
+
+plotAvgProf(tagMatrixList, xlim=c(-3000, 3000),
+            xlab="Genomic Region (5'->3')", ylab = "Read Count Frequency")
+```
+
+
+```{r}
+tagHeatmap(tagMatrixList, xlim=c(-3000, 3000))
+```
+
+
+### Annotation Peaks
+```{r}
+peakAnnos = list()
+
+for (i in names(merged_peaks)) {
+    temp = merged_peaks[[i]]
+    seqlevelsStyle(temp) <- "UCSC"
+    
+    peakAnnos[[i]] = annotatePeak(
+        temp, tssRegion=c(-3000, 3000),
+        TxDb=txdb, annoDb="org.Hs.eg.db"
+    )
+}
+
+```
+
+```{r}
+for (i in names(peakAnnos)) {
+    p <- plotAnnoPie(peakAnnos[[i]])
+    print(p)
+}
+```
+
+```{r fig.height=6, fig.width=8}
+for (i in names(peakAnnos)) {
+    p <- upsetplot(peakAnnos[[i]], vennpie=TRUE) + labs(title = i)
+    print(p)
+}
+```
+
+
+
+## DiffBind
+```{r}
+tmpfile <- meta[meta$Exists, ]
+tmpfile$Factor <- "WCH"
+
+for (i in colnames(tmpfile)) {
+    tmpfile[, i] <- as.character(tmpfile[, i])
+}
+tmpfile$PeakCaller = "narrow"
+
+##读取文件
+tamoxifen <- dba(sampleSheet=tmpfile)
+```
+
+
+```{r fig.height=6, fig.width=6}
+plot(tamoxifen)
+```
+
+
+
+```{r}
+tamoxifen <- dba.count(tamoxifen, summits=250) ##只对峰上下游250bp(总计500bp)进行计数
+```
+
+```{R}
+##差异分析
+tamoxifen <- dba.contrast(tamoxifen, categories=DBA_CONDITION) ##比对的条件为samples中的Condition列
+
+tamoxifen <- dba.analyze(tamoxifen)
+##提取结果
+tamoxifen.DB <- dba.report(tamoxifen)
+```
+
+
+```{r}
+saveRDS(tamoxifen, "ATAC_seq/tamoxifen.rds")
+saveRDS(tamoxifen.DB, "ATAC_seq/tamoxifenDB.rds")
+```
+
+
+```{r}
+dba.plotPCA(tamoxifen,DBA_CONDITION, label=DBA_ID)
+```
+
+
+```{r}
+dba.plotBox(tamoxifen)
+```
+
+
+```{r fig.height=6, fig.width=4}
+dba.plotHeatmap(tamoxifen, contrast=1, correlations=FALSE)
+```
+
+
+### Make plot of compared 
+
+```{r}
+promoter <- promoters(genes(txdb), upstream=3000, downstream=3000)
+# seqlevelsStyle(promoter) <- "Ensembl"
+
+overlapped = findOverlaps(promoter, tamoxifen.DB)
+
+target_genes = promoter[queryHits(overlapped)]
+```
+
+
+```{r}
+eg = bitr(
+    target_genes@elementMetadata$gene_id, 
+    OrgDb = org.Hs.eg.db, fromType = "ENTREZID",
+    toType = "SYMBOL"
+)
+
+
+tf <- readRDS("LungCancer10x/12_TF/Teichmann_TFlist.Rds")
+tf <- bitr(tf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+
+
+sort(eg$SYMBOL[eg$SYMBOL %in% tf$SYMBOL])
+```
+
+
+### HOPX
+```{r}
+temp_eg = eg[eg$SYMBOL == "HOPX", ]
+
+hopx = overlapped[queryHits(overlapped) == which(promoter$gene_id == temp_eg$ENTREZID)]
+
+tamoxifen.DB[subjectHits(hopx)]
+```
+
+
+```{r}
+promoter[which(promoter$gene_id == temp_eg$ENTREZID)]
+```
+
+
+```{r}
+library(ggridges)
+library(ggplot2)
+library(stringr)
+
+data = read.csv("ATAC_seq/HOPX.txt", header = F, stringsAsFactors = F)
+
+
+data$Disease = str_replace_all(data$V1, "\\d+", "")
+  
+p <- ggplot(data, aes(x = V7, y = V1, group = V1, fill=Disease)) +
+    geom_density_ridges(scale = 10, size = 0.25, rel_min_height = 0.03, alpha = 0.8) +
+    theme_ridges() +
+    scale_y_discrete(expand = c(0, 0), name="") +
+    scale_x_continuous(expand = c(0, 0), name = data[1, "V6"]) +
+    scale_fill_manual(
+      values = c("LUAD" = "#0084D1", "LUSC"="#A0C807"), labels = c("LUAD", "LUSC")
+    ) +
+    scale_color_manual(values = c("LUAD" = "#0084D1",  "LUSC"="#A0C807"), guide = "none") +
+    coord_cartesian(clip = "off") +
+    theme_ridges(center = TRUE) +
+    guides(fill = guide_legend(
+    override.aes = list(
+      fill = c("#0084D1", "#A0C807"),
+      color = NA, point_color = NA)
+    )
+  )
+
+p
+```
+
+Check whether gene is DE
+```{r}
+promoter[promoter$gene_id == eg[eg$SYMBOL == "S100A13", "ENTREZID"]]
+```
+
+```{r}
+data = read.csv("ATAC_seq/AZGP1.txt", header = F, stringsAsFactors = F)
+
+data$Disease = str_replace_all(data$V1, "\\d+", "")
+
+temp = data %>%
+  group_by(V1, V7) %>%
+  add_tally() %>%
+  dplyr::select(V6, V7, Disease, n) %>%
+  group_by(V6, V7, Disease) %>%
+  mutate(n = mean(n)) %>%
+  unique() %>%
+  as.data.frame()
+
+temp$V7 = temp$V7 - mean(c(99570736, 99576735))
+
+
+p <- ggplot(temp, aes(x=V7, y=n, color=Disease)) +
+  geom_line() +
+  labs(x="Distance to TSS (bp)", y="", title="AZGP1") +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 12),
+    legend.position = c(.8, .75),
+    legend.background = element_blank()
+  ) +
+  scale_color_manual(values=c(
+    "LUAD" = "#0084D1", 
+    "BSPN"="#C5000B",
+    "LUSC"="#A0C807" 
+  ))
+
+p
+
+ggsave(filename = "ATAC_seq/AZGP1.pdf", plot = p, width = 4, height = 3)
+```
+
+```{r fig.height=3, fig.width=4}
+data = read.csv("ATAC_seq/S100A13.txt", header = F, stringsAsFactors = F)
+
+data$Disease = str_replace_all(data$V1, "\\d+", "")
+
+temp = data %>%
+  group_by(V1, V7) %>%
+  add_tally() %>%
+  dplyr::select(V6, V7, Disease, n) %>%
+  group_by(V6, V7, Disease) %>%
+  mutate(n = mean(n)) %>%
+  unique() %>%
+  as.data.frame()
+
+temp$V7 = temp$V7 - mean(c(153603569, 153609568))
+
+
+p <- ggplot(temp, aes(x=V7, y=n, color=Disease)) +
+  geom_line() +
+  labs(x="Distance to TSS (bp)", y="", title="S100A13") +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 12),
+    legend.position = c(.8, .75),
+    legend.background = element_blank()
+  ) +
+  scale_color_manual(values=c(
+    "LUAD" = "#0084D1", 
+    "BSPN"="#C5000B",
+    "LUSC"="#A0C807" 
+  ))
+
+ggsave(filename = "ATAC_seq/S100A13.pdf", plot = p, width = 4, height = 3)
+```
+
+```{r}
+temp = data %>%
+  group_by(V1, V7) %>%
+  add_tally() %>%
+  dplyr::select(V6, V7, Disease, n) %>%
+  unique() %>%
+  as.data.frame()
+
+temp$V7 = temp$V7 - 57547872
+
+temp = dcast(temp, V1+Disease~V7, value.var = "n", fill = 0, fun.aggregate = mean)
+
+
+Heatmap(
+  log10(temp[, !colnames(temp) %in% c("V1", "Disease")] + 1),
+  name = "log10(value + 1)",
+  row_split = temp$Disease,
+  cluster_columns = F
+)
+```
+
+
+
+```{r}
+expr <- readRDS("LungCancer10x/02_rds/all_cell_expr.rds")
+meta <- readRDS("LungCancer10x/11_CNV/meta.rds")
+```
+
+
+```{r}
+meta = meta[!is.na(meta$Malignant_tree) & meta$Malignant_tree != "Non", ]
+meta$Disease = str_replace_all(meta$Disease, "_Normal", "")
+
+temp_expr = melt(as.matrix(
+  t(scale(t(expr["HOPX", as.character(rownames(meta))])))
+))
+
+temp_expr$Disease = meta[temp_expr$Var2, "Disease"]
+temp_expr$cell = meta[temp_expr$Var2, "cell_short"]
+
+ggplot(temp_expr, aes(x=cell, y=value, fill=Disease)) +
+  geom_boxplot() +
+  ylim(c(-1, 2))
+```
+
+#### Make boxplot 
+```{R fig.height=4, fig.width=3}
+temp = temp_expr[as.character(temp_expr$cell) == "AT2", ]
+temp$Disease = factor(as.character(temp$Disease), levels = c("LUAD", "LUSC"))
+
+p <- ggboxplot(
+  temp, 
+  x = "Disease", y = "value",
+  fill = "Disease", palette = "jco"
+) +
+  ylim(c(-0.5, 0.5)) +
+  labs(title = "AT2")
+
+# Change method
+p + stat_compare_means(method = "t.test", label.y = 0.4)
+```
+
+
+```{R fig.height=4, fig.width=3}
+
+temp = temp_expr[as.character(temp_expr$cell) == "Epi", ]
+temp$Disease = factor(as.character(temp$Disease), levels = c("LUAD", "LUSC"))
+
+p <- ggboxplot(
+  temp, 
+  x = "Disease", y = "value",
+  fill = "Disease", palette = "jco"
+) +
+  ylim(c(-0.5, 0.5)) +
+  labs(title = "AT1")
+
+# Change method
+p + stat_compare_means(method = "t.test", label.y = 0.4)
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

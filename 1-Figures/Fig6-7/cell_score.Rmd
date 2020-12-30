@@ -1,0 +1,963 @@
+---
+title: "cell_score"
+author: "Zhang Yiming"
+date: "2020/3/10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+full.path <- function(...) {
+    paste(root.dir, ..., sep = "/")
+}
+```
+
+
+```{r include=FALSE}
+library(Seurat)
+library(stringr)
+library(doMC)
+library(openxlsx)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(ggrastr)
+library(reshape2)
+library(dplyr)
+library(DESeq2)
+library(ggpubr)
+```
+
+
+##  Scatter plot
+```{r}
+combat_edata <- readRDS(full.path("09_bulk/RNA_seq/DEGs/data/All_expr_combat.rds"))
+bulk_meta <- readRDS(full.path("09_bulk/RNA_seq/DEGs/data/All_est_meta.rds"))
+tree = read.csv(full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+```{r}
+markers <- read.csv(
+    full.path("09_bulk/RNA_seq/MuSic/merged_markers.csv"), 
+    row.names = 1, stringsAsFactors = F
+)
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+meta$cell_short = as.character(meta$cell_short)
+meta$cell_short[meta$cell_short == "ATII"] = "AT2"
+meta$cell_short[meta$cell_short == "Epi"] = "AT1"
+markers$Cells = as.character(markers$Cells)
+markers$Cells[markers$Cells == "ATII"] = "AT2"
+markers$Cells[markers$Cells == "Epi"] = "AT1"
+
+immu_cells = c(
+    "Tregs", "Mo", "Mφ","CD8", "Mast",
+    "NK", "CD4", "DC", "B", "Gran"
+)
+
+
+cell_colors = ggthemes::tableau_color_pal(palette = "Tableau 20")(length(unique(meta$cell_short)) + 1)
+set.seed(42)
+names(cell_colors) <- sort(as.character(unique(meta$cell_short)))
+cell_colors[["NE"]] = cell_colors[[length(cell_colors)]]
+
+
+axis_size = 18
+axis_title_size = 20
+title_size = 25
+legend.position="right"
+legend_text_size = 15
+legend_title_size = 20
+
+my_theme <- ggplot2::theme(
+    aspect.ratio=1,
+    plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+    legend.position = legend.position,
+    panel.background = element_blank(),
+    axis.text = element_text(size = axis_size),
+    axis.text.x = element_text(size = axis_size),
+    axis.title = element_text(size = axis_title_size),
+    legend.text = element_text(size = legend_text_size),
+    legend.title = element_text(size = legend_title_size)
+)
+```
+
+
+## Test LUAD samples
+```{r}
+luad <- expr[, rownames(meta)[str_detect(meta$Disease, "LUAD") & !meta$cell_short %in% immu_cells]]
+# temp_expr <- scale(t(luad[markers$Markers[markers$Cells %in% c("ATII", "NE", "Fib", "Epi")], ]))
+# temp_expr <- temp_expr - min(temp_expr)
+
+luad = apply(luad, 2, function(col) { col * 10^6 / sum(col) })
+ 
+luad <- melt(luad[markers$Markers[markers$Cells %in% c("AT2", "NE", "Fib", "AT1")], ])
+
+# colnames(luad) <- c("Var2", "Var1", "value")
+luad$Var1 <- as.character(luad$Var1)
+luad$Var2 <- as.character(luad$Var2)
+
+luad <- merge(
+    luad, markers[markers$Cells %in% c("AT2", "NE", "Fib", "AT1"), ],
+    by.x = "Var1", by.y = "Markers"
+)
+```
+
+
+#### Calculate SC score
+```{r}
+luad <- luad %>%
+    group_by(Var2, Cells) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var2, value, Cells) %>%
+    unique() %>%
+    as.data.frame()
+```
+
+
+#### Calculate D
+```{R}
+luad <- dcast(luad, Var2~Cells, value.var = "value", fun.aggregate = mean, fill = 0)
+
+
+luad$y <- apply(as.data.frame(luad), 1, function(row) {
+    row = row[!names(row) %in% c("Var2", "Cell", "Disease", "x", "y")]
+    row1 = as.numeric(row)
+    names(row1) <- names(row)
+    row = row1
+    
+    if (sum(row) != 0 && names(row)[which(row == max(row))] %in% c("NE", "Epi")) {
+        val = row["AT1"] - row["NE"]
+    } else {
+        val = row["AT2"] - row["Fib"]
+    }
+    
+    weight = 1
+    if (val < 0) {
+        weight = -1
+    }
+
+    return(weight * log2(abs(val) + 1))
+   
+})
+
+luad$x <- apply(as.data.frame(luad), 1, function(row) {
+    row = row[!names(row) %in% c("Var2", "Cell", "Disease", "x", "y")]
+    row1 = as.numeric(row)
+    names(row1) <- names(row)
+    row = row1
+    
+    if (sum(row) != 0 && names(row)[which(row == max(row))] %in% c("AT2", "AT1")) {
+        val = row["AT2"] - row["AT1"]
+    } else {
+        val = row["Fib"] - row["NE"]
+    }
+    
+    weight = 1
+    if (val < 0) {
+        weight = -1
+    }
+    
+    return(weight * log2(abs(val) + 1))
+    
+})
+```
+
+
+```{r fig.height=4, fig.width=5}
+luad$Cell = meta[luad$Var2, "cell_short"]
+luad$Disease = meta[luad$Var2, "Disease"]
+luad$Disease[str_detect(luad$Disease, "Normal")] = "NL(AD)"
+
+
+annotations <- data.frame(
+    xpos = c(-Inf,-Inf,Inf,Inf),
+    ypos =  c(-Inf, Inf,-Inf,Inf),
+    annotateText = c("NE", "AT1", "Fib", "AT2"),
+    hjustvar = c(0,0,1,1) ,
+    vjustvar = c(0,1,0,1)
+)
+
+p <- ggplot() +
+    geom_point_rast(
+        data = as.data.frame(luad), 
+        aes(x=x, y=y, color=Cell, shape=Disease)
+    ) +
+    geom_text(
+        data=annotations,
+        aes(
+            x=xpos, y=ypos,
+            hjust=hjustvar, vjust=vjustvar,
+            label=annotateText
+        ),
+        size = 10
+    ) +
+    labs(x = "", y = "") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    my_theme +
+    theme(
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.spacing.y = unit(0.05, 'cm'),
+        panel.grid = element_blank()
+    ) +
+    guides(
+        color = guide_legend(override.aes = list(size = 3.5)),
+        shape = guide_legend(override.aes = list(size = 3.5))
+    ) +
+    scale_color_manual(values = cell_colors)
+
+p
+
+ggsave(
+    filename = full.path("14_cycling/cell_score/LUAD.pdf"),
+    plot = p, device = cairo_pdf,
+    height = 4,
+    width = 5
+)
+```
+
+
+
+
+
+## Test LUSC samples
+```{r}
+lusc <- expr[, rownames(meta)[str_detect(meta$Disease, "LUSC") & !meta$cell_short %in% immu_cells]]
+# temp_expr <- scale(t(lusc[markers$Markers[markers$Cells %in% c("ATII", "NE", "Fib", "Basal")], ]))
+# temp_expr <- temp_expr - min(temp_expr)
+
+lusc = apply(lusc, 2, function(col) { col * 10^6 / sum(col) })
+
+lusc <- melt(lusc[markers$Markers[markers$Cells %in% c("AT2", "AT1", "Fib", "Basal")], ])
+# colnames(lusc) <- c("Var2","Var1", "value")
+lusc$Var1 <- as.character(lusc$Var1)
+lusc$Var2 <- as.character(lusc$Var2)
+```
+
+
+```{r}
+lusc <- merge(
+    lusc, markers[markers$Cells %in% c("AT2", "AT1", "Fib", "Basal"), ],
+    by.x = "Var1", by.y = "Markers"
+)
+
+lusc <- lusc %>%
+    group_by(Var2, Cells) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var2, value, Cells) %>%
+    unique() %>%
+    as.data.frame()
+```
+
+
+#### Calculate D
+```{R}
+lusc <- dcast(lusc, Var2~Cells, value.var = "value", fun.aggregate = mean, fill = 0)
+
+lusc$y = 0
+lusc$x = 0
+
+for (i in 1:nrow(lusc)) {
+    row = lusc[i, !colnames(lusc) %in% c("Var2", "Cell", "Disease")]
+    row1 = as.numeric(row)
+    names(row1) <- names(row)
+    row = row1
+    
+    if (sum(row) != 0 && names(row)[which(row == max(row))] %in% c("AT2", "AT1")) {
+        val = as.numeric(row["AT2"] - row["AT1"])
+    } else {
+        val = as.numeric(row["Basal"] - row["Fib"])
+    }
+    
+    weight = 1
+    if (val < 0) {
+        weight = -1
+    }
+    lusc[i, "y"] = weight * log2(abs(val) + 1)
+    
+    
+    if (sum(row) != 0 && names(row)[which(row == max(row))] %in% c("Basal", "AT2")) {
+        val = row["Basal"] - row["AT2"]
+    } else {
+        val = row["Fib"] - row["AT1"]
+    }
+    
+    weight = 1
+    if (val < 0) {
+        weight = -1
+    }
+    
+    lusc[i, "x"] = weight * log2(abs(val) + 1)
+}
+
+
+```
+
+
+```{r fig.height=4, fig.width=5}
+lusc$Cell = meta[lusc$Var2, "cell_short"]
+lusc$Disease = meta[lusc$Var2, "Disease"]
+lusc$Disease[str_detect(lusc$Disease, "Normal")] = "NL(SC)"
+
+
+annotations <- data.frame(
+    xpos = c(-Inf,-Inf,Inf,Inf),
+    ypos =  c(-Inf, Inf,-Inf,Inf),
+    annotateText = c("AT1", "AT2", "Fib", "Basal"),
+    hjustvar = c(0,0,1,1) ,
+    vjustvar = c(0,1,0,1)
+)
+
+p <- ggplot() +
+    geom_point_rast(
+        data = as.data.frame(lusc), 
+        aes(x=x, y=y, color=Cell, shape=Disease)
+    ) +
+    # geom_density2d(
+    #     data = as.data.frame(lusc), 
+    #     aes(x=x, y=y, color=Cell, shape=Disease),
+    #     geom="raster"
+    # ) +
+    geom_text(
+        data=annotations,
+        aes(
+            x=xpos, y=ypos,
+            hjust=hjustvar, vjust=vjustvar,
+            label=annotateText
+        ),
+        size = 10
+    ) +
+    labs(x = "", y = "") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    my_theme +
+    theme(
+        legend.title = element_text(size = 15),
+        legend.text = element_text(size = 12),
+        legend.spacing.y = unit(0.05, 'cm'),
+        panel.grid = element_blank()
+    ) +
+    guides(
+        color = guide_legend(override.aes = list(size = 3.5)),
+        shape = guide_legend(override.aes = list(size = 3.5))
+    ) +
+    scale_color_manual(values = cell_colors)
+
+p
+
+
+ggsave(
+    filename = full.path("14_cycling/cell_score/LUSC.pdf"),
+    plot = p, device = cairo_pdf,
+    height = 4,
+    width = 5
+)
+```
+
+
+
+----
+## MSC score
+
+
+```{r}
+umap <- read.csv(full.path("02_rds/umap.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+### Make feature plot to check MSC markers
+```{R}
+genes_from_SR <- c(
+    "NESH", "CXCR7", "GPNMB", "MYBPH", "SVEP1",
+    "ARHGAP6", "TSPEAR", "PIK3CG", "ABL2", "NCAM1",
+    "ZNF145", "FKBP5", "DPT", "OMD", "ID4", "CRYAB",
+    "SORT1", "CTNNB1", "ZEB", "LPL", "FABP4", "PDK4",
+    "ACDC", "CCN3", "NOV", "CCN4", "WISP1", "CCN5", "WISP2",
+    "ADAMTS-5", "CXCL12", "FLT3L", "IL-3", "TPO", "KITL"
+)
+
+intersect(genes_from_SR, rownames(expr))
+```
+
+```{r}
+genes_from_PeerJ = c()
+temp <- read.xlsx(full.path("14_cycling/TableS6-DEG.xlsx"), sheet = 1)
+temp = bitr(temp$ENSEMBL.ID, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = org.Hs.eg.db)
+genes_from_PeerJ = c(genes_from_PeerJ, temp$SYMBOL)
+
+temp <- read.xlsx(full.path("14_cycling/TableS6-DEG.xlsx"), sheet = 2)
+temp = bitr(temp$ENSEMBL.ID, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = org.Hs.eg.db)
+
+genes_from_PeerJ = intersect(genes_from_PeerJ, temp$SYMBOL)
+
+intersect(genes_from_PeerJ, rownames(expr))
+```
+
+```{R}
+intersect(genes_from_PeerJ, genes_from_SR)
+```
+
+
+## Make feature plot to check the genes
+```{R}
+make_umap_features <- function(
+    coord,
+    expr,
+    gene,
+    pt.size = 0.1, 
+    alpha = 0.5,
+    text_size = 10,
+    axis_size = 18,
+    axis_title_size = 20,
+    title_size = 25,
+    group_by = "",
+    label = "cell_name",
+    legend.position = "none"
+) {
+    coord = as.data.frame(coord)
+    coord$Expr <- as.numeric(as.character(expr[gene, rownames(coord)]))
+    coord <- coord[order(coord$Expr, decreasing = F), ]
+    ggplot(coord, aes(x=UMAP_1, y=UMAP_2, color = Expr)) +
+        geom_point_rast(size = pt.size) +
+        scale_color_gradient(low = "grey", high = "blue") +
+        theme_bw() +
+        labs(
+            title = gene
+        ) +
+        theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+            legend.position = legend.position,
+            axis.text = element_text(size = axis_size),
+            axis.title = element_text(size = axis_title_size)
+        )
+}
+```
+
+
+#### Scale expression of target genes
+```{R}
+temp_expr <- 
+temp_expr <- t(scale(t(temp_expr)))
+```
+
+
+
+```{r fig.height=5, fig.width=5}
+registerDoMC(10)
+temp = foreach (i = unique(c(genes_from_PeerJ, genes_from_SR)), .errorhandling = "pass") %dopar% {
+    p <- make_umap_features(as.data.frame(umap), as.data.frame(temp_expr), i)
+    
+    ggsave(
+        filename = full.path("14_cycling/cell_score/features", paste0(i, ".pdf")),
+        plot = p,
+        width = 5,
+        height = 5
+    )
+}
+```
+
+
+### Calculate MSC score
+```{R}
+temp_expr = apply(expr[unique(c(genes_from_PeerJ, genes_from_SR)), ], 1, function(col) {
+    col * 10^6 / sum(col)
+})
+
+
+temp_expr <- melt(as.matrix(temp_expr))
+temp_expr <- na.omit(temp_expr)
+
+temp_expr <- temp_expr %>%
+    group_by(Var1) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var1, value) %>%
+    unique() %>%
+    as.data.frame()
+
+temp_expr$UMAP1 = coord[temp_expr$Var1, "UMAP_1"]
+temp_expr$UMAP2 = coord[temp_expr$Var1, "UMAP_2"]
+```
+
+
+```{R fig.height=5, fig.width=6}
+ggplot(temp_expr, aes(x=UMAP1, y=UMAP2, color = log10(value + 1))) +
+    geom_point_rast(size = 0.1) +
+    scale_color_gradient(low = "grey", high = "blue") +
+    theme_bw() +
+    theme(
+        plot.title = element_text(hjust = 0.5, face="bold", size = 25),
+        legend.position = "right",
+        axis.text = element_text(size = 18),
+        axis.title = element_text(size = 20)
+    )
+```
+
+```{r}
+wb = createWorkbook()
+addWorksheet(wb, "LUAD")
+writeData(wb, 1, luad)
+addWorksheet(wb, "LUSC")
+writeData(wb, 2, lusc)
+addWorksheet(wb, "MSC")
+writeData(wb, 3, temp_expr)
+saveWorkbook(wb, file = full.path("14_cycling/cell_score/scores.xlsx"))
+```
+
+
+### plot with MSC score
+```{R fig.height=5, fig.width=6}
+rownames(temp_expr) <- temp_expr$Var1
+
+luad$MSC = temp_expr[luad$Var2, "value"]
+
+
+ggplot(luad, aes(x=x, y=y, color = log10(MSC + 1))) +
+    geom_point_rast(size = 0.1) +
+    scale_color_gradient(low = "grey", high = "blue") +
+    theme_bw() +
+    theme(
+        plot.title = element_text(hjust = 0.5, face="bold", size = 25),
+        legend.position = "right",
+        axis.text = element_text(size = 18),
+        axis.title = element_text(size = 20)
+    )
+```
+
+```{r}
+lusc$MSC = temp_expr[lusc$Var2, "value"]
+
+
+ggplot(lusc, aes(x=x, y=y, color = log10(MSC + 1))) +
+    geom_point_rast(size = 0.1) +
+    scale_color_gradient(low = "grey", high = "blue") +
+    theme_bw() +
+    theme(
+        plot.title = element_text(hjust = 0.5, face="bold", size = 25),
+        legend.position = "right",
+        axis.text = element_text(size = 18),
+        axis.title = element_text(size = 20)
+    )
+```
+
+### violin plots of MSC score
+```{r fig.height=12, fig.width=15}
+temp_expr$Cell = meta[temp_expr$Var1, "cell_short"]
+temp_expr$Disease = meta[temp_expr$Var1, "Disease"]
+    
+ggplot(temp_expr, aes(x=Disease, y=log2(value + 1), fill = Disease)) +
+    geom_violin() +
+    facet_wrap(.~Cell, scales = "free") +
+    theme(axis.text.x = element_blank())
+```
+
+
+#### ATII
+```{R}
+obj <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/seurat.rds"))
+
+obj@meta.data$Clt = obj@meta.data$res.0.1
+obj@meta.data$MSC = temp_expr[rownames(obj@meta.data), "value"]
+
+
+temp <- obj@meta.data %>%
+    group_by(Clt) %>%
+    mutate(v = mean(MSC)) %>%
+    dplyr::select(Clt, v) %>%
+    unique() %>% as.data.frame()
+
+temp = temp[order(temp$v, decreasing = T), ]
+
+my_comparisons = list()
+for(i in 1:(nrow(temp) - 1)) {
+    for (j in (i + 1): nrow(temp)) {
+        my_comparisons[[length(my_comparisons) + 1]] = c(temp$Clt[i], temp$Clt[j])
+    }
+}
+
+obj@meta.data$Clt = factor(obj@meta.data$Clt, levels = temp$Clt)
+
+ggviolin(
+    data = obj@meta.data,
+    x="Clt", y = "MSC",
+    fill="Clt", add = "boxplot", 
+    add.params = list(fill = "white")
+) +
+    scale_y_log10() +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means(label.y = 5) 
+```
+
+
+#### Basal
+```{R fig.height=8, fig.width=12}
+obj <- readRDS(full.path("03_each_cells/Batch/Basal/LUSC/seurat.rds"))
+
+obj@meta.data$Clt = as.character(as.numeric(as.character(obj@meta.data$res.0.03)) + 1)
+obj@meta.data$MSC = temp_expr[rownames(obj@meta.data), "value"]
+
+
+temp <- obj@meta.data %>%
+    group_by(Clt) %>%
+    mutate(v = mean(MSC)) %>%
+    dplyr::select(Clt, v) %>%
+    unique() %>% as.data.frame()
+
+temp = temp[order(temp$v, decreasing = T), ]
+
+obj@meta.data$Clt = factor(obj@meta.data$Clt, levels = temp$Clt)
+
+my_comparisons = list()
+for(i in 1:(nrow(temp) - 1)) {
+    for (j in (i + 1): nrow(temp)) {
+        my_comparisons[[length(my_comparisons) + 1]] = c(temp$Clt[i], temp$Clt[j])
+    }
+}
+
+ggviolin(
+    data = obj@meta.data,
+    x="Clt", y = "MSC",
+    fill="Clt", add = "boxplot", 
+    add.params = list(fill = "white")
+) +
+    scale_y_log10() +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means(label.y = 5) 
+```
+
+
+#### NE
+```{R fig.height=6, fig.width=8}
+obj <- readRDS(full.path("03_each_cells/Batch/NE/LUAD/seurat.rds"))
+obj@meta.data$Clt = as.character(as.numeric(as.character(obj@meta.data$res.0.1)) + 1)
+obj@meta.data$MSC = temp_expr[rownames(obj@meta.data), "value"]
+
+temp <- obj@meta.data %>%
+    group_by(Clt) %>%
+    mutate(v = mean(MSC)) %>%
+    dplyr::select(Clt, v) %>%
+    unique() %>% as.data.frame()
+
+temp = temp[order(temp$v, decreasing = T), ]
+
+obj@meta.data$Clt = factor(obj@meta.data$Clt, levels = temp$Clt)
+
+my_comparisons = list()
+for(i in 1:(nrow(temp) - 1)) {
+    for (j in (i + 1): nrow(temp)) {
+        my_comparisons[[length(my_comparisons) + 1]] = c(temp$Clt[i], temp$Clt[j])
+    }
+}
+
+ggviolin(
+    data = obj@meta.data,
+    x="Clt", y = "MSC",
+    fill="Clt", add = "boxplot", 
+    add.params = list(fill = "white")
+) +
+    scale_y_log10() +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means(label.y = 7) 
+```
+
+
+#### Epi
+```{R fig.height=6, fig.width=8}
+obj <- readRDS(full.path("03_each_cells/Batch/Epi/LUAD/seurat.rds"))
+obj@meta.data$Clt = as.character(as.numeric(as.character(obj@meta.data$res.0.1)) + 1)
+obj@meta.data$MSC = temp_expr[rownames(obj@meta.data), "value"]
+
+my_comparisons = list()
+for(i in 1:(nrow(temp) - 1)) {
+    for (j in (i + 1): nrow(temp)) {
+        my_comparisons[[length(my_comparisons) + 1]] = c(temp$Clt[i], temp$Clt[j])
+    }
+}
+
+ggviolin(
+    data = obj@meta.data,
+    x="Clt", y = "MSC",
+    fill="Clt", add = "boxplot", 
+    add.params = list(fill = "white")
+) +
+    scale_y_log10() +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means(label.y = 5) 
+```
+
+
+#### Fib
+```{R}
+obj <- readRDS(full.path("03_each_cells/Batch/Fib/LUAD/seurat.rds"))
+obj@meta.data$Clt = as.character(as.numeric(as.character(obj@meta.data$res.0.1)) + 1)
+obj@meta.data$MSC = temp_expr[rownames(obj@meta.data), "value"]
+
+temp <- obj@meta.data %>%
+    group_by(Clt) %>%
+    mutate(v = mean(MSC)) %>%
+    dplyr::select(Clt, v) %>%
+    unique() %>% as.data.frame()
+
+temp = temp[order(temp$v, decreasing = T), ]
+
+obj@meta.data$Clt = factor(obj@meta.data$Clt, levels = temp$Clt)
+
+my_comparisons = list()
+for(i in 1:(nrow(temp) - 1)) {
+    for (j in (i + 1): nrow(temp)) {
+        my_comparisons[[length(my_comparisons) + 1]] = c(temp$Clt[i], temp$Clt[j])
+    }
+}
+
+ggviolin(
+    data = obj@meta.data,
+    x="Clt", y = "MSC",
+    fill="Clt", add = "boxplot", 
+    add.params = list(fill = "white")
+) +
+    scale_y_log10() +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means(label.y = 4) 
+```
+
+
+#### Fib
+```{R fig.height=6, fig.width=8}
+obj <- readRDS(full.path("03_each_cells/Batch/Fib/LUSC/seurat.rds"))
+obj@meta.data$Clt = as.character(as.numeric(as.character(obj@meta.data$res.0.1)) + 1)
+obj@meta.data$MSC = temp_expr[rownames(obj@meta.data), "value"]
+
+temp <- obj@meta.data %>%
+    group_by(Clt) %>%
+    mutate(v = mean(MSC)) %>%
+    dplyr::select(Clt, v) %>%
+    unique() %>% as.data.frame()
+
+temp = temp[order(temp$v, decreasing = T), ]
+
+obj@meta.data$Clt = factor(obj@meta.data$Clt, levels = temp$Clt)
+
+my_comparisons = list()
+for(i in 1:(nrow(temp) - 1)) {
+    for (j in (i + 1): nrow(temp)) {
+        my_comparisons[[length(my_comparisons) + 1]] = c(temp$Clt[i], temp$Clt[j])
+    }
+}
+
+ggviolin(
+    data = obj@meta.data,
+    x="Clt", y = "MSC",
+    fill="Clt", add = "boxplot", 
+    add.params = list(fill = "white")
+) +
+    scale_y_log10() +
+    stat_compare_means(comparisons = my_comparisons) + # Add pairwise comparisons p-value
+    stat_compare_means(label.y = 7) 
+```
+
+
+### Score on bulk sample
+```{R}
+merged_est <- readRDS(full.path("09_bulk/RNA_seq/MuSic/All_est.rds"))
+meta <- readRDS(full.path("09_bulk/RNA_seq/MuSic/All_est_meta.rds"))
+
+final_tree <- read.csv(full.path("09_bulk/RNA_seq/MuSic/All_tree.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+#### LUAD
+```{r}
+luad <- as.data.frame(t(merged_est[, rownames(final_tree)[final_tree$Disease == "LUAD"]]))
+
+luad$y <- apply(as.data.frame(luad), 1, function(row) {
+    row = row[!names(row) %in% c("Var2", "Cell", "Disease", "x", "y")]
+    row1 = as.numeric(row)
+    names(row1) <- names(row)
+    row = row1
+    
+    if (sum(row) != 0 && names(row)[which(row == max(row))] %in% c("NE", "Epi")) {
+        val = row["Epi"] - row["NE"]
+    } else {
+        val = row["ATII"] - row["Fib"]
+    }
+    
+    weight = 1
+    if (val < 0) {
+        weight = -1
+    }
+
+    return(weight * log2(abs(val) + 1))
+   
+})
+
+luad$x <- apply(as.data.frame(luad), 1, function(row) {
+    row = row[!names(row) %in% c("Var2", "Cell", "Disease", "x", "y")]
+    row1 = as.numeric(row)
+    names(row1) <- names(row)
+    row = row1
+    
+    if (sum(row) != 0 && names(row)[which(row == max(row))] %in% c("ATII", "Epi")) {
+        val = row["ATII"] - row["Epi"]
+    } else {
+        val = row["Fib"] - row["NE"]
+    }
+    
+    weight = 1
+    if (val < 0) {
+        weight = -1
+    }
+    
+    return(weight * log2(abs(val) + 1))
+    
+})
+```
+
+
+```{r fig.height=6, fig.width=6}
+luad$Clt = as.character(sapply(final_tree[row.names(luad), "Clt"], function(x) {
+    groups = c("NE-high", "Epi-high", "ATII-high", "Fib-high")
+    
+    groups[x]
+}))
+
+
+annotations <- data.frame(
+    xpos = c(-Inf,-Inf,Inf,Inf),
+    ypos =  c(-Inf, Inf,-Inf,Inf),
+    annotateText = c("NE", "Epi", "Fib", "ATII"),
+    hjustvar = c(0,0,1,1) ,
+    vjustvar = c(0,1,0,1)
+)
+
+p <- ggplot(data = as.data.frame(luad)) +
+    geom_point_rast(aes(x=x, y=y, color=Clt)) +
+    stat_density2d(aes(x=x, y=y, color=Clt), data = as.data.frame(luad)) +
+    geom_text(
+        data=annotations,
+        aes(
+            x=xpos, y=ypos,
+            hjust=hjustvar, vjust=vjustvar,
+            label=annotateText
+        ),
+        size = 10
+    ) +
+    labs(x = "", y = "", color = "") +
+    theme_bw() +
+    my_theme +
+    theme(
+        legend.position = c(0.5, 0.12),
+        legend.background = element_blank()
+    ) +
+    guides(col = guide_legend(ncol = 2, override.aes = list(size = 5)))
+
+print(p)
+
+
+ggsave(
+    filename = full.path("14_cycling/cell_score/LUAD_bulk.pdf"),
+    plot = p,
+    height = 6,
+    width = 6
+)
+```
+
+#### LUSC
+```{r}
+lusc <- as.data.frame(t(merged_est[, rownames(final_tree)[final_tree$Disease == "LUSC"]]))
+
+lusc$y = 0
+lusc$x = 0
+
+for (i in 1:nrow(lusc)) {
+    row = lusc[i, !colnames(lusc) %in% c("Var2", "Cell", "Disease")]
+    row1 = as.numeric(row)
+    names(row1) <- names(row)
+    row = row1
+    
+    if (sum(row) != 0 && names(row)[which(row == max(row))] %in% c("ATII", "Epi")) {
+        val = as.numeric(row["ATII"] - row["Epi"])
+    } else {
+        val = as.numeric(row["Basal"] - row["Fib"])
+    }
+    
+    weight = 1
+    if (val < 0) {
+        weight = -1
+    }
+    lusc[i, "y"] = weight * log2(abs(val) + 1)
+    
+    
+    if (sum(row) != 0 && names(row)[which(row == max(row))] %in% c("Basal", "ATII")) {
+        val = row["Basal"] - row["ATII"]
+    } else {
+        val = row["Fib"] - row["Epi"]
+    }
+    
+    weight = 1
+    if (val < 0) {
+        weight = -1
+    }
+    
+    lusc[i, "x"] = weight * log2(abs(val) + 1)
+}
+```
+
+
+```{r fig.height=6, fig.width=6}
+lusc$Clt = as.character(sapply(final_tree[row.names(lusc), "Clt"], function(x) {
+    groups = c("Fib-high", "ATII-high", "Basal-high", "Basal-Fib hybrid", "Epi-Fib-ATII hybrid")
+    
+    groups[x]
+}))
+
+
+annotations <- data.frame(
+    xpos = c(-Inf,-Inf,Inf,Inf),
+    ypos =  c(-Inf, Inf,-Inf,Inf),
+    annotateText = c("Epi", "ATII", "Fib", "Basal"),
+    hjustvar = c(0,0,1,1) ,
+    vjustvar = c(0,1,0,1)
+)
+
+p <- ggplot() +
+    geom_point_rast(
+        data = lusc, 
+        aes(x=x, y=y, color=Clt)
+    ) +
+    geom_density2d(
+        data = lusc, 
+        aes(x=x, y=y, color=Clt)
+    ) +
+    geom_text(
+        aes(
+            x=xpos, y=ypos,
+            hjust=hjustvar, vjust=vjustvar,
+            label=annotateText
+        ),
+        data=annotations,
+        size = 10
+    ) +
+    labs(x = "", y = "", color = "") +
+    theme_bw() +
+    my_theme +
+    theme(
+        legend.position = c(0.5, 0.1),
+        legend.background = element_blank(),
+        legend.spacing.x = unit(0, 'cm')
+    ) +
+    guides(col = guide_legend(ncol = 2, override.aes = list(size = 5)))
+
+
+print(p)
+
+
+ggsave(
+    filename = full.path("14_cycling/cell_score/LUSC_bulk.pdf"),
+    plot = p,
+    height = 6,
+    width = 6
+)
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

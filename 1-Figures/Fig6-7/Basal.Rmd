@@ -1,0 +1,2547 @@
+---
+title: "Basal"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "LungCancer10x/"
+
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+
+```{r eval=FALSE, include=FALSE}
+library(Seurat)
+library(here)
+library(scatterpie)
+library(dplyr)
+library(ggthemes)
+library(ggrastr)
+library(ComplexHeatmap)
+library(circlize)
+library(wesanderson)
+library(openxlsx)
+library(stringr)
+# library(Mfuzz)
+library(reticulate)
+library(ggradar)
+library(reshape2)
+library(ggrepel)
+library(ggpubr)
+library(ggthemes)
+library(tmod)
+
+use_python("program/pyenv/shims/python")
+```
+
+
+
+```{R}
+make_feature_plot <- function(
+    obj,
+    gene, 
+    coord=NULL, 
+    pt.size = 0.1, 
+    alpha = 0.5, 
+    sort = T,
+    reduction.use = "umap"
+) {
+    library(ggplot2)
+    library(ggrastr)
+    data = as.data.frame(obj@meta.data)
+    data$value = obj@data[which(rownames(obj@data) == gene), rownames(data)]
+    
+    if(is.null(coord)) {
+        coord = obj@dr[[reduction.use]]@cell.embeddings
+    }
+    
+    data$x = coord[rownames(data), 1]
+    data$y = coord[rownames(data), 2]
+    
+    if(sort) {
+        data = data[order(data$value, decreasing = F), ]
+    }
+    
+    p <- ggplot(data = data, aes(x=x, y=y, color = value)) +
+        geom_point_rast(size = pt.size, alpha = alpha) +
+        scale_color_gradient(low = "lightgrey", high = "blue") +
+        theme_bw() +
+        labs(title = gene, x="UMAP1", y="UMAP2") +
+        theme(
+            plot.title = element_text(hjust = 0.5, face="bold", size = 20), 
+            legend.position = "none",
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 15)
+        )
+    p
+}
+```
+
+
+
+```{R}
+# obj <- readRDS(full.path("03_each_cells/Batch/Basal/LUSC/seurat.rds"))
+obj <- readRDS(full.path("11_CNV/each_cells/Basal/LUSC/seurat_obj.rds"))
+urd <- readRDS(full.path("11_CNV/each_cells/Basal/LUSC/URD.rds"))
+```
+
+
+```{r}
+genes = c(
+    "KRT17", "KRT5", "MIR205HG", # "DLK2", "POSTN", "ISLR",
+     "SNCA", "PCDH7",
+    "ADH7", "KRT7", # "SCGB3A2",
+    "HES1", "SERPINB3", "CLCA2"
+)
+```
+
+
+KRT17	General
+KRT5	General
+MIR205HG	General
+DLK2	General
+POSTN	Bas_px
+ISLR	Bas_px
+SNCA	Bas_px
+PCDH7	Bas_px
+ADH7	Bas_px
+ALOX15	Bas_px
+MKI67	Bas_p
+TOP2A	Bas_p
+PBK	Bas_p
+GTSE1	Bas_p
+KRT7	Bas_d
+SCGB3A2	Bas_d
+HES1	Bas_d
+SERPINB3	Bas_d
+CLCA2	Bas_d
+
+```{R fig.height=4, fig.width=4}
+for (i in genes) {
+    p <- make_feature_plot(obj, i)
+    print(p)
+}
+```
+
+
+```{r}
+library(reticulate)
+tryCatch({
+    kee = import("kneed")
+    n.pcs = kee$KneeLocator(
+        1:ncol(obj@dr$pca@cell.embeddings),
+        apply(obj@dr$pca@cell.embeddings, 2, sd),
+        curve='convex',
+        direction='decreasing'
+    )
+    n.pcs = n.pcs$knee
+}, error = function(e) {
+    print(e)
+    n.pcs = 10
+})
+
+n.pcs = 14
+
+for (i in seq(0.04, 0.09, by=0.01)) {
+    obj <- FindClusters(
+        obj, resolution = i, 
+        force.recalc = T, reduction.type = "harmony", 
+        print.output = F, dims.use = 1:n.pcs
+    )
+}
+
+# saveRDS(obj, here("seurat.rds"))
+```
+
+
+
+
+```{r fig.height=4, fig.width=5}
+for (i in c(0.03, 0.05, seq(0.1, 0.5, by = 0.1))) {
+    p <- DimPlot(obj, reduction.use = "umap", group.by = paste0("res.", i), do.return=T, pt.size = 0.1)
+    p = p + labs(title = i)
+    print(p)
+}
+
+```
+
+
+```{r fig.height=4, fig.width=6}
+DimPlot(obj, reduction.use = "umap", group.by = "Disease", do.return=T, pt.size = 0.1)
+```
+
+
+```{R}
+markers = read.csv(full.path("11_CNV/each_cells/Basal/LUSC/cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+
+markers <- markers %>%
+    group_by(ident) %>%
+    top_n(2, wt = avg_logFC) %>%
+    as.data.frame()
+```
+
+
+
+```{R fig.height=8, fig.width=5}
+obj@meta.data$ident1 = as.numeric(obj@meta.data$res.0.2) + 1
+
+
+generic = c("KRT17", "KRT5", "MIR205HG")
+bas_px = c("SNCA", "PCDH7", "ADH7")
+bas_p = c("MKI67", "TOP2A", "PBK", "GTSE1")
+bas_d = c("KRT7", "SERPINB3")
+
+# genes = c(
+#     , # "DLK2", "POSTN", "ISLR",
+#      
+#     , ", # "SCGB3A2",
+#     "HES1", , "CLCA2"
+# )
+
+mark_genes = markers$gene[markers$ident %in% 1:3]
+mark_genes = c(mark_genes, markers$gene[markers$ident == 4], "KPNA2", bas_p) # "ALOX15",  
+mark_genes = c(mark_genes, markers$gene[markers$ident == 5], c("AQP3"))
+mark_genes = c(mark_genes, markers$gene[markers$ident > 5], c("SPHK1", "PPT1", "KPNA2"))
+mark_genes = c(
+    mark_genes, c("PRKDC", "ATM", "ATR", "TP53", "MDM2")
+)
+
+cols = as.character(wes_palette("Darjeeling1"))
+
+genes = unique(c(mark_genes, generic, bas_px, bas_d))
+a = rep("black", length(genes))
+
+a[genes %in% generic] = cols[2]
+a[genes %in% bas_px] = cols[4]
+a[genes %in% bas_p] = cols[1]
+a[genes %in% bas_d] = cols[5]
+
+p <- DotPlot(
+    obj, 
+    genes.plot = genes, 
+    do.return = T, x.lab.rot = T, 
+    group.by = "ident1"
+) + coord_flip() +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "right",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.text.y = element_text(colour = rev(a)),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 15)
+    ) +
+    labs(x = "", y = "")
+
+p
+
+ggsave(
+    filename = full.path("11_CNV/each_cells/Basal/LUSC/cluster_stem_dotplot.pdf"),
+    plot = p, width = 5, height = 8, device = cairo_pdf
+)
+```
+
+
+
+```{r}
+meta = readRDS(full.path("11_CNV/meta.rds"))
+obj@meta.data$ident1 = as.numeric(obj@meta.data$res.0.2) + 1
+obj@meta.data$Malignant = meta[rownames(obj@meta.data), "Malignant_tree"]
+
+temp = obj@meta.data %>%
+    group_by(ident1, Malignant) %>%
+    add_tally() %>%
+    dplyr::select(ident1, Malignant, n) %>%
+    unique() %>%
+    group_by(ident1) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+
+ggplot(temp, aes(x=ident1, y=p, fill=Malignant)) +
+    geom_bar(stat = "identity")
+```
+
+
+```{r}
+temp = obj@meta.data %>%
+    group_by(ident1, Malignant) %>%
+    add_tally() %>%
+    dplyr::select(ident1, Malignant, n) %>%
+    unique() %>%
+    group_by(Malignant) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+ggplot(temp, aes(x=Malignant, y=p, fill=as.character(ident1))) +
+    geom_bar(stat = "identity") +
+    labs(x="Malignant subtypes", fill="Basal clusters", y="") +ﬁ
+    theme_bw() +
+    theme(
+        axis.text = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        axis.title = element_text(size = 15)
+    )
+```
+
+
+```{r fig.height=4, fig.width=4}
+temp = as.data.frame(urd@dm@eigenvectors)
+obj@meta.data$ident1 = as.numeric(obj@meta.data$res.0.2) + 1
+
+temp$ident = obj@meta.data[rownames(temp), "ident1"]
+temp = temp[!is.na(temp$ident), ]
+
+
+# pdf(full.path("11_CNV/each_cells/Basal/LUSC/DM_clt.pdf"), width = 6, height = 4)
+ggplot(temp, aes(x=DC1, y=DC2, color=as.character(ident))) +
+    geom_point_rast(size = 0.1) +
+    theme_bw() +
+    theme(
+        axis.text = element_blank(),
+        legend.text = element_text(size = 15),
+        legend.title = element_blank(),
+        axis.title = element_text(size = 15),
+        panel.grid = element_blank(),
+        legend.position = c(0.1, 0.3)
+    )+
+    guides(color = guide_legend(override.aes = list(size = 5)))
+# dev.off()
+```
+
+
+```{r}
+set.seed(42)
+temp_meta = obj@meta.data
+temp_meta$Cells = rownames(temp_meta)
+temp_meta <- temp_meta %>%
+    group_by(res.0.03) %>%
+    sample_n(min(table(obj@meta.data$res.0.2))) %>%
+    as.data.frame()
+
+
+col_fun = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow"))
+
+Heatmap(
+    obj@scale.data[genes, temp_meta$Cells],
+    name = "Expr",
+    col = col_fun,
+    show_row_names = T,
+    show_column_names = F,
+    cluster_columns = F,
+    cluster_rows = F,
+    column_split = temp_meta$res.0.2
+)
+```
+
+```{r fig.height=4, fig.width=4}
+library(ggrastr)
+stemness = c("MKI67", "TOP2A", "PBK", "GTSE1")
+
+mtx = apply(obj@raw.data, 2, function(col) { col * 10^6 / sum(col) })
+
+mtx <- mtx[stemness, ]
+mtx <- na.omit(mtx)
+
+mtx <- melt(as.matrix(mtx))
+mtx$Clt <- obj@meta.data[mtx$Var2, "res.0.2"]
+mtx <- na.omit(mtx)
+
+
+mtx <- mtx %>%
+    group_by(Var2) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var2, value, Clt) %>%
+    unique() %>%
+    as.data.frame()
+
+for (i in colnames(obj@dr$umap@cell.embeddings)) {
+    mtx[, i] <- obj@dr$umap@cell.embeddings[mtx$Var2, i]
+}
+
+mtx = mtx[order(mtx$value), ]
+
+
+p <- ggplot(mtx, aes(x=UMAP1, y=UMAP2, color=log2(value + 1))) +
+    geom_point_rast(size = 0.1, alpha = 0.5) +
+    scale_color_gradient2(low = "white", high = "blue", mid = "grey") +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        panel.grid = element_blank(),
+        legend.position = c(0.25, 0.25),
+        legend.background = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        legend.text = element_text(size = 10)
+    ) +
+    guides(color = guide_colorbar(
+        title.position = "bottom"
+    ))
+
+ggsave(
+    filename = full.path("11_CNV/each_cells/Basal/LUSC/stem_umap.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+```{r}
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+stage_colors = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "LUAD_Normal"="#FECC1B", "LUSC_Normal"="#778793")
+disease_colors = c("LUAD" = "#0084D1", "LUAD_Normal"="#FECC1B", "Normal"="#73BDFF", "LUSC_Normal"="#778793", "LUSC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B")
+tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+
+
+cluster_cols = c(
+    as.character(wes_palette("Zissou1")),
+    as.character(wes_palette("Royal2")),
+    as.character(wes_palette("Royal1")),
+    as.character(wes_palette("Darjeeling2")),
+    as.character(wes_palette("Darjeeling1"))
+)
+
+patient_colors = cluster_cols[1:length(unique(obj@meta.data$PatientID))]
+names(patient_colors) <- unique(obj@meta.data$PatientID)
+
+colors = c(stage_colors, disease_colors, tissue_colors, patient_colors)
+
+
+labels_size = 12
+title_size = 15
+```
+
+
+
+
+```{R}
+make_scatterpie_plot <- function(
+    object, 
+    color="Disease", 
+    alpha=0.8, 
+    colors=colors, 
+    pt.size = 0.1, 
+    guide_ncol=1,
+    text_size = 8,
+    reduction.use = "tsne",
+    r=0.05,
+    legend.position="none",
+    legend.direction="horizontal",
+    legend.breaks=waiver(),
+    custom_pos = NULL,
+    legend.text = 15
+) {
+    meta = object@meta.data
+
+    coord = object@dr[[reduction.use]]@cell.embeddings
+    colnames(coord) = c("x", "y")
+
+    meta = merge(meta, coord, by = 0)
+
+    scatter = eval(
+        parse(
+            text=paste0(
+                "meta %>% group_by(ident, ", color, ") %>% add_tally() %>% group_by(ident) %>% mutate(x1 = median(x), y1 = median(y), perc = n / sum(n)) %>% dplyr::select(ident, x1, y1, perc, ", color, ") %>% unique()"
+            )
+        )
+    )
+
+    colnames(scatter)[colnames(scatter) == color] = "group"
+
+    scatter = dcast(scatter, ident + x1 + y1 ~ group, value.var="perc")
+
+    scatter[is.na(scatter)] = 0
+    scatter$r = min(max(meta$x) - min(meta$x), max(meta$y) - min(meta$y)) * r
+
+    clt_color = gg_color_hue(length(unique(meta$ident)))
+    names(clt_color) = 1:length(unique(meta$ident))
+    
+    if (!is.null(custom_pos)) {
+        scatter$x1 = custom_pos[scatter$ident, "x1"]
+        scatter$y1 = custom_pos[scatter$ident, "y1"]
+    }
+
+    p <- ggplot() + 
+        geom_point_rast(
+            aes(x=x, y=y, colour=factor(ident)), 
+            data=meta, 
+            alpha=alpha, 
+            size=pt.size
+        ) +
+        geom_scatterpie(
+            aes(
+                x=x1,
+                y=y1, 
+                group=ident,
+                r=r
+            ),
+            data=scatter,
+            cols=as.character(unique(meta[, color])),
+            color=NA
+        ) +
+        coord_equal() +
+        geom_text(
+            aes(x=x1, y=y1 - r - 0.5, label=ident),
+            data=scatter,
+            size = text_size
+        ) +
+        theme_bw() +
+        theme(
+            legend.position = legend.position,
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 20),
+            legend.text = element_text(size = legend.text),
+            # legend.background = element_blank()
+            legend.direction=legend.direction,
+            legend.spacing.x = unit(0.1, 'cm')
+        ) +
+        scale_color_manual(values=clt_color, breaks = c()) + 
+        scale_fill_manual(values=colors, breaks = legend.breaks) +
+        guides(fill = guide_legend(ncol = guide_ncol))
+
+    if (reduction.use == "tsne") {
+        p <- p + labs(x="tSNE_1", y="tSNE_2", color="", fill = "")
+    } else if (reduction.use == "umap") {
+        p <- p + labs(x="UMAP1", y="UMAP2", color="", fill="")
+    }
+
+    return(p)
+}
+
+```
+
+
+
+```{r fig.height=4, fig.width=12}
+# Function to make combined bar plots
+# 1. percentage plot by Stage
+# 2. percentage plot by Disease
+# 3. percentage plot by PatientID
+# 4. barplot of number of cells
+# 5. boxplots of number of transcripts
+# Note: custom_colors needs to exists in namespace, cause this function using customed color palette
+# :param object: Seurat object 2.3+
+# :param group.by: how to make groups
+# :param group.type: if int is set, sort the plot order by numeric, else by str
+# :param rel_height: this function separate legend and main plot into two grid (up and down), so using this to adjust the relative position of legend and main plot
+# :param with_disease: whethter plot the disease percentage
+# :param ncol: the legend ncol of patient plot
+# :return ggplot2 object
+make_combined_barplot <- function(
+    object, 
+    group.by = "res.0.8", 
+    group.type = "int", 
+    rel_height = c(0.2, 1),
+    with_disease=TRUE,
+    ncol=4
+) {
+    library(scales)
+    object@meta.data$PatientID = as.character(object@meta.data$PatientID)
+    ## make percentage bar plot with stage
+    meta <- object@meta.data
+    meta$group <- as.character(meta[, group.by])
+    # meta$newTissue <- as.character(meta$Tissue)
+    # meta$newTissue[meta$newTissue == "Tumor" & meta$Disease != ""] <- as.character(meta$Disease[meta$newTissue == "Tumor" & meta$Disease != ""])
+
+    plot_order = c(unique(meta$group), "Total")
+    
+    if(group.type == "int") {
+        plot_order = as.character(c(sort(as.numeric(unique(meta$group))), "Total"))
+    }
+    
+    ### make percentage plot of stage
+    meta$Stage = as.character(meta$Stage)
+    temp <- as.data.frame(
+        meta %>% 
+            dplyr::select(group, Stage) %>% 
+            dplyr::group_by(group, Stage) %>% 
+            dplyr::add_tally() %>% 
+            unique() %>% 
+            dplyr::group_by(group) %>% 
+            dplyr::mutate(freq = n / sum(n)) %>% unique()
+    )
+    
+    temp1 <- as.data.frame(table(meta$Stage))
+    colnames(temp1) <- c("Stage", "n")
+    
+    temp1$group = "Total"
+    temp1$freq = temp1$n / sum(as.numeric(temp1$n))
+    
+    temp1 <- temp1[, colnames(temp)]
+    
+    temp <- rbind(temp, temp1)
+    
+    temp$group <- factor(temp$group, levels = plot_order)
+    
+    p1 <- ggplot(data = temp, aes(x=group, y=freq, fill=Stage)) + 
+        geom_bar(stat = "identity", width = .75) + 
+        coord_flip() + 
+        theme_bw() +
+        theme(
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.text = element_text(size = 15),
+            legend.title = element_blank(), 
+            legend.justification = "center"
+        ) +
+        labs(y="Fraction of cells", x = "") +
+        # scale_x_discrete(breaks=plot_order) + 
+        guides(fill = guide_legend(ncol=4)) + 
+        scale_fill_manual(values=stage_colors)
+    
+    p1_legend <- get_legend(p1)
+    
+    p1 <- p1 + theme(legend.position = "none")
+    print("p1")
+    
+    ### make percentage of tissue
+    temp <- as.data.frame(
+        meta %>% 
+            dplyr::select(group, Disease) %>% 
+            dplyr::group_by(group, Disease) %>% 
+            dplyr::add_tally() %>% 
+            unique() %>% 
+            dplyr::group_by(group) %>% 
+            dplyr::mutate(freq = n / sum(n)) %>% 
+            unique()
+    )
+    
+    temp1 <- as.data.frame(table(meta$Disease))
+    
+    colnames(temp1) <- c("Disease", "n")
+    temp1$group = "Total"
+    temp1$freq = temp1$n / sum(as.numeric(temp1$n))
+    
+    temp1 <- temp1[, colnames(temp)]
+    temp <- rbind(temp, temp1)
+    
+    temp$group <- factor(temp$group, levels = plot_order)
+    
+    ## combine colors of tissue and disease
+    p2 <- ggplot(data = temp, aes(x=group, y=freq, fill=Disease)) + 
+        geom_bar(stat = "identity", width = .75) + 
+        coord_flip() + 
+        theme_bw() +
+        theme(
+            legend.position = "right", 
+            legend.title = element_blank(), 
+            legend.justification = "center",
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.text = element_text(size = 15)
+        ) +
+        labs(y="Fraction of cells", x = "") +
+        # scale_x_discrete(breaks=plot_order) + 
+        guides(fill = guide_legend(ncol=1)) + 
+        scale_fill_manual(values=colors)
+    
+    p2_legend <- get_legend(p2)
+    
+    p2 <- p2 + theme(legend.position = "none")
+    print("p2")
+    
+    ### make percentage barplot of patients
+    temp <- as.data.frame(
+        meta %>% 
+            dplyr::select(group, PatientID) %>% 
+            dplyr::group_by(group, PatientID) %>% 
+            dplyr::add_tally() %>% 
+            unique() %>% 
+            dplyr::group_by(group) %>% 
+            dplyr::mutate(freq = n / sum(n)) %>% 
+            unique()
+    )
+    
+    temp1 <- as.data.frame(table(object@meta.data$PatientID))
+    colnames(temp1) <- c("PatientID", "n")
+    temp1$group = "Total"
+    temp1$freq = temp1$n / sum(temp1$n)
+    
+    temp <- rbind(temp, temp1)
+    temp$group <- factor(temp$group, levels = plot_order)
+    
+    p3 <- ggplot(data = temp, aes(x=group, y=freq, fill=PatientID)) + 
+        geom_bar(stat = "identity", width = .75) + 
+        coord_flip() + 
+        theme_bw() +
+        theme(
+            legend.position = "right", 
+            legend.title = element_blank(), 
+            legend.justification = "center",
+            legend.spacing.x = unit(0.1, 'cm'),
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.text = element_text(size = 10)
+        ) +
+        labs(y="Fraction of cells", x = "") +
+        # scale_x_discrete(breaks=plot_order) + 
+        guides(fill = guide_legend(ncol=ncol)) + 
+        scale_fill_manual(values=colors)
+    p3_legend <- get_legend(p3)
+    
+    p3 <- p3 + theme(legend.position = "none")
+    print("p3")
+    
+    ### make bar plot of number of cells
+    temp <- as.data.frame(
+        meta %>% 
+            dplyr::select(group) %>% 
+            dplyr::group_by(group) %>% 
+            dplyr::add_tally() %>% 
+            unique()
+    )
+    
+    temp1 <- data.frame(group="Total", n=nrow(meta))
+    temp <- rbind(temp, temp1)
+    temp$group <- factor(temp$group, levels = plot_order)
+    p4 <- ggplot(temp, aes(x=group, y=n, fill=stata_pal("s1color")(1))) + 
+        geom_bar(stat = "identity") +
+        coord_flip() + 
+        theme_bw() +
+        theme(
+            legend.position = "none",
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.text = element_text(size = 10)
+        ) +
+        labs(y="Number of cells", x = "") +
+        # scale_x_discrete(breaks=plot_order) +
+        scale_y_log10(
+            breaks = trans_breaks("log10", function(x) 10^x),
+            labels = trans_format("log10", math_format(10^.x))
+        )
+    print("p4")
+    
+    ### make boxplot of transcript number
+    meta1 = meta
+    meta1$group <- "Total"
+    meta <- rbind(meta, meta1)
+    meta$group <- factor(meta$group, levels = plot_order)
+
+    p5 <- ggplot(meta, aes(x=group, group=group, y=nUMI)) + 
+        geom_boxplot(fill = hc_pal()(1)) + 
+        coord_flip() + 
+        # scale_x_discrete(breaks=plot_order[1:(length(plot_order) - 1)]) +
+        labs(y="Number of transcripts", x = "") + 
+        scale_y_log10(
+            breaks = trans_breaks("log10", function(x) 10^x),
+            labels = trans_format("log10", math_format(10^.x))
+        ) +
+        theme_bw() + 
+        theme(
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.text = element_text(size = 10)
+        )
+    print("p5")
+    
+    plots = list(p1_legend, p2_legend, p3_legend, ggplot() + theme_void(), ggplot() + theme_void() , p1, p2, p3, p4, p5)
+    
+    if (!with_disease) {
+        plots = list(p1_legend, p3_legend, ggplot() + theme_void(), ggplot() + theme_void(), p1, p3, p4, p5)
+    }
+    
+    p <- plot_grid(plotlist=plots, nrow = 2, rel_heights = rel_height)
+    return(p)
+}
+
+```
+
+
+```{R}
+library(TCGAbiolinks)
+
+lusc_cli <- readRDS("LungCancer10x/TCGA/LUSC_clinical.rds")
+tcga <- read.csv(
+    "LungCancer10x/TCGA/Lung.csv", 
+    row.names = 1, 
+    stringsAsFactors = F
+)
+
+tcga <- tcga[, str_detect(colnames(tcga), "LUSC")]
+
+for (i in unique(temp$ident)) {
+    genes = as.data.frame(temp)[temp$ident == i, "gene"]
+    
+    expr <- median(apply(tcga[intersect(genes, rownames(tcga)), ], 1, mean))
+
+    samples <- colnames(tcga)[apply(tcga[intersect(genes, rownames(tcga)), ], 2, function(x) {
+        mean(x) > expr
+    })]
+    
+    samples <- sapply(samples, function(x) {
+        temp = str_split(x, "\\.")[[1]]
+        paste(temp[1], temp[2], temp[3], sep = "-")
+    })
+    
+    lusc_cli$ident = ifelse(lusc_cli$submitter_id %in% samples, "Up", "Down")
+    
+    TCGAanalyze_survival(
+        lusc_cli,
+        "ident",
+        main = paste("Cluster", i),
+        height = 6, 
+        width=8,
+        risk.table = F,
+        dpi = 600,
+        conf.int = F,
+        cumevents = F,
+        cumcensor = F,
+        ggtheme = theme_minimal() + theme(
+            text = element_text(size = 15),
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 18),
+            legend.text = element_text(size = 15),
+            legend.title = element_text(size = 18),
+            title = element_text(size = 20)
+        ),
+        filename = paste("Basal_", i, ".pdf", sep = "")
+    )
+}
+
+
+
+```
+
+
+### Stage module heatmap
+
+```{r}
+make_module_heatmap <- function(obj, res, mark_genes) {
+    
+    meta = obj@meta.data[order(obj@meta.data$Stage, obj@meta.data$PatientID), ]
+    
+    meta$Disease <- as.character(meta$Disease)
+    meta$Disease[meta$Disease == "LUAD"] <- "AD"
+    meta$Disease[meta$Disease == "LUSC"] <- "SC"
+    meta$Disease[meta$Disease == "LUAD_Normal"] <- "NL(AD)"
+    meta$Disease[meta$Disease == "LUSC_Normal"] <- "NL(SC)"
+    meta$Disease[meta$Disease == "Pleiomorphic Normal"] <- "NL(UPS)"
+    meta$Disease[meta$Disease == "Pleiomorphic"] <- "UPS"
+    meta$Disease[meta$Disease == "LULC"] <- "LC"
+    meta$Disease[meta$Disease == "LULC_Normal"] <- "NL(LC)"
+    set.seed(42)
+    meta = meta[sample(1:nrow(meta)), ]
+    meta <- meta[order(meta$Stage), c("Stage"), drop = F] # meta$Disease, , "Disease"
+    
+    
+    meta$Cells = rownames(meta)
+    num_cells = sort(table(meta$Stage), decreasing = F)
+    num_cells = ifelse(num_cells[1] < 20, num_cells[2], num_cells[1])
+    meta <- meta %>% group_by(Stage) %>% sample_n(num_cells, replace = T) %>% unique() %>% as.data.frame()
+        
+        rownames(meta) <- meta$Cells
+    
+    stage_colors <- c(
+        "I"="#65A9A3", 
+        "II"="#4A933E",
+        "III"="#EC7A21",
+        "IV"="#D73F47"
+    )
+    
+    cluster_cols = c(
+        as.character(wes_palette("Zissou1")),
+        as.character(wes_palette("Royal2")),
+        as.character(wes_palette("Royal1")),
+        as.character(wes_palette("Darjeeling2")),
+        as.character(wes_palette("Darjeeling1"))
+    )
+    
+    patient_colors = cluster_cols[1:length(unique(obj@meta.data$PatientID))]
+    names(patient_colors) <- unique(obj@meta.data$PatientID)
+
+    # top annotation
+    ta = HeatmapAnnotation(
+        Stage = meta$Stage,
+        # PatientID = meta$PatientID,
+        col = list(
+            Stage =  stage_colors
+            # PatientID = patient_colors
+        ),
+        show_legend = T,
+        show_annotation_name = T,
+        annotation_legend_param = list(
+            Stage=list(
+                direction = "horizontal", 
+                nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            )
+            # PatientID=list(
+            #     direction = "horizontal",
+            #     nrow = 4,
+            #     labels_gp = gpar(fontsize = labels_size),
+            #     title_gp = gpar(fontsize = title_size)
+            # )
+        )
+    )
+    
+    
+    module_colors = wes_palette("GrandBudapest2", length(unique(res$Clt)), type = "continuous")
+    names(module_colors) <- unique(res$Clt)
+    
+    # left annotation
+    if(!is.null(mark_genes)) {
+        la = rowAnnotation(
+            foo = anno_mark(
+                at = which(res$gene %in% mark_genes),
+                labels = res$gene[res$gene %in% mark_genes],
+                which = "row",
+                side = "left"
+            ),
+            Module = res$Clt,
+            col = list(
+                Module = module_colors
+            ),
+            show_legend = F,
+            show_annotation_name = F,
+            annotation_name_rot = 0,
+            annotation_legend_param=list(
+                Module=list(
+                    direction = "horizontal", 
+                    nrow = 1,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                )
+            )
+        )
+    } else {
+        la = rowAnnotation(
+            Module = res$Clt,
+            col = list(
+                Module = module_colors
+            ),
+            show_legend = T,
+            show_annotation_name = T,
+            annotation_name_rot = 0,
+            annotation_legend_param=list(
+                Module=list(
+                    direction = "horizontal", 
+                    nrow = 1,
+                    labels_gp = gpar(fontsize = labels_size),
+                    title_gp = gpar(fontsize = title_size)
+                )
+            )
+        )
+    }
+    
+    h <- Heatmap(
+        name = "Expr",
+        obj@scale.data[as.character(res$gene), as.character(rownames(meta))],
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        show_row_names = F,
+        col = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow")),
+        top_annotation = ta,
+        left_annotation = la,
+        border = T,
+        column_title_gp = gpar(fontsize=0),
+        row_title_gp = gpar(fontsize = 0),
+        column_split = meta$Stage,
+        row_split = res$Clt,
+        heatmap_legend_param = list(
+            direction = "horizontal",
+            labels_gp = gpar(fontsize = labels_size),
+            title_gp = gpar(fontsize = title_size)
+        ),
+        use_raster = T
+    )
+    return(h)
+}
+```
+
+
+### Perform Suerat pipeline 
+
+```{r}
+new_obj@meta.data$ident1 <- as.numeric(new_obj@meta.data$res.0.1) + 1
+
+p <- DimPlot(
+    new_obj, 
+    reduction.use = "umap", 
+    pt.size = 1, 
+    do.label = T, 
+    no.legend = T,
+    do.return = T,
+    label.size = 10,
+    group.by = "ident1"
+)
+
+p <- p + 
+    theme_bw() +
+    theme(
+        text = element_text(size = 10),
+        legend.position = "none",
+        plot.title = element_text(size = 30, face="bold", hjust = 0.5),
+        axis.title = element_text(size = 25),
+        axis.text = element_text(size = 20),
+        aspect.ratio = 1
+    ) +
+    labs(title = "Basal (LUSC)")
+
+p
+
+ggsave(
+    filename = paste0(root.dir, "Basal_umap_cluster.pdf"),
+    plot = p,
+    width = 6,
+    height = 6
+)
+```
+
+```{r}
+p <- make_scatterpie_plot(
+    new_obj, 
+    color = "Stage", 
+    colors = colors, 
+    reduction.use = "umap",
+    legend.position = c(0.8, 0.1)
+) + theme(aspect.ratio = 1)
+
+
+ggsave(
+    filename = paste0(root.dir, "Basal_umap_stage.pdf"),
+    plot = p,
+    width = 6,
+    height = 6
+)
+
+
+p <- make_scatterpie_plot(
+    new_obj, 
+    color = "PatientID", 
+    colors = colors, 
+    reduction.use = "umap",
+    legend.position = c(0.8, 0.15),
+    guide_ncol=2
+) + theme(aspect.ratio = 1)
+
+ggsave(
+    filename = paste0(root.dir, "Basal_umap_patient.pdf"),
+    plot = p,
+    width = 6,
+    height = 6
+)
+```
+
+```{r}
+pdf(paste0(root.dir, "Basal_combination_bar_plot.pdf"), width = 12, height = 6, onefile = F)
+make_combined_barplot(new_obj, group.by = "ident", with_disease = F)
+dev.off()
+```
+
+
+### Markers
+```{r}
+find_markers <- function(object, group.by = "Stage", n.cores = 4, min.pct = 0.1) {
+    
+    temp_group <- as.character(sort(unique(object@meta.data[, group.by])))
+    
+    library(doMC)
+    registerDoMC(n.cores)
+    res = foreach(i = temp_group, .combine = "rbind") %dopar% {
+
+        groups = rownames(object@meta.data[object@meta.data[, group.by] == i, ])
+        
+        if(length(groups) >= 3) {
+            temp <- FindMarkers(
+                object = object, 
+                ident.1 = groups,
+                logfc.threshold = 0,
+                min.pct = min.pct
+            )
+            
+            temp$ident = i
+            temp$gene = rownames(temp)
+            return(temp)
+        }
+        return(NULL)
+    }    
+    return(res)
+}
+
+registerDoMC(5)
+obj@meta.data$Clt = as.numeric(as.character(obj@meta.data$res.0.2)) + 1
+markers <- find_markers(obj, group.by = "Clt", n.cores = 5)
+write.csv(markers, paste0(root.dir, "/cluster_markers.csv"))
+```
+
+
+### cluter annotation
+
+```{r}
+
+do_tmod <- function(data, output_xlsx, msig, fig = NULL, force=FALSE) {
+    if (file.exists(output_xlsx) && !force) {
+        cerno = read.xlsx(output_xlsx, sheet = 1)
+        utest = read.xlsx(output_xlsx, sheet = 2)
+        ztest = read.xlsx(output_xlsx, sheet = 3)
+    } else {
+        sel <- msig$MODULES$Category == "C5"
+        
+        data = data[order(abs(data$avg_logFC), decreasing = T), ]
+        cerno = NULL
+        utest = NULL
+        ztest = NULL
+        
+        if ("ident" %in% colnames(data)) {
+            for(i in unique(data$ident)) {
+                print(i)
+                fig_data = list()
+                
+                temp_data = data[data$ident == i, ]
+                temp = tmodCERNOtest(temp_data$gene, mset = msig[sel])
+                fig_data$CERNO = temp
+                
+                if(nrow(temp) > 0) {
+                    temp$ident = i
+                    temp$Methods = "CERNO"
+                    cerno = rbind(cerno, temp)
+                }
+                
+                temp = tmodUtest(temp_data$gene, mset = msig[sel])
+                fig_data$Utest = temp
+                if(nrow(temp) > 0) {
+                    temp$ident = i
+                    temp$Methods = "Utest"
+                    utest = rbind(utest, temp)
+                }
+                
+                temp = tmodZtest(temp_data$gene, mset = msig[sel])
+                fig_data$Ztest = temp
+                if(nrow(temp) > 0) {
+                    temp$ident = i
+                    temp$Methods = "Ztest"
+                    ztest = rbind(ztest, temp)
+                }
+            }
+        } else {
+            cerno = tmodCERNOtest(data$gene, mset = msig[sel])
+            if (!is.null(cerno) && nrow(cerno) > 0) {
+                cerno$Methods = "CERNO"
+            }
+            
+            utest = tmodUtest(data$gene, mset = msig[sel])
+            if (!is.null(utest) && nrow(utest) > 0) {
+                utest$Methods = "Utest"
+            }
+            
+            ztest = tmodZtest(data$gene, mset = msig[sel])
+            if (!is.null(ztest) && nrow(ztest) > 0) {
+                ztest$Methods = "Ztest"
+            }
+        }
+        
+        
+        if(!is.null(cerno) || !is.null(utest) || !is.null(ztest)) {
+            wb = createWorkbook()
+            addWorksheet(wb, "CERNO")
+            writeData(wb, 1, cerno)
+            
+            addWorksheet(wb, "Utest")
+            writeData(wb, 2, utest)
+            
+            addWorksheet(wb, "Ztest")
+            writeData(wb, 3, ztest)
+            
+            saveWorkbook(wb, output_xlsx, overwrite = T)
+        }
+    }
+    
+    if(
+        "ident" %in% c(colnames(cerno), colnames(utest), colnames(ztest)) && 
+        !is.null(fig) && 
+        (!is.null(cerno) || !is.null(utest) || !is.null(ztest)) 
+    ) {
+        for(i in unique(c(cerno[, "ident"], utest[, "ident"], ztest[, "ident"]))) {
+            p <- make_tmod_plots(
+                cerno[cerno$ident == i, ], 
+                utest[utest$ident == i, ], 
+                ztest[ztest$ident == i, ], 
+                topn = 12, 
+                scales = "free"
+            )
+            
+            ggsave(
+                filename = paste(fig, paste0(i, "_tmod.pdf"), sep = "/"),
+                plot = p,
+                width = 20,
+                height = 12,
+                units = "in"
+            )
+        }
+    }
+    
+    return(list(
+        "CERNO"=cerno,
+        "Utest"=utest,
+        "Ztest"=ztest
+    ))
+}
+
+
+msig <- tmodImportMSigDB(here("../../../project_scripts/12_final_plots/msigdb_v6.2.xml"))
+```
+
+
+```{r}
+markers <- find_markers(new_obj, group.by = "ident", n.cores = 4)
+write.xlsx(markers, paste0(root.dir, "Basal_cluster_markers.xlsx"), overwrite=T)
+```
+
+
+
+```{r fig.height=10, fig.width=8}
+obj <- readRDS(full.path("11_CNV/each_cells/Basal/seurat_obj_LUSC.rds"))
+
+markers <- read.csv(
+    full.path("11_CNV/each_cells/Basal/cluster_markers_LUSC.csv"), 
+    row.names = 1, stringsAsFactors = F
+)
+
+
+set.seed(42)
+markers <- markers %>%
+    filter(p_val_adj < 0.05 & avg_logFC > 0.5) %>%
+    group_by(ident) %>%
+    arrange(desc(avg_logFC)) %>%
+    as.data.frame()
+markers$x = 1:nrow(markers)
+    
+
+temp <- markers %>%
+    filter(p_val_adj < 0.05 & avg_logFC > 0.25) %>%
+    group_by(ident) %>%
+    top_n(10, wt=avg_logFC) %>%
+    as.data.frame()
+
+obj@meta.data$ident = obj@meta.data$res.0.2
+
+obj@meta.data$Cells = rownames(obj@meta.data)
+cells_order <- obj@meta.data %>%
+    group_by(ident) %>%
+    arrange(ident) %>%
+    sample_n(min(table(obj@meta.data$ident))) %>%
+    as.data.frame()
+
+# cells_order <- cells_order[sample(1:nrow(cells_order)), ]
+# cells_order = cells_order[order(as.numeric(cells_order$ident)), ]
+
+ccls <- as.character(wes_palette("GrandBudapest2", length(unique(cells_order$ident)), type = "continuous"))
+names(ccls) <- unique(cells_order$ident)
+
+ta = HeatmapAnnotation(
+    Cluster = cells_order$ident,
+    col = list(
+        Cluster = ccls
+    ),
+    show_annotation_name = F,
+    show_legend = F
+)
+
+ha = rowAnnotation(
+    foo = anno_mark(
+        at = temp$x, 
+        labels = temp$gene,
+        side = "left"
+    )
+)
+
+
+# pdf(paste0(root.dir, "/cluster_markers.pdf"), width = 5, height = 6)
+Heatmap(
+    obj@scale.data[markers$gene, cells_order$Cells],
+    name = "Expr",
+    cluster_rows = F,
+    cluster_columns = F,
+    show_row_names = F,
+    show_column_names = F,
+    show_heatmap_legend = F,
+    top_annotation = ta,
+    left_annotation = ha,
+    column_split = cells_order$ident,
+    row_split = markers$ident,
+    row_title = NULL,
+    heatmap_legend_param = list(
+        labels_gp = gpar(fontsize = 15),
+        title_gp = gpar(fontsize = 15)
+    ),
+    col = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow"))
+)
+# dev.off()
+```
+
+```{r}
+do_tmod(
+    read.xlsx(paste0(root.dir, "Basal_cluster_markers.xlsx"), rowNames = T), 
+    here("clusters/tmod.xlsx"), 
+    msig=msig, 
+    fig = NULL, 
+    force = TRUE
+)
+```
+
+```{R}
+cerno <- read.xlsx(here("clusters/tmod.xlsx"), sheet = 1)
+
+cerno <- cerno %>%
+    filter(adj.P.Val < 0.05) %>%
+    group_by(ident) %>%
+    top_n(5, wt = AUC)
+
+cerno <- reshape2::dcast(cerno, Title~ident, value.var = "AUC", fun.aggregate = mean, fill = 0)
+
+rownames(cerno) <- cerno$Title
+cerno <- cerno[, colnames(cerno) != "Title"]
+```
+
+
+```{R fig.height=12, fig.width=16}
+
+col_fun <- colorRamp2(c(0.9, 1), c("white", "red"))
+
+h <- Heatmap(
+    as.matrix(cerno),
+    name = "AUC",
+    col = col_fun,
+    column_names_rot = 0,
+    column_names_centered = T,
+    column_names_gp = gpar(fontsize = 20),
+    row_names_gp = gpar(fontsize = 15),
+    heatmap_legend_param = list(
+        direction = "horizontal",
+        labels_gp = gpar(fontsize = labels_size),
+        title_gp = gpar(fontsize = title_size),
+        title_position = "lefttop"
+    ),
+    border = T,
+    width = unit(12, "cm"),
+    rect_gp = gpar(col = "grey75", lwd = 1)
+)
+
+pdf(here("clusters/heatmap_cerno.pdf"), width = 16, height = 12)
+draw(
+    h, 
+    heatmap_legend_side = "bottom"
+)
+dev.off()
+```
+
+
+
+```{r}
+markers <- find_markers(new_obj, group.by = "Stage", n.cores = 4)
+write.xlsx(markers, paste0(root.dir, "Basal_stage_markers.xlsx"), overwrite=T, rowNames = T)
+```
+
+```{R}
+obj <- readRDS(paste0(root.dir, "Basal.rds"))
+markers <- read.xlsx(paste0(root.dir, "Basal_stage_markers.xlsx"), rowNames = T)
+nms = unique(markers$gene)
+ig_genes = c(grep("^IGJ", nms, v=T), 
+             grep("^IGH",nms,v=T),
+             grep("^IGK", nms, v=T), 
+             grep("^IGL", nms, v=T))
+
+bad_genes = unique(c(grep("^MT-", nms, v=T), grep("^MTMR", nms, v=T), grep("^MTND", nms, v=T),"NEAT1","TMSB4X", "TMSB10", ig_genes))
+
+
+
+markers <- markers %>% 
+    filter(avg_logFC > 0.5 & p_val_adj < 0.05 & !gene %in% bad_genes)
+
+
+expr = ExpressionSet(
+    as.matrix(obj@scale.data[unique(markers$gene),])
+)
+    
+m = mestimate(expr)
+
+temp = Dmin(expr, m=m, crange=seq(2,10,1), repeats=3, visu=FALSE)
+print(temp)
+if (sum(!is.na(temp)) == 0) {
+    c = length(unique(obj@meta.data$Stage))
+} else {
+    new_temp = temp[!is.na(temp)]
+    
+    # using kneed to selected best cluster
+    kee = import("kneed")
+
+    c = kee$KneeLocator(
+        1:length(new_temp),
+        new_temp, 
+        curve='convex', 
+        direction='decreasing'
+    )
+    c = c$knee
+    
+    c = which(temp == new_temp[c])
+}
+
+cl <- mfuzz(expr, c=c, m=m)
+
+
+# extract results
+res = as.data.frame(cl$cluster)
+colnames(res) <- "Clt"
+res$gene = rownames(res)
+
+res = res[order(res$Clt), ]
+
+res$Clt <- sapply(res$Clt, function(x) {
+    temp = c(
+        "1"="M.I",
+        "2"="M.III",
+        "3"="M.II"
+    )
+    
+    return(temp[as.character(x)])
+})
+
+write.csv(res, paste0(root.dir, "Basal_mfuzz.csv"))
+```
+
+```{r height = 6, width = 6}
+res = read.csv(paste0(root.dir, "11_CNV/each_cells/Basal/LUSC/mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+set.seed(42)
+temp = res$gene[sample(1:nrow(res))]
+
+labels_size = 12
+title_size = 15
+
+pdf(paste0(root.dir, "11_CNV/each_cells/Basal/LUSC/Basal_mfuzz.pdf"), height = 6, width = 8)
+draw(
+    make_module_heatmap(obj, res, mark_genes = c(head(temp, n = 10), "PPT1", "AQP3", "SPHK1", "PPT1", "KPNA2", "KLF6")), 
+    column_title = "",
+    column_title_gp = gpar(fontsize = 20),
+    merge_legend = TRUE, 
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom"
+)
+dev.off()
+```
+
+
+### Make a cluster plot of all LUSC Basal cells
+```{r}
+meta <- read.csv(paste0(root.dir, "../../02_rds/meta_after_singleR.csv"), row.names = 1, stringsAsFactors = F)
+
+nm_meta = read.xlsx(paste0(root.dir, "../../02_rds/NM_meta.xlsx"))
+rownames(nm_meta) <- nm_meta$SampleID
+
+meta$Disease[meta$SampleID %in% nm_meta$SampleID] = nm_meta[meta$SampleID[meta$SampleID %in% nm_meta$SampleID], "Disease"]
+meta$Stage[meta$SampleID %in% nm_meta$SampleID] = nm_meta[meta$SampleID[meta$SampleID %in% nm_meta$SampleID], "Stage"]
+
+meta <- meta[as.character(meta$cell_short) == "Basal", ]
+meta <- meta[as.character(meta$Disease) == "LUSC", ]
+
+expr <- readRDS(paste0(root.dir, "../../02_rds/all_cell_expr.rds"))
+```
+
+```{r}
+all_obj <- CreateSeuratObject(
+    expr[, rownames(meta)],
+    meta.data = meta
+)
+
+
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = all_obj@raw.data), value = TRUE)
+percent.mito <- Matrix::colSums(all_obj@raw.data[mito.genes, ])/Matrix::colSums(all_obj@raw.data)
+
+# AddMetaData adds columns to object@meta.data, and is a great place to
+# stash QC stats
+all_obj <- AddMetaData(object =all_obj, metadata = percent.mito, col.name = "percent.mito")
+
+
+### 3. do PCA and harmony
+
+pcs = min(100, min(nrow(all_obj@raw.data), ncol(all_obj@raw.data)) - 1)
+
+all_obj <- NormalizeData(object = all_obj, normalization.method = "LogNormalize", scale.factor = 10000)
+all_obj <- FindVariableGenes(object = all_obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+all_obj <- ScaleData(object = all_obj, vars.to.regress = c("nUMI", "percent.mito"))
+all_obj <- RunPCA(object = all_obj, pc.genes = all_obj@var.genes, do.print = FALSE, pcs.compute = pcs)
+
+all_obj <- RunHarmony(all_obj, c("batch", "PatientID"))
+
+
+#### 4. make dotplot of SD of PCAs and Harmonys
+
+temp <- as.data.frame(apply(all_obj@dr$harmony@cell.embeddings, 2, sd))
+colnames(temp) <- c("sd")
+temp$Harmony = 1:nrow(temp)
+
+kee = import("kneed")
+n.pcs = kee$KneeLocator(
+    1:ncol(all_obj@dr$pca@cell.embeddings),
+    apply(all_obj@dr$pca@cell.embeddings, 2, sd), 
+    curve='convex', 
+    direction='decreasing'
+)
+n.pcs = n.pcs$knee
+
+
+#### 5. tSNE and UMAP
+all_obj <- RunTSNE(
+    object = all_obj, 
+    dims.use = 1:n.pcs, 
+    do.fast = TRUE, 
+    reduction.use = "harmony", 
+    reduction.name = "tsne",
+    perplexity=min(30, floor(pcs / 3) + 1)
+)
+all_obj <- RunUMAP(
+    object = all_obj, 
+    dims.use = 1:n.pcs, 
+    do.fast = TRUE, 
+    reduction.use = "harmony",
+    n_neighbors = min(30, pcs)
+)
+all_obj <- FindClusters(object = all_obj, reduction.type = "harmony", dims.use = 1:10, resolution = 0.02, print.output = 0, save.SNN = FALSE, force.recalc = TRUE)
+
+saveRDS(all_obj, paste0(root.dir, "total_basal.rds"))
+```
+
+
+```{r}
+all_obj <- readRDS(paste0(root.dir, "total_basal.rds"))
+```
+
+
+```{r}
+all_obj@meta.data$ident1 <- as.numeric(all_obj@meta.data$res.0.03) + 1
+all_obj@meta.data$ident <- all_obj@meta.data$ident1
+
+p <- DimPlot(
+    all_obj, 
+    reduction.use = "umap", 
+    pt.size = 0.01, 
+    do.label = T, 
+    no.legend = T,
+    do.return = T,
+    label.size = 10,
+    group.by = "ident1"
+)
+
+p <- p + 
+    theme_bw() +
+    theme(
+        text = element_text(size = 10),
+        legend.position = "none",
+        plot.title = element_text(size = 30, face="bold", hjust = 0.5),
+        axis.title = element_text(size = 25),
+        axis.text = element_text(size = 20),
+        aspect.ratio = 1
+    ) +
+    labs(title = "Basal (LUSC)")
+
+p
+
+ggsave(
+    filename = paste0(root.dir, "Basal_all_umap_cluster.pdf"),
+    plot = p,
+    width = 6,
+    height = 6
+)
+```
+
+
+```{r fig.height=6, fig.width=6}
+p <- make_scatterpie_plot(
+    all_obj, 
+    color = "Stage", 
+    colors = colors, 
+    reduction.use = "umap",
+    legend.position = c(0.2, 0.08),
+    guide_ncol = 3
+) + theme(aspect.ratio = 1)
+
+p
+
+ggsave(
+    filename = paste0(root.dir, "Basal_all_umap_stage.pdf"),
+    plot = p,
+    width = 6,
+    height = 6
+)
+
+
+cluster_cols = c(
+    as.character(wes_palette("Zissou1")),
+    as.character(wes_palette("Royal2")),
+    as.character(wes_palette("Royal1")),
+    as.character(wes_palette("Darjeeling2")),
+    as.character(wes_palette("Darjeeling1"))
+)
+patient_colors = cluster_cols[1:length(unique(as.character(all_obj@meta.data$PatientID)))]
+names(patient_colors) <- as.character(unique(all_obj@meta.data$PatientID))
+colors = c(stage_colors, disease_colors, tissue_colors, patient_colors)
+
+
+p <- make_scatterpie_plot(
+    all_obj, 
+    color = "PatientID", 
+    colors = colors, 
+    reduction.use = "umap",
+    legend.position = c(0.1, 0.85),
+    guide_ncol=3,
+    legend.text = 12
+) + theme(aspect.ratio = 1)
+
+p
+
+ggsave(
+    filename = paste0(root.dir, "Basal_all_umap_patient.pdf"),
+    plot = p,
+    width = 6,
+    height = 6
+)
+```
+
+
+```{r fig.height=6, fig.width=12}
+pdf(paste0(root.dir, "Basal_all_combination_bar_plot.pdf"), width = 12, height = 6, onefile = F)
+make_combined_barplot(all_obj, group.by = "ident", with_disease = F)
+dev.off()
+```
+
+
+```{r fig.height=3, fig.width=4}
+calculate_cluster_perc <- function(obj, seed.range = 1:50) {
+    meta = obj@meta.data
+
+    num = table(meta$Stage)
+
+    sf = num / min(num)
+    
+    # sf = table(meta$ident)
+    # sf = sf / min(sf)
+    
+    temp <- meta %>%
+        group_by(ident, Stage) %>%
+        add_tally() %>%
+        dplyr::select(ident, Stage, n) %>%
+        unique() %>%
+        as.data.frame()
+    
+    temp$freq <- apply(temp, 1, function(row) {
+        as.numeric(row[3]) / sf[[row[2]]] # / num[[row[2]]]
+    })
+    
+    temp <- temp %>% group_by(ident) %>%
+        mutate(freq = freq / sum(freq)) %>%
+        as.data.frame()
+    
+    temp
+}
+
+atii_perc <- calculate_cluster_perc(all_obj)
+
+p <- ggplot(atii_perc, aes(x=factor(ident), y = freq, color = Stage)) + 
+    geom_point() +
+    geom_line(aes(x=ident, y = freq, color = Stage)) +
+    scale_color_manual(values = c(
+        "I"="#65A9A3", 
+        "II"="#4A933E",
+        "III"="#EC7A21",
+        "IV"="#D73F47"
+    )) +
+    labs(x = "", y = "", color = "") +
+    theme_bw() +
+    theme(
+        axis.text = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.position = c(0.1, 0.25),
+        legend.background = element_blank()
+    )
+p
+
+
+ggsave(
+    filename = paste0(root.dir, "Basal_all_stage_perc.pdf"),
+    plot = p,
+    width = 4,
+    height = 3
+)
+```
+
+
+```{r}
+markers <- find_markers(all_obj, group.by = "ident", n.cores = 5, min.pct = 0.1)
+
+write.csv(markers, paste0(root.dir, "Basal_all_cells_cluster_markers.csv"))
+```
+
+```{R fig.height=10, fig.width=8}
+markers <- read.csv()
+markers <- markers[order(markers$avg_logFC, decreasing = T), ]
+
+temp <- markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(10, wt=avg_logFC)
+
+
+cells_order = rownames(all_obj@meta.data)[order(as.character(all_obj@meta.data$ident))]
+
+ccls <- cluster_cols[1:length(unique(all_obj@meta.data$ident))]
+names(ccls) <- unique(all_obj@meta.data$ident)
+
+ta = HeatmapAnnotation(
+    Cluster = as.character(all_obj@meta.data$ident)[order(as.character(all_obj@meta.data$ident))],
+    col = list(
+        Cluster = ccls
+    ),
+    show_annotation_name = F,
+    show_legend = F
+)
+
+
+# pdf(paste0(root.dir, "ATII_cluster_markers_heatmap.pdf"), width = 6, height = 8)
+Heatmap(
+    name = "Expr",
+    all_obj@scale.data[temp$gene, cells_order],
+    cluster_rows = F,
+    cluster_columns = F,
+    show_row_names = T,
+    show_column_names = F,
+    top_annotation = ta,
+    column_split = as.character(all_obj@meta.data$ident[order(as.character(all_obj@meta.data$ident))]),
+    row_split = as.character(temp$ident),
+    heatmap_legend_param = list(
+        labels_gp = gpar(fontsize = 15),
+        title_gp = gpar(fontsize = 15)
+    ),
+    col = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow"))
+)
+# dev.off()
+```
+
+## make violin plot
+```{r fig.height=30, fig.width=16}
+VlnPlot(all_obj, features.plot = sort(temp$gene), group.by = "ident1", point.size.use = 0)
+```
+
+
+```{r}
+mfuzz <- read.csv(paste0(root.dir, "Basal_mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+sort(temp$gene[temp$gene %in% mfuzz$gene])
+```
+
+```{r}
+sort(intersect(as.character(temp$gene), as.character(scores$gene_name[scores$V1 > 0.5])))
+```
+
+
+### make final cluste vln plot
+```{r fig.height=10, fig.width=5}
+target_genes = c(
+    "AKR1B10", "AKR1C3", "KRT15",
+    "PCNA",
+    "LCN2", "SLPI",
+    "IGLC2", "CD74",
+    "CALD1", "IGFBP7", "LGALS1"
+    
+)
+
+temp_expr <- melt(as.matrix(all_obj@scale.data[target_genes, ]))
+temp_expr$ident <- all_obj@meta.data[temp_expr$Var2, "ident"]
+
+library(ggpubr)
+p <- ggviolin(
+    data = temp_expr,
+    x = "ident",
+    y = "value",
+    fill = "ident",
+    add = "boxplot", 
+    add.params = list(fill = "white")
+) +
+    facet_grid(Var1~., scales = "free") +
+    labs(x = "", y = "") +
+    theme_bw() +
+    theme(
+        legend.position = "none",
+        axis.text.y = element_text(size = 12),
+        axis.text.x = element_text(size = 15),
+        strip.text = element_text(size = 12)
+    )
+
+p
+
+ggsave(
+    filename = paste0(root.dir, "Basal_cluster_markers_vln.pdf"),
+    plot = p,
+    width = 5,
+    height = 10
+)
+```
+
+### Stage module radar plot
+```{R}
+format_radar_expr_mat <- function(
+  obj, 
+  module,
+  legend.position="bottom",
+  plot.title="",
+  legend.title = "",
+  axis.label.size = 8,
+  batch=F,
+  Stage = NULL
+) {
+    meta = as.data.frame(obj@meta.data)
+    
+    if (!is.null(Stage)) {
+        meta = meta[meta$Stage == Stage, ]
+    }
+    
+    if (batch) {
+        meta = meta[meta$Batch == 3, ]
+        meta$Group = meta$PatientID
+    } else {
+        meta = meta[meta$Batch != 3, ]
+        meta$Group = meta$PatientID # paste0(meta$PatientID, "(", meta$Stage, ")")
+    }
+    
+
+    cells = meta[, "Group", drop = F]
+    cells$Cells = rownames(cells)
+    
+    mat = obj@scale.data[as.character(module$gene), ]
+    
+    mat = melt(as.matrix(mat))
+    mat = merge(cells, mat, by.x = "Cells", by.y = "Var2")
+    
+    module$Clt = as.character(module$Clt)
+    # module$Clt = sapply(module$Clt, function(x) { paste0("M.", x) })
+    
+    module = merge(module, mat, by.x = "gene", by.y = "Var1", all.x = T)
+    
+    
+    module = module %>% group_by(Clt, Group, gene) %>%
+        mutate(m = mean(value)) %>%
+        dplyr::select(Clt, Group, m) %>%
+        unique() %>%
+        group_by(Clt, Group) %>%
+        mutate(value = mean(m)) %>%
+        dplyr::select(Clt, Group, value) %>%
+        unique()
+    
+    # return(module)
+    module = as.data.frame(module)
+    
+    # return(module)
+    #print(module)
+    # 
+    # module
+    p <- ggradar(
+        dcast(module, Group~Clt),
+        centre.y = floor(min(module$value)),
+        values.radar = round(seq(from=floor(min(module$value)), to=max(module$value), length.out = 3), 2),
+        grid.max = ceiling(max(module$value)),
+        grid.label.size = 8,
+        legend.position = legend.position,
+        legend.title = legend.title,
+        plot.title = plot.title,
+        axis.label.size = axis.label.size,
+        group.line.width = 0.5,
+        group.point.size = 4,
+        axis.label.offset = 1.15,
+        base.size = 10
+    )
+    p = p + theme(
+        legend.direction="horizontal",
+        legend.spacing.x = unit(0.2, 'cm'),
+        legend.position = c(0.5, 0.01),
+        legend.background = element_blank(),
+        legend.text = element_text(size = 20),
+        plot.title = element_text(size = 25, hjust = 0.5)
+    ) +
+        guides(
+            color = guide_legend(override.aes = list(ncol = 3))
+        )
+    return(p)
+}
+
+```
+
+```{R fig.height=6, fig.width=6}
+
+for (i in unique(obj@meta.data$Stage)) {
+    p = format_radar_expr_mat(
+        obj, 
+        res,
+        legend.position="bottom",
+        # plot.title=basename(dirname(dirname(i))),
+        plot.title = paste0("Basal ", "(", i, ")"),
+        axis.label.size = 10,
+        Stage=i
+    )
+    
+    ggsave(
+        filename = here(paste0("mfuzz/mfuzz_radar_", i, ".pdf")),
+        plot = p,
+        width = 6,
+        height = 6
+    )
+}
+
+
+```
+
+### Corrlation
+```{R fig.height=8, fig.width=8}
+stage_cor <- cor(t(obj@scale.data[res$gene, ]))
+
+module_colors = wes_palette("GrandBudapest2", length(unique(res$Clt)), type = "continuous")
+names(module_colors) <- unique(res$Clt)
+
+
+ba <- HeatmapAnnotation(
+    Module=res$Clt,
+    col = list(
+        Module=module_colors
+    )
+)
+
+
+ra <- rowAnnotation(
+    Module=res$Clt,
+    col = list(
+        Module=module_colors
+    ),
+    show_legend = F,
+    show_annotation_name = F
+)
+
+
+pdf("mfuzz/module_gene_cor.pdf", width = 8, height = 6)
+p <- Heatmap(
+    stage_cor[res$gene, res$gene],
+    name = "Corr",
+    show_row_names = F,
+    show_column_names = F,
+    right_annotation = ra,
+    bottom_annotation = ba
+)
+draw(p, merge_legend=T)
+dev.off()
+# ggcorrplot::ggcorrplot(stage_cor)
+```
+
+
+```{r}
+
+stage_cor <- cor(obj@scale.data[res$gene, ])
+
+module_colors = wes_palette("GrandBudapest2", length(unique(res$Clt)), type = "continuous")
+names(module_colors) <- unique(res$Clt)
+
+meta <- obj@meta.data
+meta <- meta[order(meta$Stage, meta$PatientID), ]
+
+ba <- HeatmapAnnotation(
+    Stage=meta$Stage,
+    Patient=meta$PatientID,
+    col = list(
+        Stage=stage_colors,
+        Patient=patient_colors
+    )
+)
+
+
+ra <- rowAnnotation(
+    Stage=meta$Stage,
+    Patient=meta$PatientID,
+    col = list(
+        Stage=stage_colors,
+        Patient=patient_colors
+    ),
+    show_legend = F,
+    show_annotation_name = F
+)
+
+
+h <- Heatmap(
+    stage_cor[rownames(meta), rownames(meta)],
+    name = "Corr",
+    show_row_names = F,
+    show_column_names = F,
+    right_annotation = ra,
+    bottom_annotation = ba,
+    cluster_rows = F,
+    cluster_columns = F
+)
+
+pdf("mfuzz/module_cell_cor.pdf", width = 8, height = 6)
+draw(h, merge_legend=T)
+dev.off()
+```
+
+## corr on pseudobulk
+
+```{r}
+temp <- melt(as.matrix(obj@scale.data))
+
+temp$PatientID <- obj@meta.data[temp$Var2, "PatientID"]
+
+temp <- temp %>%
+    group_by(Var1, PatientID) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var1, value, PatientID) %>%
+    unique()
+
+temp <- dcast(temp, Var1 ~ PatientID, fun.aggregate = mean, value.var = "value")
+
+rownames(temp) <- temp$Var1
+temp <- temp[, colnames(temp) != "Var1"]
+
+
+temp_cor <- cor(temp)
+
+temp_meta <- unique(obj@meta.data[, c("PatientID", "Stage")])
+rownames(temp_meta) <- temp_meta$PatientID
+
+ba <- HeatmapAnnotation(
+    Stage=temp_meta[colnames(temp_cor), "Stage"],
+    col = list(
+        Stage=stage_colors
+    )
+)
+
+ra <- rowAnnotation(
+    Stage=temp_meta[rownames(temp_cor), "Stage"],
+    col = list(
+        Stage=stage_colors
+    )
+)
+
+Heatmap(
+    temp_cor,
+    right_annotation = ra,
+    bottom_annotation = ba,
+    clustering_method_rows = "average",
+    clustering_method_columns = "average"
+)
+```
+
+
+```{r}
+temp <- melt(as.matrix(obj@scale.data[res$gene, ]))
+
+temp$PatientID <- obj@meta.data[temp$Var2, "PatientID"]
+
+temp <- temp %>%
+    group_by(Var1, PatientID) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var1, value, PatientID) %>%
+    unique()
+
+temp <- dcast(temp, Var1 ~ PatientID, fun.aggregate = mean, value.var = "value")
+
+rownames(temp) <- temp$Var1
+temp <- temp[, colnames(temp) != "Var1"]
+
+
+temp_cor <- cor(temp)
+
+temp_meta <- unique(obj@meta.data[, c("PatientID", "Stage")])
+rownames(temp_meta) <- temp_meta$PatientID
+
+ba <- HeatmapAnnotation(
+    Stage=temp_meta[colnames(temp_cor), "Stage"],
+    col = list(
+        Stage=stage_colors
+    )
+)
+
+ra <- rowAnnotation(
+    Stage=temp_meta[rownames(temp_cor), "Stage"],
+    col = list(
+        Stage=stage_colors
+    ),
+    show_legend = F,
+    show_annotation_name = F
+)
+
+h <- Heatmap(
+    temp_cor,
+    right_annotation = ra,
+    bottom_annotation = ba
+)
+
+draw(h, merge_legend = T)
+```
+
+## format meta info
+
+```{R}
+expr <- readRDS(here("../../../02_rds/seurat_obj_nm.rds"))
+```
+
+
+```{r}
+meta <- read.xlsx(here("../../../02_rds/NM_meta.xlsx"))
+
+rownames(meta) <- meta$SampleID
+meta$PatientID <- paste0("DL", meta$PatientID)
+
+expr@meta.data$PatientID <- as.character(expr@meta.data$PatientID)
+expr@meta.data$Disease <- as.character(expr@meta.data$Disease)
+expr@meta.data$PatientID[expr@meta.data$Batch == 3] <- meta[as.character(expr@meta.data$SampleID[expr@meta.data$Batch == 3]), "PatientID"]
+expr@meta.data$Disease[expr@meta.data$Batch == 3] <- meta[as.character(expr@meta.data$SampleID[expr@meta.data$Batch == 3]), "Disease"]
+expr@meta.data$Stage[expr@meta.data$Batch == 3] <- meta[as.character(expr@meta.data$SampleID[expr@meta.data$Batch == 3]), "Stage"]
+```
+
+
+```{r fig.height=6, fig.width=6}
+temp_meta <- expr@meta.data[expr@meta.data$cell_name == "Basal" & expr@meta.data$Disease %in% c("LUSC"), ]
+
+temp_obj <- CreateSeuratObject(
+    expr@raw.data[, rownames(temp_meta)],
+    meta.data = temp_meta
+)
+
+temp_obj@scale.data = expr@scale.data[, rownames(temp_meta)]
+
+temp_obj@meta.data$PatientID <- paste(temp_obj@meta.data$PatientID, temp_obj@meta.data$Stage, sep = "-")
+
+p <- format_radar_expr_mat(
+    temp_obj, 
+    res,
+    legend.position="bottom",
+    # plot.title=basename(dirname(dirname(i))),
+    plot.title = "Basal (DL2018)",
+    axis.label.size = 10,
+    batch = T
+)
+
+p
+
+ggsave(
+    filename = here(paste0("mfuzz/mfuzz_radar_DL.pdf")),
+    plot = p,
+    width = 6,
+    height = 6
+)
+```
+
+### Radar plots on bulk data
+```{r}
+bulk_meta <- read.xlsx(here("../../../09_bulk/RNATAC50commonSample-1119.xlsx"))
+bulk_meta <- bulk_meta[!is.na(bulk_meta$SampleID), ]
+rownames(bulk_meta) <- bulk_meta$SampleID
+```
+
+### MuSic
+```{r}
+bulk <- read.xlsx(here("../../../09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+bulk <- bulk[, str_detect(colnames(bulk), "LUSC")]
+
+estimate <- readRDS(here("../../../09_bulk/RNA_seq/MuSic/bulk.rds"))
+estimate <- estimate$Est.prop.weighted
+estimate <- as.matrix(t(estimate))
+
+for (i in colnames(bulk)) {
+    if (estimate["Basal", i] > 0) {
+        bulk[, i] <- bulk[, i] / estimate["Basal", i]
+    } else {
+        bulk[, i] <- 0
+    }
+    
+}
+
+bulk <- scale(bulk)
+bulk <- melt(as.matrix(bulk))
+bulk <- na.omit(bulk)
+```
+
+```{r}
+gene_pos <- read.table(here("../../../09_bulk/RNA_seq/gene_pos.txt"))
+rownames(gene_pos) <- gene_pos$V5
+
+bulk$Var1 <- gene_pos[bulk$Var1, "V6"]
+
+bulk <- merge(bulk, res, by.x = "Var1", by.y = "gene")
+bulk$Stage <- bulk_meta[bulk$Var2, "Stage"]
+bulk$Stage <- str_replace_all(bulk$Stage, "[^IV]", "")
+bulk <- bulk[bulk$Stage != "", ]
+```
+
+```{r}
+temp <- dcast(bulk, Var1~Var2, fun.aggregate = mean, value.var = "value")
+rownames(temp) <- temp$Var1
+temp <- temp[, colnames(temp) != "Var1"]
+
+rownames(res) <- res$gene
+
+temp1 = as.matrix(temp[rowSums(temp) > 0, ])
+col_fun <- colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+
+# pdf(here("mfuzz/mfuzz_bulk_MuSic.pdf"), width = 7, height = 15) 
+Heatmap(
+    temp1,
+    name = "Expr",
+    cluster_columns = T,
+    cluster_rows = T,
+    show_row_names = F,
+    show_column_names = F,
+    row_split = res[rownames(temp1), "Clt"],
+    column_split = str_replace_all(bulk_meta[colnames(temp1), "Stage"], "[^IV]", ""),
+    col = col_fun,
+    border = T
+)
+# dev.off()
+```
+
+### Radar plots of MuSiC results
+```{r}
+temp <- bulk %>%
+    group_by(Clt, Stage, Var2, Var1) %>%
+    mutate(value = mean(value)) %>%
+    unique() %>%
+    group_by(Clt, Stage, Var2) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var2, value, Clt, Stage) %>%
+    unique()
+```
+
+
+```{r}
+for(i in unique(temp$Stage)) {
+    temp1 <- dcast(temp[temp$Stage == i, ], Var2~Clt, fun.aggregate = mean, value.var = "value")
+
+    p <- ggradar(
+        temp1,
+        centre.y = -0.1,
+        values.radar = round(seq(
+            from=-0.1,
+            to=0.1,
+            length.out = 3
+        ), 2),
+        grid.max = 0.1,
+        grid.label.size = 8,
+        legend.position = "bottom",
+        legend.title = "",
+        plot.title = i,
+        axis.label.size = 5,
+        group.line.width = 0.5,
+        group.point.size = 4,
+        axis.label.offset = 1.15,
+        base.size = 10
+    )
+    p = p + theme(
+        legend.direction="horizontal",
+        legend.spacing.x = unit(0.2, 'cm'),
+        legend.position = c(0.5, 0.01),
+        legend.background = element_blank(),
+        legend.text = element_text(size = 20),
+        plot.title = element_text(size = 25, hjust = 0.5)
+    ) +
+    guides(
+        color = guide_legend(override.aes = list(ncol = 3))
+    )
+
+    ggsave(
+        filename = here(paste0("mfuzz/mfuzz_radar_MuSiC_", i, ".pdf")),
+        plot = p,
+        width = 6,
+        height = 6
+    )
+}
+```
+
+
+
+```{r}
+temp <- bulk %>%
+    group_by(Var2, Clt, Stage, Var1) %>%
+    mutate(value = mean(value)) %>%
+    group_by(Var2, Clt, Stage) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var2, value, Clt, Stage) %>%
+    unique()
+
+temp <- reshape2::dcast(temp, Var2~Stage + Clt, fun.aggregate = mean, value.var = "value" )
+```
+
+
+### make violin plot
+```{r}
+target_genes <- c(
+    "PDCD1", "CD28", "CTLA4",
+    "ICOS", "BTLA", "LAG3",
+    "TNFRSF9", "TNFRSF4",
+    "CD27", "CD40LG", "HAVCR2",
+    "GZMA", "GZMB", "GZMM", 
+    "GZMH", "GZMK", "SIGLEC15"
+)
+
+```
+
+
+```{r}
+format_expr_by_mean_for_heatmap <- function(object, group.by, genes.use=NULL) {
+    if (is.null(genes.use)) {
+        genes.use = rownames(object@scale.data)
+    }
+    
+    expr <- reshape2::melt(as.matrix(object@scale.data[genes.use, ]))
+    expr$group = object@meta.data[expr$Var2, group.by]
+    
+    expr <- expr %>% 
+        group_by(Var1, group) %>%
+        mutate(value = mean(value)) %>%
+        dplyr::select(Var1, group, value) %>%
+        unique()
+    
+    expr <- reshape2::dcast(expr, Var1~group, fun.aggregate = mean, value.var = "value")
+    rownames(expr) <- expr$Var1
+
+    return(expr[, colnames(expr) != "Var1"])
+}
+
+
+
+# gene_drug_lusc <- gene_drug[!gene_drug %in% c("KDR", "EFCAB13")]
+
+expr <- format_expr_by_mean_for_heatmap(all_obj, group.by = "ident", genes.use = target_genes)
+# colnames(expr) <- sapply(colnames(expr), function(x) {
+#     renames <- c(
+#         "LUAD"="LUAD (n=21)",
+#         "LUSC"="LUSC (n=2428)",
+#         "LUAD_Normal"="Norm. LUAD (n=5)",
+#         "LUSC_Normal"="Norm. LUSC (n=1) "
+#     )
+#     
+#     renames[[x]]
+# })
+```
+
+
+```{r fig.height=12, fig.width=15}
+pdf(here("gene_drug_vln/heatmap_disease_normal.pdf"), width = 15, height = 15)
+Heatmap(
+    as.matrix(expr),
+    col = colorRamp2(c(-1, 0, 1), c("blue", "white", "red")),
+    heatmap_legend_param = list(
+        title = "Mean expr.",
+        labels_gp = gpar(fontsize = labels_size),
+        title_gp = gpar(fontsize = title_size)
+    ),
+    column_names_rot = 0,
+    column_names_centered = T,
+    column_names_gp = gpar(fontsize = 20),
+    row_names_gp = gpar(fontsize = 15)
+)
+dev.off()
+```
+
+```{r fig.height=12, fig.width=8}
+
+expr_clt <- format_expr_by_mean_for_heatmap(all_obj, group.by = "ident", genes.use = target_genes)
+
+pdf(paste0(root.dir, "Basal_gene_drug_heatmap_clusters.pdf"), width = 8, height = 6)
+Heatmap(
+    as.matrix(expr_clt),
+    col = colorRamp2(c(-1, 0, 1), c("blue", "white", "red")),
+    heatmap_legend_param = list(
+        title = "Mean expr.",
+        # legend_height = unit(3, "cm"),
+        # legend_width = unit(10, "cm"),
+        labels_gp = gpar(fontsize = 20),
+        title_gp = gpar(fontsize = 25),
+        legend_height = unit(10, "cm"),
+        grid_width = unit(1, "cm")
+    ),
+    column_names_rot = 0,
+    column_names_centered = T,
+    column_names_gp = gpar(fontsize = 20),
+    row_names_gp = gpar(fontsize = 15)
+)
+dev.off()
+```
+
+```{r fig.height=20, fig.width=16}
+library(ggpubr)
+
+expr <- melt(as.matrix(obj@raw.data[target_genes, ]))
+expr$ident <- obj@meta.data[expr$Var2, "res.0.8"]
+
+ggviolin(
+    data = expr,
+    x = "ident",
+    y = "value"
+) + facet_wrap(.~Var1, scales = "free_y") +
+    scale_y_log10()
+```
+
+
+
+
+
+##### First Round
+```{r}
+read_protein <- function(path) {
+    
+    wb <- loadWorkbook(path)
+    sheets <- wb$sheet_names
+    
+    res = NULL
+    data <- read.xlsx(wb, sheet = which(sheets == "SNR532"))
+    data <- data[, !colnames(data) %in% c("Block", "Column", "Row")]
+    # data[, 3:ncol(data)] <- scale(data[, 3:ncol(data)])
+    data <- reshape2::melt(data, id.vars = c("Name", "ID"))
+    data$source = "SNR532"
+    res = rbind(data, res)
+    
+    data <- read.xlsx(wb, sheet = which(sheets == "SNR635"))
+    data <- data[, !colnames(data) %in% c("Block", "Column", "Row")]
+    # data[, 3:ncol(data)] <- scale(data[, 3:ncol(data)])
+    data <- reshape2::melt(data, id.vars = c("Name", "ID"))
+    data$source = "SNR635"
+    
+    res = rbind(res, data)
+    
+    res$variable = as.character(res$variable)
+    res$variable[str_detect(res$variable, "^LA")] <- "LUAD"
+    res$variable[str_detect(res$variable, "^LS")] <- "LUSC"
+    res$variable[str_detect(res$variable, "^NC")] <- "Normal"
+    res <- res[res$variable %in% c("LUAD", "LUSC", "Normal"), ]
+    
+    return(res)
+}
+
+
+data1 <- read_protein(here("../../../10_protein/1_round.xlsx"))
+data2 <- read_protein(here("../../../10_protein/2_round.xlsx"))
+```
+
+
+
+### protein heatmap
+```{r fig.height=12, fig.width=8}
+temp = data1[data1$Name %in% target_genes & data1$source == "SNR532", ]
+
+temp = reshape2::dcast(temp, Name~variable, value.var = "value", fun.aggregate = mean)
+rownames(temp) <- temp$Name
+temp <- temp[, colnames(temp) != "Name"]
+
+# temp <- temp[!rownames(temp) %in% c("CD40LG", "NCAM1", "KDR", "FLT3", "EFCAB13"), ]
+
+col_fun <- colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+pdf(here("gene_drug_vln/heatmap_SNR532_IgG.pdf"), width = 7, height = 6) 
+Heatmap(
+    t(scale(t(temp))),
+    # col = col_fun,
+    column_names_rot = 0,
+    column_names_gp = gpar(fontsize = 20),
+    column_names_centered = T,
+    row_names_gp = gpar(fontsize = 15),
+    heatmap_legend_param = list(
+        title = "Expr",
+        labels_gp = gpar(fontsize = 20),
+        title_gp = gpar(fontsize = 25),
+        legend_height = unit(10, "cm"),
+        grid_width = unit(1, "cm")
+    ),
+    column_title = "IgG",
+    column_title_gp = gpar(fontsize = 30)
+)
+dev.off()
+```
+
+
+```{r fig.height=12, fig.width=8}
+temp = data1[data1$Name %in% target_genes & data1$source == "SNR635", ]
+
+temp = reshape2::dcast(temp, Name~variable, value.var = "value", fun.aggregate = mean)
+rownames(temp) <- temp$Name
+temp <- temp[, colnames(temp) != "Name"]
+
+# temp <- temp[!rownames(temp) %in% c("ENO2"), ]
+
+temp <- t(scale(t(temp)))
+# temp <- melt(as.matrix(temp))
+
+
+col_fun <- colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+
+
+pdf(here("gene_drug_vln/heatmap_SNR635_IgM.pdf"), width = 7, height = 6) 
+Heatmap(
+    temp,
+    col = col_fun,
+    name = "Expr",
+    column_names_rot = 0,
+    column_names_gp = gpar(fontsize = 20),
+    column_names_centered = T,
+    row_names_gp = gpar(fontsize = 15),
+    # heatmap_legend_param = list(
+    #     title = "log10(expr)",
+    #     labels_gp = gpar(fontsize = 20),
+    #     title_gp = gpar(fontsize = 25),
+    #     legend_height = unit(10, "cm"),
+    #     grid_width = unit(1, "cm")
+    # ),
+    column_title = "IgM",
+    column_title_gp = gpar(fontsize = 30)
+)
+dev.off()
+```
+
+
+```{r}
+library(bigSCale)
+obj <- readRDS("03_each_cells/LUSC/Basal/seurat.rds")
+cluster <- read.xlsx("03_each_cells/LUSC/Basal/markers_by_cluster.xlsx", rowNames=T)
+
+# cluster <- cluster[cluster$avg_logFC > 0.25 & cluster$p_val_adj < 0.05, ]
+
+
+msig <- tmodImportMSigDB("project_scripts/12_final_plots/msigdb_v6.2.xml")
+registerDoMC(10)
+network <- foreach(i = as.character(unique(cluster$ident)), .errorhandling = "pass") %dopar% {
+    print(i)
+    cells = rownames(obj@meta.data)[as.character(obj@meta.data$res.0.8) == i]
+    
+    res = list()
+    res[["ident"]] = i
+    
+    res[["graph"]] = compute.network(
+        expr.data = obj@raw.data[, cells],
+        gene.names = rownames(obj@raw.data),
+        quantile.p = 0.995
+    )
+    
+    temp <- res[["graph"]]$centrality
+    temp <- temp[order(temp$PAGErank, decreasing = T), ]
+    res[["cerno"]] = tmodCERNOtest(rownames(temp), mset = msig)
+    return(res)
+}
+
+saveRDS(network, "03_each_cells/LUSC/Basal/clusters")
+```
+
+
+```{r}
+
+cerno = NULL
+for(i in network) {
+    temp <- i[["cerno"]]
+    temp$ident = i[["ident"]]
+    cerno = rbind(cerno, temp)
+}
+
+
+cerno <- cerno[cerno$adj.P.Val < 0.05 & cerno$AUC > 0.99, ]
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

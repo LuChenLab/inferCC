@@ -1,0 +1,1153 @@
+---
+title: "ATII_gene_module"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "LungCancer10x/03_each_cells/ATII_Basal/"
+knitr::opts_knit$set(root.dir = root.dir)
+```
+
+
+```{R include=FALSE}
+options(stringsAsFactors = F)
+library(ComplexHeatmap)
+library(circlize)
+library(stringr)
+library(wesanderson)
+library(dplyr)
+library(reshape2)
+library(Seurat)
+library(doMC)
+library(openxlsx)
+```
+
+
+
+```{R}
+colors = list(
+    Stage = c(
+        "I"="#65A9A3", 
+        "II"="#4A933E", 
+        "III"="#EC7A21", 
+        "IV"="#D73F47", 
+        "LUAD_Normal"="#FECC1B", 
+        "LUSC_Normal"="#778793"
+    ),
+    Disease = c(
+        "AD" = "#0084D1", 
+        "NL(AD)"="#FECC1B", 
+        "NL(AD"="#778793", 
+        "Normal"="#73BDFF", 
+        "NL(SC)"="#778793", 
+        "SC"="#A0C807",
+        "LC"="#91822B",
+        "NL(LC)"="#EDCAB0",
+        "UPS"="#EBAAA4",
+        "NL(UPS)"="#B43018"
+    ),
+    Batch = c("1"="#E9B0B7", "2"="#90D0E0", "3"="#769982"),
+    Cell = c(
+        "ATII"="#FF0000",
+        "Basal"="#F2AD00",
+        "CD4"="#F98400",
+        "CD8"="#5BBCD6",
+        "Cilia"="#85D4E3",
+        "Club"="#F4B5BD",
+        "DC"="#9C964A",
+        "EC"="#CDC08C",
+        "Epi"="#FAD77B",
+        "Fib"="#ECCBAE",
+        "Mast"="#D69C4E",
+        "Mo"="#ABDDDE",
+        "NK"="#000000",
+        "NE"="#F3DF6C",
+        "Tregs"="#CEAB07",
+        "Mφ"="#046C9A"
+    )
+)
+
+cluster_cols = c(
+    as.character(wes_palette("Zissou1")),
+    as.character(wes_palette("Royal2")),
+    as.character(wes_palette("Royal1")),
+    as.character(wes_palette("Darjeeling2")),
+    as.character(wes_palette("Darjeeling1")),
+    wes_palette("BottleRocket2"),
+    wes_palette("Rushmore1")
+)
+
+
+
+make_stage_module_heatmap <- function(
+    data,
+    meta, 
+    module, 
+    col_fun = NULL, 
+    labels_size=15, 
+    title_size = 20, 
+    cluster=F, 
+    do.return=F, 
+    show_row_names = F, 
+    order.by.patient = T,
+    mark_genes = NULL,
+    cluster_row = T,
+    row_split = NULL,
+    column_title = ""
+) {
+    if (is.null(col_fun)) {
+        col_fun = colorRamp2(c(-5, 0, 5), c("blue", "white", "red"))
+    } 
+    
+    meta$Disease <- as.character(meta$Disease)
+    meta$Disease[meta$Disease == "LUAD"] <- "AD"
+    meta$Disease[meta$Disease == "LUSC"] <- "SC"
+    meta$Disease[meta$Disease == "LUAD_Normal"] <- "NL(AD)"
+    meta$Disease[meta$Disease == "LUSC_Normal"] <- "NL(SC)"
+    meta$Disease[meta$Disease == "Pleiomorphic Normal"] <- "NL(UPS)"
+    meta$Disease[meta$Disease == "Pleiomorphic"] <- "UPS"
+    meta$Disease[meta$Disease == "LULC"] <- "LC"
+    meta$Disease[meta$Disease == "LULC_Normal"] <- "NL(LC)"
+    
+    patient_colors = cluster_cols[1:length(unique(meta$PatientID))]
+    names(patient_colors) <- sort(as.character(unique(meta$PatientID)))
+    
+    if(order.by.patient) {
+        meta <- meta[order(meta$Disease, meta$Stage, meta$PatientID), c("Stage", "Disease", "PatientID")]
+        
+        anno_legend_param = list(
+            Stage=list(
+                direction = "horizontal", 
+                nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            ),
+            PatientID=list(
+                direction = "horizontal",
+                nrow = 4,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            ),
+            Disease=list(
+                direction = "horizontal",
+                nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            )
+        )
+    } else {
+        meta <- meta[order(meta$Disease, meta$Stage), c("Stage", "Disease")]
+        
+        anno_legend_param = list(
+            Stage=list(
+                direction = "horizontal", 
+                nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            ),
+            Disease=list(
+                direction = "horizontal",
+                nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            )
+        )
+    }
+
+   
+    # top annotation
+    ta = HeatmapAnnotation(
+        df = meta,
+        col = list(
+            Stage =  colors[["Stage"]],
+            PatientID = patient_colors,
+            Disease = colors[["Disease"]]
+        ),
+        show_legend = T,
+        show_annotation_name = T,
+        annotation_legend_param = anno_legend_param
+    )
+    
+    if(!is.null(mark_genes)) {
+        la = rowAnnotation(
+            foo = anno_mark(
+                at = which(module %in% mark_genes),
+                labels = module[module %in% mark_genes],
+                which = "row",
+                side = "left"
+            ),
+             show_legend = F,
+            show_annotation_name = F
+        )
+    } else {
+        la = NULL
+    }
+    
+    
+    h <- Heatmap(
+        name = "Expr",
+        data[as.character(module), rownames(meta)],
+        cluster_rows = cluster_row,
+        cluster_columns = F,
+        show_column_names = F,
+        show_row_names = show_row_names,
+        col = col_fun,
+        top_annotation = ta,
+        left_annotation = la, 
+        column_split = paste(meta$Disease, meta$Stage),
+        row_split = row_split,
+        border = T,
+        column_title = column_title,
+        column_title_gp = gpar(fontsize=ifelse(column_title == "", 0, 20)),
+        row_title_gp = gpar(fontsize = 0),
+        heatmap_legend_param = list(
+            direction = "horizontal",
+            labels_gp = gpar(fontsize = labels_size),
+            title_gp = gpar(fontsize = title_size)
+        )
+    )
+    
+    if(do.return) {
+        return(h)
+    } else {
+        draw(
+            h, 
+            column_title_gp = gpar(fontsize = 20),
+            merge_legend = TRUE, 
+            heatmap_legend_side = "bottom", 
+            annotation_legend_side = "bottom"
+        )
+    }
+}
+
+
+
+make_module_heatmap <- function(obj, res, cells.use = NULL, col_fun = NULL, order_by_patient = TRUE, gene_mark = NULL) {
+    labels_size = 12
+    title_size = 15
+    meta = obj@meta.data
+    
+    if(!is.null(cells.use)) {
+        meta <- meta[cells.use, ]
+    }
+    
+    if (order_by_patient) {
+        meta = meta[order(meta$Stage, meta$PatientID), ]
+        
+        df = data.frame(
+            Stage = meta$Stage,
+            PatientID = meta$PatientID
+        )
+        
+        legend_param = list(
+            Stage=list(
+                direction = "horizontal", 
+                nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            ),
+            PatientID=list(
+                direction = "horizontal",
+                nrow = 4,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            )
+        )
+    } else {
+        meta = meta[sample(1:nrow(meta)), ]
+        meta = meta[order(meta$Stage), ]
+        
+        df = data.frame(
+            Stage = meta$Stage
+        )
+        
+        legend_param = list(
+            Stage=list(
+                direction = "horizontal", 
+                nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            )
+        )
+    }
+    
+    stage_colors <- c(
+        "I"="#65A9A3", 
+        "II"="#4A933E",
+        "III"="#EC7A21",
+        "IV"="#D73F47"
+    )
+    
+    cluster_cols = c(
+        as.character(wes_palette("Zissou1")),
+        as.character(wes_palette("Royal2")),
+        as.character(wes_palette("Royal1")),
+        as.character(wes_palette("Darjeeling2")),
+        as.character(wes_palette("Darjeeling1"))
+    )
+    
+    patient_colors = cluster_cols[1:length(unique(obj@meta.data$PatientID))]
+    names(patient_colors) <- unique(obj@meta.data$PatientID)
+    
+    # top annotation
+    ta = HeatmapAnnotation(
+        df = df,
+        col = list(
+            Stage =  stage_colors,
+            PatientID = patient_colors
+        ),
+        show_legend = T,
+        show_annotation_name = T,
+        annotation_legend_param = legend_param
+    )
+    
+    
+    module_colors = wes_palette("GrandBudapest2", length(unique(res$Clt)), type = "continuous")
+    names(module_colors) <- unique(res$Clt)
+    
+    ra = NULL
+    if (!is.null(gene_mark)) {
+        gene_mark = gene_mark[gene_mark %in% res$gene]
+        
+        at = which(as.character(res$gene) %in% gene_mark)
+        
+        ra = rowAnnotation(
+            gene = anno_mark(
+                at = at,
+                labels = as.character(res$gene[at]),
+                which = "row",
+                side = "right"
+            )
+        )
+    }
+    
+    # left annotation
+    la = rowAnnotation(
+        Module = res$Clt,
+        col = list(
+            Module = module_colors
+        ),
+        show_legend = T,
+        show_annotation_name = T,
+        annotation_name_rot = 0,
+        annotation_legend_param=list(
+            Module=list(
+                direction = "horizontal", 
+                nrow = 1,
+                labels_gp = gpar(fontsize = labels_size),
+                title_gp = gpar(fontsize = title_size)
+            )
+        )
+    )
+    
+    
+    if (is.null(col_fun)) {
+        col_fun = colorRamp2(c(-3, 0, 3), c("purple", "black", "yellow"))
+    }
+    
+    h <- Heatmap(
+        name = "Expr",
+        obj@scale.data[as.character(res$gene), as.character(rownames(meta))],
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        show_row_names = F,
+        col = col_fun,
+        top_annotation = ta,
+        left_annotation = la,
+        right_annotation = ra,
+        border = T,
+        column_title_gp = gpar(fontsize=0),
+        row_title_gp = gpar(fontsize = 0),
+        column_split = meta$Stage,
+        row_split = res$Clt,
+        heatmap_legend_param = list(
+            direction = "horizontal",
+            labels_gp = gpar(fontsize = labels_size),
+            title_gp = gpar(fontsize = title_size)
+        )
+    )
+    return(h)
+}
+
+
+
+find_markers <- function(obj, n.cores = 10) {
+    registerDoMC(n.cores)
+    res = foreach (i = unique(obj@meta.data$ident), .combine = "rbind", .errorhandling = "pass") %dopar% {
+        ident.1 = rownames(obj@meta.data)[obj@meta.data$ident == i]
+        ident.2 = rownames(obj@meta.data)[obj@meta.data$ident != i]
+        
+        if (length(ident.1) > 3 && length(ident.2) > 3) {
+            temp = FindMarkers(obj, ident.1, ident.2, logfc.threshold = 0)
+            temp$ident = i
+            temp$gene = rownames(temp)
+            return(temp)
+        }
+        return(NULL)
+    }
+    
+    return (res)
+}
+
+
+calculate_DEGs_on_random_select <- function(meta_data, scale_data, raw_data, seeds = 1:0, n = 15, n.cores = 10, avg_logFC = 0.25, p_adj_val = 0.05, pct.1 = 0.5) {
+    registerDoMC(n.cores)
+    res = foreach (s = seeds, .combine = "rbind") %dopar% {
+        set.seed(s)
+        meta_data$Cells = rownames(meta_data)
+
+        sel_cells = meta_data %>%
+            # filter(PatientID != "PA11") %>%
+            group_by(Disease, Stage) %>%
+            sample_n(n, replace = F) %>%
+            as.data.frame()
+
+        temp_meta = meta_data[as.character(sel_cells$Cells),]
+        temp_meta$ident = paste(temp_meta$Disease, temp_meta$Stage, sep = "-")
+        temp_obj <- CreateSeuratObject(raw_data[, as.character(sel_cells$Cells)], meta.data = temp_meta)
+
+        temp_obj@scale.data <- scale_data[, as.character(sel_cells$Cells)]
+        temp_obj@data <- temp_obj@scale.data
+        new_markers <- NULL
+        for(i in unique(temp_meta$ident)) {
+            ident.1 = rownames(temp_obj@meta.data)[temp_obj@meta.data$ident == i]
+            ident.2 = rownames(temp_obj@meta.data)[temp_obj@meta.data$ident != i]
+
+            temp = FindMarkers(temp_obj, ident.1 = ident.1, ident.2 = ident.2)
+            temp$gene = rownames(temp)
+            temp$ident = i
+            new_markers = rbind(new_markers, temp)
+        }
+        new_markers = new_markers[new_markers$avg_logFC > avg_logFC & new_markers$p_val_adj < p_adj_val & new_markers$pct.1 > pct.1, c("ident", "gene", "avg_logFC")]
+        return(new_markers)
+    }
+
+    res <- res %>%
+        group_by(ident, gene) %>%
+        mutate(avg_logFC = mean(avg_logFC)) %>%
+        group_by(ident, gene) %>%
+        add_tally() %>%
+        mutate(freq = n / length(seeds)) %>%
+        dplyr::select(ident, gene, freq, avg_logFC) %>%
+        group_by(gene) %>%
+        add_tally() %>%
+        as.data.frame()
+
+    set.seed(1)
+    return(res)
+}
+
+
+get_seurat_obj <- function(expr, meta, cell) {
+    obj <- CreateSeuratObject(
+        expr[, rownames(meta)[as.character(meta$cell_short) == cell]],
+        meta.data = meta
+    )
+    
+    mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@raw.data), value = TRUE)
+    percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+    
+    # AddMetaData adds columns to object@meta.data, and is a great place to
+    # stash QC stats
+    obj <- AddMetaData(object = obj, metadata = percent.mito, col.name = "percent.mito")
+     
+    obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+    obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+    obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+    
+    obj
+}
+```
+
+
+### Format 
+```{r}
+meta <- read.csv(paste0(root.dir, "../../02_rds/meta_after_singleR.csv"), row.names = 1, stringsAsFactors = F)
+
+nm_meta = read.xlsx(paste0(root.dir, "../../02_rds/NM_meta.xlsx"))
+rownames(nm_meta) <- nm_meta$SampleID
+
+meta$Disease[meta$SampleID %in% nm_meta$SampleID] = nm_meta[meta$SampleID[meta$SampleID %in% nm_meta$SampleID], "Disease"]
+meta$Stage[meta$SampleID %in% nm_meta$SampleID] = nm_meta[meta$SampleID[meta$SampleID %in% nm_meta$SampleID], "Stage"]
+
+expr <- readRDS(paste0(root.dir, "../../02_rds/all_cell_expr.rds"))
+```
+
+```{r}
+atii <- get_seurat_obj(expr, meta, "ATII")
+basal <- get_seurat_obj(expr, meta, "Basal")
+```
+
+```{R}
+saveRDS(atii, paste0(root.dir, "all_atii_cells.rds"))
+saveRDS(basal, paste0(root.dir, "all_basal_cells.rds"))
+```
+
+## Calculate gene moudle of ATII
+```{r}
+temp_meta = atii@meta.data
+temp_meta$ident = paste(temp_meta$Disease, temp_meta$Stage, sep = "-")
+res_markers <- calculate_DEGs_on_random_select(
+    temp_meta, 
+    atii@scale.data,
+    atii@raw.data, 
+    seeds = 1:200, 
+    pct.1 = 0.25, 
+    p_adj_val = 0.05, 
+    avg_logFC = 0.25, 
+    n.cores = 20
+)
+
+saveRDS(res_markers, paste0(root.dir, "atii_all_markers1.rds"))
+```
+
+
+```{r eval=FALSE, fig.height=8, fig.width=10, include=FALSE}
+atii <- readRDS(paste0(root.dir, "all_atii_cells.rds"))
+set.seed(42)
+meta_data = atii@meta.data
+meta_data$Cells = rownames(meta_data)
+
+sel_cells = meta_data[meta_data$PatientID != "PA11", ] %>%
+    group_by(Disease, Stage) %>%
+    sample_n(15, replace = F) %>%
+    as.data.frame()
+```
+
+
+```{r fig.height=8, fig.width=10}
+res_markers <- readRDS(paste0(root.dir, "atii_all_markers.rds"))
+
+atii@meta.data$ident = paste(atii@meta.data$Disease, atii@meta.data$Stage, sep = "-")
+# res_markers <- find_markers(atii, n.cores = 20)
+
+cluster_markers <- read.csv(paste0(root.dir, "ATII_all_cells_cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+
+temp <- cluster_markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(10, wt=avg_logFC)
+
+temp_markers = unique(res_markers[, 1:2])
+temp_markers = temp_markers[order(temp_markers[,1], temp_markers[,2]), ]
+temp_markers = temp_markers[str_detect(temp_markers$ident, "^LUAD-"), ]
+temp_markers = temp_markers[temp_markers$gene %in% names(table(temp_markers$gene))[table(temp_markers$gene) == 1], ]
+
+mfuzz <- read.csv(paste0(root.dir, "ATII_mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+filtered_markers = NULL
+for (i in unique(temp_markers$ident)) {
+    j = paste0("M.", str_split(i, "-")[[1]][2])
+    
+    temp = temp_markers[temp_markers$ident == i, ]
+    
+    if (j %in% unique(mfuzz$Clt)) {
+        temp = temp[temp$gene %in% mfuzz$gene[mfuzz$Clt == j], ]
+    }
+    
+    filtered_markers <- rbind(filtered_markers, temp)
+}
+
+
+filtered_markers <- rbind(
+    filtered_markers, 
+    temp_markers[temp_markers$ident == "LUAD-II", ]
+)
+
+
+pdf(paste0(root.dir, "ATII_markers.pdf"), width = 10, height = 8)
+make_stage_module_heatmap(
+    as.matrix(atii@scale.data[, as.character(sel_cells$Cells)]), 
+    atii@meta.data[as.character(sel_cells$Cells), ], 
+    filtered_markers$gene,
+    order.by.patient = F,
+    col_fun = colorRamp2(c(-1, 0, 1), c("purple", "black", "yellow")),
+    mark_genes = mfuzz$gene,
+    cluster_row = F,
+    row_split = filtered_markers$ident
+)
+
+dev.off()
+```
+
+
+### Test on sample
+```{r fig.height=8, fig.width=10}
+test_on_sampled_cells <- function(data, meta, markers, seeds = 1:100) {
+    
+    for(i in seeds) {
+        set.seed(i)
+        meta_data$Cells = rownames(meta_data)
+        
+        sel_cells = meta_data %>%
+            filter(PatientID != "PA11") %>%
+            group_by(Disease, Stage) %>%
+            sample_n(15, replace = F) %>%
+            as.data.frame()
+        
+        make_stage_module_heatmap(
+            as.matrix(data[, as.character(sel_cells$Cells)]), 
+            meta[as.character(sel_cells$Cells), ], 
+            markers$gene,
+            order.by.patient = F,
+            col_fun = colorRamp2(c(-4, 0, 4), c("blue", "white", "red")),
+            # mark_genes = new_markers$gene[new_markers$avg_logFC > 0.25 & new_markers$p_val_adj < 0.05 & new_markers$ident == "LUAD-I"],
+            cluster_row = F,
+            row_split = markers$ident,
+            column_title = paste("Seed:", i)
+        )
+    }
+}
+
+test_on_sampled_cells(atii@scale.data, meta_data, res_markers, seeds = 2:20)
+```
+
+
+
+## Similirity between gene expression of all ATII and all Basal
+```{r}
+atii <- readRDS(paste0(root.dir, "all_atii_cells.rds"))
+basal <- readRDS(paste0(root.dir, "all_basal_cells.rds"))
+
+
+expr <- cbind(atii@raw.data, basal@raw.data)
+meta <- rbind(
+    atii@meta.data[intersect(colnames(atii@meta.data), colnames(basal@meta.data))], 
+    basal@meta.data[intersect(colnames(atii@meta.data), colnames(basal@meta.data))]
+)
+
+saveRDS(expr, paste0(root.dir, "all_cells_expr.rds"))
+saveRDS(meta, paste0(root.dir, "all_cells_meta.rds"))
+```
+
+
+## SCTransform (Seurat3)
+```{R}
+library(Seurat)
+
+expr <- readRDS(paste0(root.dir, "all_cells_expr.rds"))
+meta <- readRDS(paste0(root.dir, "all_cells_meta.rds"))
+
+obj <- CreateSeuratObject(counts = expr, project = "pbmc3k", min.cells = 3, min.features = 200, meta.data = meta)
+
+obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^MT-")
+obj <- SCTransform(obj, vars.to.regress = "percent.mt", verbose = FALSE)
+
+saveRDS(obj@assays$SCT@scale.data, paste0(root.dir, "all_cells_sctransform.rds"))
+```
+
+
+### format seurat obj data into 
+```{r}
+format_expr <- function(data, meta, group.by = c("PatientID", "Disease", "Stage", "Batch")) {
+    
+    expr <- as.matrix(data)
+    colnames(expr) <- sapply(as.character(colnames(expr)), function(x) {
+        paste(meta[x, group.by], collapse = "-")
+    })
+    expr <- melt(expr)
+    expr
+}
+```
+
+
+```{r}
+make_corr_heatmap <- function(data) {
+    colors = list(
+        Stage = c(
+            "I"="#65A9A3", 
+            "II"="#4A933E", 
+            "III"="#EC7A21", 
+            "IV"="#D73F47", 
+            "LUAD_Normal"="#FECC1B", 
+            "LUSC_Normal"="#778793"
+        ),
+        Disease = c(
+            "AD" = "#0084D1", 
+            "NL(AD)"="#FECC1B", 
+            "NL(AD"="#778793", 
+            "Normal"="#73BDFF", 
+            "NL(SC)"="#778793", 
+            "SC"="#A0C807",
+            "LC"="#91822B",
+            "NL(LC)"="#EDCAB0",
+            "UPS"="#EBAAA4",
+            "NL(UPS)"="#B43018"
+        ),
+        Batch = c("1"="#E9B0B7", "2"="#90D0E0", "3"="#769982"),
+        Cell = c(
+            "ATII"="#FF0000",
+            "Basal"="#F2AD00",
+            "CD4"="#F98400",
+            "CD8"="#5BBCD6",
+            "Cilia"="#85D4E3",
+            "Club"="#F4B5BD",
+            "DC"="#9C964A",
+            "EC"="#CDC08C",
+            "Epi"="#FAD77B",
+            "Fib"="#ECCBAE",
+            "Mast"="#D69C4E",
+            "Mo"="#ABDDDE",
+            "NK"="#000000",
+            "NE"="#F3DF6C",
+            "Tregs"="#CEAB07",
+            "Mφ"="#046C9A"
+        )
+    )
+    
+    meta = data.frame(
+        Cell = sapply(colnames(data), function(x) { str_split(x, "-")[[1]][1] }),
+        Disease = sapply(colnames(data), function(x) { 
+            x = str_split(x, "-")[[1]][3] 
+            disease = c(
+                "LUAD"="AD",
+                "LUSC"="SC",
+                "LUAD_Normal"="NL(AD)",
+                "LUSC_Normal"="NL(SC)",
+                "LULC"="LC",
+                "LULC_Normal"="NL(LC)",
+                "Pleiomorphic"="UPS",
+                "Pleiomorphic Normal"="NL(UPS)"
+            )
+        
+            as.character(disease[x])
+        }),
+        Stage = sapply(colnames(data), function(x) { str_split(x, "-")[[1]][4] }),
+        Batch = sapply(colnames(data), function(x) { str_split(x, "-")[[1]][5] })
+    )
+    
+    ba <- HeatmapAnnotation(
+        df = meta,
+        col = colors
+    )
+    
+    
+    ra <- rowAnnotation(
+        df = meta,
+        col = colors,
+        show_annotation_name = F,
+        show_legend = F
+    )
+    
+    Heatmap(
+        data,
+        name = "Corr",
+        col = colorRamp2(c(-1, 0, 1), c("blue", "white", "red")),
+        show_column_names = F,
+        show_row_names = F,
+        bottom_annotation = ba,
+        right_annotation = ra,
+        clustering_method_rows = "ward.D",
+        clustering_method_columns = "ward.D"
+    )
+}
+```
+
+
+
+```{r fig.height=10, fig.width=12}
+expr <- readRDS(paste0(root.dir, "all_cells_sctransform.rds"))
+```
+
+```{r fig.height=4, fig.width=6}
+expr1 <- format_expr(expr, meta, group.by = c("cell_short", "PatientID", "Disease", "Stage", "Batch"))
+
+expr1 <- dcast(expr1, Var1~Var2, value.var = "value", fun.aggregate = mean)
+
+rownames(expr1) <- expr1$Var1
+expr1 <- expr1[, colnames(expr1) != "Var1"]
+
+expr_corr <- cor(expr1)
+
+pdf(paste0(root.dir, "ATII_Basal_gene_corr_pearson_all_genes.pdf"), width = 6, height = 4)
+make_corr_heatmap(expr_corr)
+dev.off()
+```
+
+```{r}
+pdf(paste0(root.dir, "ATII_Basal_gene_corr_spearman_all_genes.pdf"), width = 6, height = 4)
+expr_corr <- cor(expr1, method = "spearman")
+make_corr_heatmap(expr_corr)
+dev.off()
+```
+
+
+
+```{r fig.height=10, fig.width=12}
+sds = apply(expr, 1, sd)
+expr1 <- format_expr(expr[names(sds)[sds > summary(sds)[3]], ], meta, group.by = c("cell_short", "PatientID", "Disease", "Stage", "Batch"))
+
+expr1 <- dcast(expr1, Var1~Var2, value.var = "value", fun.aggregate = mean)
+rownames(expr1) <- expr1$Var1
+expr1 <- expr1[, colnames(expr1) != "Var1"]
+
+pdf(paste0(root.dir, "ATII_Basal_gene_corr_pearson.pdf"), width = 6, height = 4)
+expr_corr <- cor(expr1)
+make_corr_heatmap(expr_corr)
+dev.off()
+```
+
+
+```{r fig.height=10, fig.width=12}
+pdf(paste0(root.dir, "ATII_Basal_gene_corr_spearman.pdf"), width = 6, height = 4)
+expr_corr <- cor(expr1, method = "spearman")
+make_corr_heatmap(expr_corr)
+dev.off()
+```
+
+
+```{r}
+# read expression data
+atii <- readRDS(paste0(root.dir, "ATII.rds"))
+basal <- readRDS(paste0(root.dir, "Basal.rds"))
+```
+
+
+
+## Plot mfuzz markers
+```{r fig.height=6, fig.width=8}
+
+all_markers <- readRDS(paste0(root.dir, "atii_all_markers.rds"))
+mfuzz <- read.csv(paste0(root.dir, "ATII_mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+cluster_markers <- read.csv(paste0(root.dir, "ATII_all_cells_cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+
+temp <- cluster_markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(10, wt=avg_logFC)
+
+gene_mark = c(
+    "CYP2B7P", "MUC1",
+    "CKS1B", "H2AFZ", 
+    "LYZ", "SRGN",
+    "FABP5", "SFTPC", "SFTPD",
+    mfuzz$gene[mfuzz$gene %in% temp$gene]
+)
+
+set.seed(1)
+temp <- mfuzz %>%
+    group_by(Clt) %>%
+    top_n(5)
+
+
+gene_mark = unique(c(gene_mark, temp$gene))
+
+
+pdf(paste0(root.dir, "ATII_mfuzz.pdf"), height = 6, width = 8)
+ComplexHeatmap::draw(
+    make_module_heatmap(
+        atii, 
+        mfuzz, 
+        col_fun = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow")),
+        order_by_patient = F,
+        gene_mark = gene_mark
+    ), 
+    column_title = "",
+    column_title_gp = gpar(fontsize = 20),
+    merge_legend = TRUE, 
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom"
+)
+dev.off()
+```
+
+
+```{r fig.height=6, fig.width=8}
+cluster_markers <- read.csv(paste0(root.dir, "Basal_all_cells_cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+markers <- read.csv(paste0(root.dir, "Basal_mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+temp <- cluster_markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(10, wt=avg_logFC)
+
+gene_mark = c(
+    "CYP2B7P", "MUC1",
+    "CKS1B", "H2AFZ", 
+    "LYZ", "SRGN",
+    "FABP5", "SFTPC", "SFTPD",
+    markers$gene[markers$gene %in% temp$gene]
+)
+
+set.seed(1)
+temp <- markers %>%
+    group_by(Clt) %>%
+    top_n(5)
+
+gene_mark = unique(c(gene_mark, temp$gene))
+
+
+pdf(paste0(root.dir, "Basal_mfuzz.pdf"), height = 6, width = 8)
+ComplexHeatmap::draw(
+    make_module_heatmap(
+        basal, 
+        markers[order(as.character(markers$Clt)), ], 
+        col_fun = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow")),
+        order_by_patient = F,
+        gene_mark = gene_mark
+    ), 
+    column_title = "",
+    column_title_gp = gpar(fontsize = 20),
+    merge_legend = TRUE, 
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom"
+)
+dev.off()
+```
+
+```{r fig.height=8, fig.width=10}
+make_stage_module_heatmap(
+    as.matrix(sct_data[, rownames(meta_data)[meta_data$PatientID != "PA11"]]), 
+    meta_data[meta_data$PatientID != "PA11", ], 
+    unique(new_markers$gene[new_markers$avg_logFC > 0.25 & new_markers$p_val_adj < 0.05]),
+    order.by.patient = F,
+    col_fun = colorRamp2(c(-3, 0, 1), c("blue", "white", "red")),
+    # mark_genes = new_markers$gene[new_markers$avg_logFC > 0.25 & new_markers$p_val_adj < 0.05 & new_markers$ident == "LUAD-I"],
+    cluster_row = F,
+    row_split = new_markers$ident[new_markers$avg_logFC > 0.25 & new_markers$p_val_adj < 0.05]
+)
+```
+
+
+## Cluster markers
+```{r}
+atii <- readRDS(paste0(root.dir, "total_atii.rds"))
+basal <- readRDS(paste0(root.dir, "total_basal.rds"))
+```
+
+
+```{r}
+calculate_cluster_perc <- function(obj, seed.range = 1:50) {
+    meta = obj@meta.data
+
+    num = table(meta$Stage)
+    
+    temp <- meta %>%
+        group_by(ident, Stage) %>%
+        add_tally() %>%
+        dplyr::select(ident, Stage, n) %>%
+        unique() %>%
+        as.data.frame()
+    
+    temp$freq <- apply(temp, 1, function(row) {
+        as.numeric(row[3]) / num[[row[2]]]
+    })
+    
+    temp
+}
+```
+
+
+```{r}
+atii_perc <- calculate_cluster_perc(atii)
+
+p <- ggplot(atii_perc, aes(x=factor(ident), y = freq, color = Stage)) + 
+    geom_point() +
+    geom_line(aes(x=ident, y = freq, color = Stage)) +
+    scale_color_manual(values = c(
+        "I"="#65A9A3", 
+        "II"="#4A933E",
+        "III"="#EC7A21",
+        "IV"="#D73F47"
+    )) +
+    labs(x = "", y = "", color = "") +
+    theme_bw() +
+    theme(
+        axis.text = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.position = c(0.9, 0.8)
+    )
+p
+ggsave(
+    filename = paste0(root.dir, "ATII_all_stage_violin.pdf"),
+    plot = p,
+    width = 3,
+    height = 3
+)
+```
+
+```{r}
+atii_markers <- find_markers(obj, 20)
+
+basal@meta.data$ident <- as.numeric(basal@meta.data$res.0.1) + 1
+basal_markers <- find_markers(basal, 20)
+```
+
+```{r}
+write.csv(atii_markers, paste0(root.dir, "ATII_all_cells_cluster_markers.csv"))
+write.csv(basal_markers, paste0(root.dir, "Basal_all_cells_cluster_markers.csv"))
+```
+
+---
+
+### Compare different markers
+```{r}
+all_markers <- readRDS(paste0(root.dir, "atii_all_markers.rds"))
+mfuzz <- read.csv(paste0(root.dir, "ATII_mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+cluster_markers <- read.csv(paste0(root.dir, "ATII_all_cells_cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+```{r fig.height=12, fig.width=8}
+obj <- readRDS(paste0(root.dir, "total_atii.rds"))
+obj@meta.data$ident = as.numeric(obj@meta.data$res.0.3) + 1
+
+temp <- cluster_markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(10, wt=avg_logFC)
+
+
+cells_order = rownames(obj@meta.data)[order(as.numeric(obj@meta.data$ident))]
+
+ccls <- cluster_cols[1:length(unique(obj@meta.data$ident))]
+names(ccls) <- unique(obj@meta.data$ident)
+
+ta = HeatmapAnnotation(
+    Cluster = obj@meta.data$ident[order(as.numeric(obj@meta.data$ident))],
+    col = list(
+        Cluster = ccls
+    ),
+    show_annotation_name = F,
+    show_legend = F
+)
+
+
+# pdf(paste0(root.dir, "ATII_cluster_markers_heatmap.pdf"), width = 6, height = 8)
+Heatmap(
+    name = "Expr",
+    obj@scale.data[temp$gene, cells_order],
+    cluster_rows = F,
+    cluster_columns = F,
+    show_row_names = T,
+    show_column_names = F,
+    top_annotation = ta,
+    column_split = obj@meta.data$ident[order(as.numeric(obj@meta.data$ident))],
+    row_split = temp$ident,
+    heatmap_legend_param = list(
+        labels_gp = gpar(fontsize = 15),
+        title_gp = gpar(fontsize = 15)
+    ),
+    col = colorRamp2(c(-2, 0, 2), c("purple", "black", "yellow"))
+)
+# dev.off()
+```
+
+
+```{r}
+sort(temp$gene[temp$gene %in% all_markers$gene])
+```
+
+```{r}
+sort(temp$gene[temp$gene %in% mfuzz$gene])
+```
+
+```{r fig.height=8, fig.width=12}
+lt = list()
+
+# format all markers
+for (i in unique(all_markers$ident[str_detect(all_markers$ident, "^LUAD-")])) {
+    lt[[i]] <- as.character(all_markers$gene[all_markers$ident == i])
+}
+
+# format mfuzz
+for (i in unique(mfuzz$Clt)) {
+    lt[[i]] <- as.character(mfuzz$gene[mfuzz$Clt == i])
+}
+
+# format cluster markers
+for (i in c(1, 2, 3, 4)) {
+    lt[[paste("Cluster", i)]] <- as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == i])
+}
+
+
+# "I"="#65A9A3", 
+# "II"="#4A933E", 
+# "III"="#EC7A21", 
+# "IV"="#D73F47",
+
+
+library(UpSetR)
+upset(
+    fromList(lt), 
+    order.by = "freq", 
+    sets = names(lt),
+    queries = list(
+        # Cluster 1 and Stage I
+        list(query = intersects,params = list("Cluster 1", "LUAD-I"),color = "#65A9A3",active = T,query.name = "C1 I"),
+        list(query = intersects,params = list("Cluster 1", "M.I"),color = "#65A9A3",active = T,query.name = "C1 MI"),
+        list(query = intersects,params = list("Cluster 1", "M.I", "LUAD-I"),color = "#65A9A3",active = T,query.name = "C1 MI I"),
+
+        # Cluster 2 and Stage III
+        list(query = intersects,params = list("Cluster 2", "LUAD-III"),color = "#4A933E",active = T,query.name = "C2 II"),
+        list(query = intersects, params = list("Cluster 2", "M.II"),color = "#4A933E",active = T,query.name = "C2 MII"),
+
+        # Cluster 3 and Stage III, IV
+        list(query = intersects,params = list("Cluster 3", "LUAD-III"),color = "#EC7A21", active = T,query.name = "C3 III"),
+        list(query = intersects,params = list("Cluster 3", "M.IV"),color = "#D73F47",active = T,query.name = "C3 IV"),
+
+        # Cluster 5 and Stage III
+        list(query = intersects,params = list("Cluster 5", "Cluster 3"),color = "#EC7A21",active = T,query.name = "C3 C5"),
+        list(query = intersects,params = list("Cluster 5", "Cluster 3", "LUAD-III"),color = "#EC7A21",active = T,query.name = "C3 C5 III"),
+        list(query = intersects,params = list("Cluster 5", "LUAD-III"),color = "#EC7A21",active = T,query.name = "C5 III")
+    )
+)
+```
+
+## Seletect ATII markers
+```{r}
+stageI = Reduce(intersect, list(
+    as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == 1]),
+     mfuzz$gene[mfuzz$Clt == "M.I"]
+))
+
+stageII = Reduce(intersect, list(
+    as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == 2]),
+    mfuzz$gene[mfuzz$Clt == "M.II"]
+))
+
+stageIII = Reduce(intersect, list(
+    as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == 3]),
+    as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == 5]),
+    all_markers$gene[all_markers$ident == "LUAD-III"]
+))
+
+stageIII = Reduce(intersect, list(
+    as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == 3]),
+    as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == 5]),
+    all_markers$gene[all_markers$ident == "LUAD-III"]
+))
+
+stageIV = c(
+    intersect(
+        as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == 3]), 
+        all_markers$gene[all_markers$ident == "LUAD-IV"]
+    ),
+    intersect(
+        as.character(cluster_markers$gene[cluster_markers$p_val_adj < 0.05 & cluster_markers$avg_logFC > 0.25 & cluster_markers$ident == 3]),
+        mfuzz$gene[mfuzz$Clt == "M.IV"]
+    )
+)
+
+markers <- data.frame(
+    ident = c(rep("I", length(stageI)), rep("II", length(stageII)), rep("III", length(stageIII)), rep("IV", length(stageIV))),
+    gene = c(stageI, stageII, stageIII, stageIV)
+)
+
+
+make_stage_module_heatmap(
+    as.matrix(atii@scale.data[, as.character(sel_cells$Cells)]), 
+    atii@meta.data[as.character(sel_cells$Cells), ], 
+    markers$gene,
+    order.by.patient = F,
+    col_fun = colorRamp2(c(-1, 0, 1), c("purple", "black", "yellow")),
+    # mark_genes = c("SCGB3A2"),
+    cluster_row = F,
+    row_split = markers$ident
+)
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

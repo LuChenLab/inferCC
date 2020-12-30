@@ -1,0 +1,1171 @@
+---
+title: "GSEA (between cancer and normal)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "LungCancer10x/03_each_cells/Batch/"
+```
+
+```{r include=FALSE}
+library(clusterProfiler)
+library(DOSE)
+library(openxlsx)
+library(doMC)
+library(enrichplot)
+library(org.Hs.eg.db)
+```
+
+
+```{r}
+# c5 <- read.gmt(paste0(root.dir, "../../c5.all.v7.0.symbols.gmt"))
+# msig <- read.gmt(paste0(root.dir, "../../msigdb.v7.0.symbols.gmt"))
+```
+
+
+```{r}
+# files = list.files(root.dir, pattern = "LUAD.xlsx", full.names = T, recursive = T)
+# 
+# gsea = list()
+# for(i in files) {
+#     print(i)
+#     cell = basename(dirname(dirname(i)))
+#     markers = read.xlsx(i, rowNames = T)
+#     markers$gene = rownames(markers)
+#     markers <- markers[abs(markers$avg_logFC) > 0.25 & markers$p_val_adj < 0.05, ]
+#     markers <- markers[order(markers$avg_logFC, decreasing = T), ]
+#     
+#     geneList = markers$avg_logFC
+#     names(geneList) <- markers$gene
+#     
+#     gsea[[cell]] = GSEA(sort(geneList, decreasing = T), TERM2GENE=c5)
+# }
+# 
+# 
+# saveRDS(gsea, paste0(root.dir, "gsea_LUAD.rds"))
+# 
+# data = NULL
+# 
+# for (i in names(gsea)) {
+#     temp = as.data.frame(gsea[[i]])
+#     if(nrow(temp) > 0) {
+#         temp$cell = i
+#         data = rbind(data, temp)
+#     }
+#     
+# }
+
+```
+
+```{r}
+# files = list.files(root.dir, pattern = "LUSC.xlsx", full.names = T, recursive = T)
+# 
+# gsea = list()
+# for(i in files) {
+#     print(i)
+#     cell = basename(dirname(dirname(i)))
+#     markers = read.xlsx(i, rowNames = T)
+#     markers$gene = rownames(markers)
+#     markers <- markers[abs(markers$avg_logFC) > 0.25 & markers$p_val_adj < 0.05, ]
+#     markers <- markers[order(markers$avg_logFC, decreasing = T), ]
+#     
+#     geneList = markers$avg_logFC
+#     names(geneList) <- markers$gene
+#     
+#     gsea[[cell]] = GSEA(sort(geneList, decreasing = T), TERM2GENE=c5)
+# }
+# 
+# saveRDS(gsea, paste0(root.dir, "gsea_LUSC.rds"))
+
+```
+
+
+```{r}
+gsea = readRDS(paste0(root.dir, "gsea_LUAD.rds"))
+data2 = NULL
+
+for (i in names(gsea)) {
+    temp = as.data.frame(gsea[[i]])
+    if(nrow(temp) > 0) {
+        temp$cell = i
+        data2 = rbind(data2, temp)
+    }
+    
+}
+
+```
+
+
+
+
+```{r}
+gseaplot2(gsea[["ATII"]], 1)
+```
+
+```{r}
+p <- gseaplot2(gsea[["ATII"]], 2, subplots = 1, pvalue_table = T)
+p
+```
+
+```{r}
+ggplot(p$data, aes(x=x, y = runningScore)) + geom_line()
+```
+
+```{r}
+##' extract gsea result of selected geneSet
+##'
+##'
+##' @title gsInfo
+##' @param object gseaResult object
+##' @param geneSetID gene set ID
+##' @return data.frame
+##' @author Guangchuang Yu
+## @export
+gsInfo <- function(object, geneSetID) {
+    geneList <- object@geneList
+
+    if (is.numeric(geneSetID))
+        geneSetID <- object@result[geneSetID, "ID"]
+
+    geneSet <- object@geneSets[[geneSetID]]
+    exponent <- object@params[["exponent"]]
+    df <- gseaScores(geneList, geneSet, exponent, fortify=TRUE)
+    df$ymin=0
+    df$ymax=0
+    pos <- df$position == 1
+    h <- diff(range(df$runningScore))/20
+    df$ymin[pos] <- -h
+    df$ymax[pos] <- h
+    df$geneList <- geneList
+
+    df$Description <- object@result[geneSetID, "Description"]
+    return(df)
+}
+
+gseaScores <- getFromNamespace("gseaScores", "DOSE")
+
+
+##' plot table
+##'
+##'
+##' @title ggtable
+##' @param d data frame
+##' @param p ggplot object to extract color to color rownames(d), optional
+##' @return ggplot object
+##' @importFrom ggplotify as.ggplot
+##' @export
+##' @author guangchuang yu
+ggtable <- function(d, p = NULL) {
+    as.ggplot(tableGrob2(d, p))
+}
+
+##' @importFrom grid gpar
+##' @importFrom gridExtra tableGrob
+##' @importFrom ggplot2 ggplot_build
+tableGrob2 <- function(d, p = NULL) {
+    d <- d[order(rownames(d)),]
+    tp <- tableGrob(d)
+    if (is.null(p)) {
+        return(tp)
+    }
+    pcol <- unique(ggplot_build(p)$data[[1]][["colour"]])
+    j <- which(tp$layout$name == "rowhead-fg")
+
+    for (i in seq_along(pcol)) {
+        tp$grobs[j][[i+1]][["gp"]] = gpar(col = pcol[i])
+    }
+    return(tp)
+}
+```
+
+
+```{r}
+gseaplot3 <- function(x, geneSetID, title = "", color="green", base_size = 11,
+                      rel_heights=c(1.5, .5, 1), subplots = 1:3, pvalue_table = TRUE, ES_geom="line") {
+    
+    library(ggplot2)
+    library(gridExtra)
+    library(grid)
+    library(RColorBrewer)
+    
+    ES_geom <- match.arg(ES_geom, c("line", "dot"))
+
+    geneList <- position <- NULL ## to satisfy codetool
+
+    if (length(geneSetID) == 1) {
+        gsdata <- gsInfo(x, geneSetID)
+    } else {
+        gsdata <- do.call(rbind, lapply(geneSetID, gsInfo, object = x))
+    }
+
+    p <- ggplot(gsdata, aes_(x = ~x)) + xlab(NULL) +
+        theme_classic(base_size) +
+        theme(panel.grid.major = element_line(colour = "grey92"),
+              panel.grid.minor = element_line(colour = "grey92"),
+              panel.grid.major.y = element_blank(),
+              panel.grid.minor.y = element_blank()) +
+        scale_x_continuous(expand=c(0,0))
+
+    if (ES_geom == "line") {
+        es_layer <- geom_line(aes_(y = ~runningScore, color= ~Description), size=1)
+    } else {
+        es_layer <- geom_point(aes_(y = ~runningScore, color= ~Description), size=1, data = subset(gsdata, position == 1))
+    }
+
+    p.res <- p + es_layer +
+        theme(legend.position = c(.8, .8), legend.title = element_blank(),
+              legend.background = element_rect(fill = "transparent"))
+
+    p.res <- p.res + ylab("Running Enrichment Score") +
+        theme(axis.text.x=element_blank(),
+              axis.ticks.x=element_blank(),
+              axis.line.x=element_blank(),
+              plot.margin=margin(t=.2, r = .2, b=0, l=.2, unit="cm")) +
+        labs(subtitle = gsdata$Description[1])
+
+    i <- 0
+    for (term in unique(gsdata$Description)) {
+        idx <- which(gsdata$ymin != 0 & gsdata$Description == term)
+        gsdata[idx, "ymin"] <- i
+        gsdata[idx, "ymax"] <- i + 1
+        i <- i + 1
+    }
+    p2 <- ggplot(gsdata, aes_(x = ~x)) +
+        geom_linerange(aes_(ymin=~ymin, ymax=~ymax, color=~Description)) +
+        xlab(NULL) + ylab(NULL) + theme_classic(base_size) +
+        theme(legend.position = "none",
+              plot.margin = margin(t=-.1, b=0,unit="cm"),
+              axis.ticks = element_blank(),
+              axis.text = element_blank(),
+              axis.line.x = element_blank()) +
+        scale_x_continuous(expand=c(0,0)) +
+        scale_y_continuous(expand=c(0,0))
+
+    if (length(geneSetID) == 1) {
+        ## geneList <- gsdata$geneList
+        ## j <- which.min(abs(geneList))
+        ## v1 <- quantile(geneList[1:j], seq(0,1, length.out=6))[1:5]
+        ## v2 <- quantile(geneList[j:length(geneList)], seq(0,1, length.out=6))[1:5]
+
+        ## v <- sort(c(v1, v2))
+        ## inv <- findInterval(geneList, v)
+
+        v <- seq(1, sum(gsdata$position), length.out=9)
+        inv <- findInterval(rev(cumsum(gsdata$position)), v)
+        if (min(inv) == 0) inv <- inv + 1
+
+        col=c(rev(brewer.pal(5, "Blues")), brewer.pal(5, "Reds"))
+
+        ymin <- min(p2$data$ymin)
+        yy <- max(p2$data$ymax - p2$data$ymin) * .3
+        xmin <- which(!duplicated(inv))
+        xmax <- xmin + as.numeric(table(inv)[unique(inv)])
+        d <- data.frame(ymin = ymin, ymax = yy,
+                        xmin = xmin,
+                        xmax = xmax,
+                        col = col[unique(inv)])
+        p2 <- p2 + geom_rect(
+                       aes_(xmin=~xmin,
+                            xmax=~xmax,
+                            ymin=~ymin,
+                            ymax=~ymax,
+                            fill=~I(col)),
+                       data=d,
+                       alpha=.9,
+                       inherit.aes=FALSE)
+    }
+
+    ## p2 <- p2 +
+    ## geom_rect(aes(xmin=x-.5, xmax=x+.5, fill=geneList),
+    ##           ymin=ymin, ymax = ymin + yy, alpha=.5) +
+    ## theme(legend.position="none") +
+    ## scale_fill_gradientn(colors=color_palette(c("blue", "red")))
+
+    df2 <- p$data #data.frame(x = which(p$data$position == 1))
+    df2$y <- p$data$geneList[df2$x]
+    p.pos <- p + geom_segment(data=df2, aes_(x=~x, xend=~x, y=~y, yend=0), color="grey")
+    p.pos <- p.pos + ylab("Ranked list metric") +
+        xlab("Rank in Ordered Dataset") +
+        theme(plot.margin=margin(t = -.1, r = .2, b=.2, l=.2, unit="cm"))
+
+    if (!is.null(title) && !is.na(title) && title != "")
+        p.res <- p.res + ggtitle(title)
+
+    if (length(color) == length(geneSetID)) {
+        p.res <- p.res + scale_color_manual(values=color)
+        if (length(color) == 1) {
+            p.res <- p.res + theme(legend.position = "none")
+            p2 <- p2 + scale_color_manual(values = "black")
+        } else {
+            p2 <- p2 + scale_color_manual(values = color)
+        }
+    }
+
+    if (pvalue_table) {
+        pd <- x[geneSetID, c("Description", "pvalue", "p.adjust")]
+        pd <- pd[order(pd[,1], decreasing=FALSE),]
+        rownames(pd) <- "" # pd$Description
+
+        pd <- pd[,-1]
+        pd <- round(pd, 4)
+
+        tp <- tableGrob2(pd, p.res)
+
+        p.res <- p.res + theme(legend.position = "none") +
+            annotation_custom(tp,
+                              xmin = quantile(p.res$data$x, .5),
+                              xmax = quantile(p.res$data$x, .95),
+                              ymin = quantile(p.res$data$runningScore, .75),
+                              ymax = quantile(p.res$data$runningScore, .9))
+    }
+
+
+    plotlist <- list(p.res, p2, p.pos)[subplots]
+    n <- length(plotlist)
+    plotlist[[n]] <- plotlist[[n]] +
+        theme(axis.line.x = element_line(),
+              axis.ticks.x=element_line(),
+              axis.text.x = element_text())
+
+    if (length(subplots) == 1)
+        return(plotlist[[1]] + theme(plot.margin=margin(t=.2, r = .2, b=.2, l=.2, unit="cm")))
+
+
+    if (length(rel_heights) > length(subplots))
+        rel_heights <- rel_heights[subplots]
+
+    plot_grid(plotlist = plotlist, ncol=1, align="v", rel_heights=rel_heights)
+}
+
+gseaplot3(temp, 1)
+```
+
+
+```{r fig.height=8, fig.width=8}
+format_to_barplot <- function(gsdata) {
+    v <- seq(1, sum(gsdata$position), length.out=9)
+    inv <- findInterval(rev(cumsum(gsdata$position)), v)
+    if (min(inv) == 0) inv <- inv + 1
+    
+    col=c(rev(brewer.pal(5, "Blues")), brewer.pal(5, "Reds"))
+    
+    ymin <- 0
+    yy <- 0.3
+    xmin <- which(!duplicated(inv))
+    xmax <- xmin + as.numeric(table(inv)[unique(inv)])
+    d <- data.frame(ymin = ymin, ymax = yy,
+                    xmin = xmin,
+                    xmax = xmax,
+                    col = col[unique(inv)])
+    
+    d
+}
+
+
+get_gsea_data <- function(
+    x, 
+    geneSetID, 
+    line_plot = TRUE
+    
+) {
+    library(ggplot2)
+    library(gridExtra)
+    library(grid)
+    library(RColorBrewer)
+    
+    geneList <- position <- NULL ## to satisfy codetool
+    
+    res = NULL
+    
+    for (i in geneSetID) {
+        
+        if (length(geneSetID) == 1) {
+            gsdata <- gsInfo(x, geneSetID)
+        } else {
+            gsdata <- do.call(rbind, lapply(geneSetID, gsInfo, object = x))
+        }
+    
+        if (!line_plot) {
+            gsdata1 <- format_to_barplot(gsdata)
+            gsdata1$Description <- x@result$Description[i]
+            gsdata = gsdata1
+            print(dim(gsdata1))
+        }
+        
+        pd = x[geneSetID, c("Description", "pvalue", "p.adjust")]
+        
+        gsdata$pvalue <- pd[gsdata$Description, "pvalue"]
+        gsdata$p.adjust <- pd[gsdata$Description, "p.adjust"]
+        
+        if (nrow(gsdata) > 0) {
+            res = rbind(gsdata, res)
+        }
+    }
+
+    res
+}
+
+temp <- get_gsea_data(
+    gsea[["ATII"]],
+    geneSetID = 1:5,
+    # geneSetID = which(gsea[["ATII"]]@result$Description %in% c(
+    #     "GO_IMMUNOGLOBULIN_RECEPTOR_BINDING",
+    #     "GO_MHC_PROTEIN_COMPLEX",
+    #     "GO_ANTIGEN_PROCESSING_AND_PRESENTATION_OF_ENDOGENOUS_ANTIGEN"
+    #     )
+    # ),
+    line_plot = F
+)
+
+temp$Description <- paste0(temp$Description, " (p.value=", round(temp$pvalue, 4), ")")
+
+p <- ggplot() + 
+    geom_rect(
+        aes_(xmin=~xmin, xmax=~xmax, ymin=~ymin, ymax=~ymax, fill=~I(col)),
+        data = temp,
+        alpha=.9,
+        inherit.aes=FALSE
+    ) +
+    facet_wrap(Description~., ncol = 1, scales = "free_x")
+
+p
+
+
+# ggsave(
+#     filename = paste(root.dir, "../Batch/Basal/LUSC/gsea_clt_4_bar.pdf", sep = "/"),
+#     plot = p,
+#     width = 8,
+#     height = 3
+# )
+```
+
+---
+
+## make go plots
+```{r}
+files = list.files(root.dir, pattern="normal_cancer", recursive = T, full.names = T, include.dirs = T)
+f = files[1]
+
+
+read_go <- function(path, sheet = 4) {
+    library(openxlsx)
+    library(stringr)
+    
+    if (!file.exists(path)) {
+        return (NULL)
+    }
+    
+    tryCatch({
+        data = read.xlsx(path, rowNames = F, sheet = sheet)
+        
+        data$GeneRatio <- sapply(data$GeneRatio, function(x) {
+            temp = str_split(x, "/")[[1]]
+            as.numeric(temp[1]) / as.numeric(temp[2])
+        })
+        
+        data
+    }, error = function(e) {
+        return(NULL)
+    } )
+}
+
+
+# threshold is the min, max, mean and quatiles from summary of GeneRatio
+read_go_from_directory <- function(path, threshold = 5, p.cutoff = 0.05, ONTOLOGY = "BP") {
+    
+    luad <- read_go(paste(f, "LUAD.xlsx", sep = "/"), sheet = 4)
+    
+    if (is.null(luad) || nrow(luad) == 0 || length(lusc) == 0) {
+        return (NULL)
+    }
+
+    lusc <- read_go(paste(f, "LUSC.xlsx", sep = "/"), sheet = 4)
+    if (is.null(lusc) || nrow(lusc) == 0 || length(lusc) == 0) {
+        return (NULL)
+    }
+    
+    if (ONTOLOGY != "ALL") {
+        luad <- luad[luad$ONTOLOGY == ONTOLOGY, ]
+        lusc <- lusc[lusc$ONTOLOGY == ONTOLOGY, ]
+    }
+    
+    luad <- luad[luad$GeneRatio > summary(luad$GeneRatio)[threshold] & luad$p.adjust < p.cutoff, ]
+    lusc <- lusc[lusc$GeneRatio > summary(lusc$GeneRatio)[threshold] & lusc$p.adjust < p.cutoff, ]
+    
+    luad$Disease = "LUAD"
+    lusc$Disease = "LUSC"
+    
+    rbind(luad, lusc)
+}
+
+
+data <- read_go_from_directory(f)
+```
+
+```{r}
+dim(data)
+```
+
+```{r fig.height=7, fig.width=8}
+make_barplot <- function(data) {
+    library(ggplot2)
+
+    temp = data[data$ONTOLOGY == "BP", ]
+    temp$p.adjust = -log10(temp$p.adjust)
+    temp$p.adjust[temp$Disease == "LUAD"] = -1 * temp$p.adjust[temp$Disease == "LUAD"]
+    temp <- temp[order(temp$p.adjust, decreasing = F), ]
+
+    if (min(temp$p.adjust) < -10) {
+        min_val = ceiling(min(temp$p.adjust) / 10) * 10
+    } else {
+        min_val = ceiling(min(temp$p.adjust))
+    }
+    
+    if (max(temp$p.adjust) > 10) {
+        max_val = floor(max(temp$p.adjust) / 10) * 10
+    } else {
+        max_val = floor(max(temp$p.adjust))
+    }
+    
+    if (max_val - min_val < 5) {
+        bks = seq(min_val, max_val, 2)
+    } else if (max_val - min_val < 10) {
+        bks = seq(min_val, max_val, 5)
+    } else {
+        bks = seq(min_val, max_val, 10)
+    }
+    
+    bks = unique(c(bks, min_val, 0, max_val))
+    
+    ggplot(
+        data = temp,
+        aes(x = reorder(Description, -p.adjust), y = p.adjust, fill = Disease)
+    ) +
+        geom_bar(stat = "identity") +
+        coord_flip() +
+        scale_y_continuous(breaks = bks, labels = abs(bks)) +
+        labs(x = "Description", y = "-log10(p.adjust)", fill = "") +
+        theme_bw() +
+        theme(
+            legend.position = "top",
+            axis.text = element_text(size = 12),
+            axis.title = element_text(size = 15),
+            legend.text = element_text(size = 15)
+        ) +
+        scale_fill_manual(
+            values = c(
+                "LUAD" = "#0084D1", 
+                "LUSC"="#A0C807"
+            )
+        )
+}
+
+
+make_barplot(data)
+```
+
+```{r}
+for (f in files) {
+    print(f)
+    
+    tryCatch({
+        data <- read_go_from_directory(f)
+    
+        if(is.null(data)) {
+            next
+        }
+        
+        p <- make_barplot(data)
+        
+        ggsave(
+            filename = paste(f, "GO_compare.pdf", sep = "/"),
+            plot = p,
+            width = 10,
+            height = sum(data$ONTOLOGY == "BP") / 4
+        )
+    }, error = function(e) {
+        print(e)
+    })
+}
+```
+
+
+---
+
+## Cluster GSEA
+
+```{r}
+files = list.files(root.dir, pattern = "cluster_markers.csv", recursive = T, full.names = T)
+```
+
+
+```{r}
+
+make_cluster_heatmap <- function(
+    obj, 
+    markers, 
+    ident_col = "res.0.1", 
+    logFC = 0.25, 
+    color = 1,
+    sizeOfCells = 200
+) {
+    library(dplyr)
+    library(ComplexHeatmap)
+    library(circlize)
+    library(wesanderson)
+    library(stringr)
+    library(reshape2)
+    
+    markers <- markers %>%
+        group_by(ident) %>%
+        filter(avg_logFC > logFC & p_val_adj < 0.05) %>%
+        as.data.frame()
+
+    markers <- markers[order(markers$ident, -markers$avg_logFC), ]
+    
+    
+    meta <- obj@meta.data
+    meta$ident <- as.numeric(meta[, ident_col]) + 1
+    
+    expr = obj@scale.data[markers$gene, ]
+    
+    expr <- melt(expr)
+    temp_marker_ident <- list()
+    for (i in 1:nrow(markers)) {
+        temp_marker_ident[[markers[i, "gene"]]] <- markers[i, "ident"]
+    }
+    expr$ident <- sapply(expr$Var1, function(x) {
+        temp_marker_ident[[x]]
+    })
+    
+    expr <- expr %>%
+        group_by(Var2, ident) %>%
+        mutate(m = mean(value)) %>%
+        dplyr::select(Var2, m, ident) %>%
+        unique() %>%
+        as.data.frame()
+    
+    expr <- dcast(expr, Var2~ident, fun.aggregate = mean, value.var = "m")
+    expr$ident <- meta[expr$Var2, "ident"]
+    
+    expr$size = apply(expr, 1, function(row) {
+        cols <- names(row)[str_detect(names(row), "^\\d+$")]
+        
+        ident = row["ident"]
+        
+        temp = c()
+        for (i in cols) {
+            if (i != ident && as.numeric(row[i]) != 0) {
+                temp = c(temp, as.numeric(row[ident]) / as.numeric(row[i]))
+            }
+        }
+        temp = temp[!is.na(temp)]
+        temp_x = temp > 0
+    
+        if (sum(temp_x) == 0) {
+            return (Inf)
+        }
+        min(temp[temp_x])
+    })
+    
+    size_ = min(table(meta[expr$Var2, ident_col]))
+    size_ = min(size_, sizeOfCells)
+    print(size_)
+    
+    set.seed(42)
+    expr <- expr[, c("Var2", "ident", "size")] %>%
+        group_by(ident) %>%
+        top_n(size_, wt = size) %>%
+        unique() %>%
+        group_by(ident) %>%
+        sample_n(size_) %>%
+        unique() %>%
+        as.data.frame()
+    
+    print(dim(expr))
+    
+    ta <- HeatmapAnnotation(
+        Cluster = expr$ident,
+        col = list(
+            Cluster = colorRamp2(
+                seq(1, max(expr$ident)),
+                wes_palette("GrandBudapest2", max(expr$ident), type = "continuous")
+            )
+        ),
+        show_annotation_name = F,
+        show_legend = F
+    )
+    
+    temp = markers %>%
+        group_by(ident) %>%
+        top_n(10, wt = avg_logFC)
+    
+    temp <- markers$gene %in% temp$gene
+    
+    ha <- rowAnnotation(
+        foo = anno_mark(
+            at = which(temp), 
+            labels = markers$gene[temp],
+            which = "row",
+            side = "column"
+        )
+    )
+        
+        
+    Heatmap(
+        obj@scale.data[markers$gene, expr$Var2],
+        name = "Expr",
+        border = T,
+        show_heatmap_legend = F,
+        top_annotation = ta,
+        left_annotation = ha,
+        col = colorRamp2(c(-1 * color, 0, color), c("purple", "black", "yellow")),
+        cluster_rows = F,
+        cluster_columns = F,
+        show_row_names = F,
+        show_column_names = F,
+        row_split = markers$ident,
+        row_title_gp = gpar(fontsize = 0),
+        column_split = expr$ident,
+        column_title_gp = gpar(fontsize=20)
+    )
+}
+```
+
+
+```{r fig.height=10, fig.width=8}
+
+f = files[1]
+obj <- readRDS(paste(dirname(f), "seurat.rds", sep = "/"))
+markers <- read.csv(f, row.names = 1, stringsAsFactors = F)
+
+make_cluster_heatmap(obj, markers)
+```
+
+
+## Basal
+```{R}
+obj <- readRDS(paste(root.dir, "../ATII_Basal/total_basal.rds", sep = "/"))
+
+markers <- read.csv(paste(root.dir, "../ATII_Basal/Basal_all_cells_cluster_markers.csv", sep = "/"), row.names = 1, stringsAsFactors = F)
+```
+
+
+```{r fig.height=10, fig.width=10}
+pdf(paste(root.dir, "../ATII_Basal/Basal_cluster_markers_heatmap.pdf", sep = "/"), width = 10, height = 10)
+
+temp_markers <- markers[markers$avg_logFC > 0.25 & markers$p_val_adj < 0.05 & markers$ident != 3,]
+temp_markers <- rbind(
+    markers[markers$avg_logFC > 0.5 & markers$p_val_adj < 0.05 & markers$ident == 3,],
+    temp_markers
+)
+
+make_cluster_heatmap(obj, markers, ident_col = "res.0.03", sizeOfCells = 100, color = 1)
+
+dev.off()
+```
+
+
+## make gene clusters
+```{r}
+library(ggpubr)
+
+target_genes <- c(
+    "PDCD1", "CD28", "CTLA4",
+    "ICOS", "BTLA", "LAG3",
+    "TNFRSF9", "TNFRSF4",
+    "CD27", "CD40LG", "HAVCR2",
+    "GZMA", "GZMB", "GZMM", 
+    "GZMH", "GZMK", "SIGLEC15"
+)
+
+meta <- obj@meta.data
+meta$ident <- meta[, "res.0.03"]
+
+temp <- obj@raw.data[intersect(target_genes, rownames(obj@raw.data)), ]
+temp <- melt(as.matrix(temp))
+temp$ident <- meta[temp$Var2, "ident"]
+temp <- temp[temp$value > 0, ]
+temp <- temp %>%
+    group_by(Var1, ident) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var1, value, ident) %>%
+    unique() %>%
+    as.data.frame()
+
+
+temp <- dcast(temp, Var1~ident, fun.aggregate = mean)
+rownames(temp) <- temp$Var1
+temp <- temp[, colnames(temp) != "Var1"]
+
+temp[is.na(temp)] <- 0
+colnames(temp) <- as.numeric(colnames(temp)) + 1
+
+
+pdf(paste(root.dir, "../ATII_Basal/Basal_gene_drug_heatmap_clusters.pdf", sep = "/"), width = 8, height = 6)
+Heatmap(
+    t(scale(t(temp))),
+    name = "Expr",
+    heatmap_legend_param = list(
+        title = "Mean expr.",
+        # legend_height = unit(3, "cm"),
+        # legend_width = unit(10, "cm"),
+        labels_gp = gpar(fontsize = 20),
+        title_gp = gpar(fontsize = 25),
+        legend_height = unit(10, "cm"),
+        grid_width = unit(1, "cm")
+    ),
+    column_names_rot = 0,
+    column_names_centered = T,
+    column_names_gp = gpar(fontsize = 20),
+    row_names_gp = gpar(fontsize = 15)
+)
+dev.off()
+```
+
+
+
+## ATII
+```{R}
+obj <- readRDS(paste(root.dir, "../ATII_Basal/total_atii.rds", sep = "/"))
+
+markers <- read.csv(paste(root.dir, "../ATII_Basal/ATII_all_cells_cluster_markers.csv", sep = "/"), row.names = 1, stringsAsFactors = F)
+```
+
+
+## make gene clusters
+```{r}
+target_genes <- c(
+    "ALKBH3", "ALOX5AP", "BRAF", 
+    "CASP8", "CCDC130", "EGFR", 
+    "EIF2S1", "ERP27", "INSR", 
+    "KRAS", "MET", "PSMB4", 
+    "RBPJ", "ROS1", "RPS6KA1", 
+    "SYT12", "TNFSF9"
+)
+
+meta <- obj@meta.data
+meta$ident <- meta[, "res.0.1"]
+
+temp <- obj@raw.data[intersect(target_genes, rownames(obj@raw.data)), ]
+temp <- melt(as.matrix(temp))
+temp$ident <- meta[temp$Var2, "ident"]
+temp <- temp[temp$value > 0, ]
+temp <- temp %>%
+    group_by(Var1, ident) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var1, value, ident) %>%
+    unique() %>%
+    as.data.frame()
+
+
+temp <- dcast(temp, Var1~ident, fun.aggregate = mean)
+rownames(temp) <- temp$Var1
+temp <- temp[, colnames(temp) != "Var1"]
+
+temp[is.na(temp)] <- 0
+colnames(temp) <- as.numeric(colnames(temp)) + 1
+
+
+pdf(paste(root.dir, "../ATII_Basal/ATII_gene_drug_heatmap_clusters.pdf", sep = "/"), width = 8, height = 6)
+Heatmap(
+    t(scale(t(temp))),
+    name = "Expr",
+    heatmap_legend_param = list(
+        title = "Mean expr.",
+        # legend_height = unit(3, "cm"),
+        # legend_width = unit(10, "cm"),
+        labels_gp = gpar(fontsize = 20),
+        title_gp = gpar(fontsize = 25),
+        legend_height = unit(10, "cm"),
+        grid_width = unit(1, "cm")
+    ),
+    column_names_rot = 0,
+    column_names_centered = T,
+    column_names_gp = gpar(fontsize = 20),
+    row_names_gp = gpar(fontsize = 15)
+)
+dev.off()
+```
+
+
+```{r}
+c5 <- read.gmt(paste0(root.dir, "../../c5.all.v7.0.symbols.gmt"))
+
+library(org.Hs.eg.db)
+
+markers <- read.csv(f, row.names = 1, stringsAsFactors = F)
+
+gsea = list()
+go = NULL
+for(i in unique(markers$ident)) {
+    print(i)
+    temp_markers <- markers[markers$ident == i, ]
+
+    # temp_markers <- temp_markers[temp_markers$avg_logFC > 0.25 & temp_markers$p_val_adj < 0.05, ]
+    
+    geneList = temp_markers$avg_logFC
+    names(geneList) <- temp_markers$gene
+    
+    gsea[[as.character(i)]] = GSEA(sort(geneList, decreasing = T), TERM2GENE=c5, verbose=FALSE)
+    
+    temp = enrichGO(
+        temp_markers$gene,
+        org.Hs.eg.db,
+        keyType = "SYMBOL",
+        ont = "BP"
+    )
+    
+    temp = as.data.frame(temp)
+    if(nrow(temp) > 0) {
+        temp$ident = i
+        go = rbind(go, temp)
+    }
+}
+
+saveRDS(gsea, paste(dirname(i), "gsea.rds", sep = "/"))
+write.csv(go, paste(dirname(i), "clsuter_go.csv", sep = "/"))
+```
+
+```{r}
+
+c5 <- read.gmt(paste0(root.dir, "../../c5.all.v7.0.symbols.gmt"))
+
+library(org.Hs.eg.db)
+
+resolution = c(
+    "ATII_LUAD"="res.0.1",
+    "Basal_LUSC"="res.0.03",
+    "EC_LUSC"="res.0.3",
+    "Cilia_LUSC"="res.0.3",
+    "Club_LUAD"="res.0.8"
+)
+
+registerDoMC(3)
+foreach(f = list.files(root.dir, "cluster_markers.csv", recursive = T, full.names = T), .errorhandling = "pass") %dopar% {
+    obj <- readRDS(paste(dirname(f), "seurat.rds", sep = "/"))
+    markers <- read.csv(f, row.names = 1, stringsAsFactors = F)
+    
+    cell = basename(dirname(dirname(f)))
+    disease = basename(dirname(f))
+    
+    tag = paste(cell, disease, sep = "_")
+    
+    if (tag %in% names(resolution)) {
+        tag = resolution[[tag]]
+    } else {
+        tag = "res.0.1"
+    }
+    
+    pdf(paste(dirname(f), "cluster_markers.pdf", sep = "/"), width = 8, height = 8)
+    h <- make_clsuter_heatmap(obj, markers, ident_col = tag)
+    draw(h)
+    dev.off()
+    
+    # markers <- read.csv(f, row.names = 1, stringsAsFactors = F)
+    #
+    # gsea = list()
+    # go = NULL
+    # for(i in unique(markers$ident)) {
+    #     print(i)
+    #     temp_markers <- markers[markers$ident == i, ]
+    # 
+    #     # temp_markers <- temp_markers[temp_markers$avg_logFC > 0.25 & temp_markers$p_val_adj < 0.05, ]
+    #     
+    #     geneList = temp_markers$avg_logFC
+    #     names(geneList) <- temp_markers$gene
+    #     
+    #     gsea[[as.character(i)]] = GSEA(sort(geneList, decreasing = T), TERM2GENE=c5, verbose=FALSE)
+    #     
+    #     temp = enrichGO(
+    #         temp_markers$gene,
+    #         org.Hs.eg.db,
+    #         keyType = "SYMBOL",
+    #         ont = "BP"
+    #     )
+    #     
+    #     temp = as.data.frame(temp)
+    #     if(nrow(temp) > 0) {
+    #         temp$ident = i
+    #         go = rbind(go, temp)
+    #     }
+    # }
+    # 
+    # saveRDS(gsea, paste(dirname(f), "gsea.rds", sep = "/"))
+    # write.csv(go, paste(dirname(f), "cluster_go.csv", sep = "/"))
+}
+```
+
+
+```{r}
+files <- list.files(root.dir, "gsea.rds", recursive = T, full.names = T)
+
+registerDoMC(10)
+foreach(f = files) %dopar% {
+    print(f)
+    
+    temp <- readRDS(f)
+    
+    res = NULL
+    for (i in names(temp)) {
+        tt <- as.data.frame(temp[[i]])
+        
+        if(nrow(tt) > 0) {
+            tt$ident = i
+            res = rbind(res, tt)
+        }
+    }
+
+    write.csv(res, paste(dirname(f), "gsea_go.csv", sep = "/"))
+}
+```
+
+
+
+## plot Cluster go
+### Basal
+```{r}
+gsea <- readRDS(paste(root.dir, "../Batch/Basal/LUSC/gsea.rds", sep = "/"))
+```
+
+```{r fig.height=4, fig.width=8}
+format_to_barplot <- function(gsdata) {
+    v <- seq(1, sum(gsdata$position), length.out=9)
+    inv <- findInterval(rev(cumsum(gsdata$position)), v)
+    if (min(inv) == 0) inv <- inv + 1
+    
+    col=c(rev(brewer.pal(5, "Blues")), brewer.pal(5, "Reds"))
+    
+    ymin <- 0
+    yy <- 0.3
+    xmin <- which(!duplicated(inv))
+    xmax <- xmin + as.numeric(table(inv)[unique(inv)])
+    d <- data.frame(ymin = ymin, ymax = yy,
+                    xmin = xmin,
+                    xmax = xmax,
+                    col = col[unique(inv)])
+    
+    d
+}
+
+
+get_gsea_data <- function(
+    x, 
+    geneSetID, 
+    line_plot = TRUE
+    
+) {
+    library(ggplot2)
+    library(gridExtra)
+    library(grid)
+    library(RColorBrewer)
+    
+    geneList <- position <- NULL ## to satisfy codetool
+    
+    res = NULL
+    
+    for (i in geneSetID) {
+        
+        if (length(geneSetID) == 1) {
+            gsdata <- gsInfo(x, geneSetID)
+        } else {
+            gsdata <- do.call(rbind, lapply(geneSetID, gsInfo, object = x))
+        }
+    
+        if (!line_plot) {
+            gsdata1 <- format_to_barplot(gsdata)
+            gsdata1$Description <- x@result$Description[i]
+            gsdata = gsdata1
+            print(dim(gsdata1))
+        }
+        
+        pd = x[geneSetID, c("Description", "pvalue", "p.adjust")]
+        
+        gsdata$pvalue <- pd[gsdata$Description, "pvalue"]
+        gsdata$p.adjust <- pd[gsdata$Description, "p.adjust"]
+        
+        if (nrow(gsdata) > 0) {
+            res = rbind(gsdata, res)
+        }
+    }
+
+    res
+}
+
+temp <- get_gsea_data(
+    gsea[["4"]],
+    geneSetID = which(gsea[["4"]]@result$Description %in% c(
+        "GO_IMMUNOGLOBULIN_RECEPTOR_BINDING",
+        "GO_MHC_PROTEIN_COMPLEX",
+        "GO_ANTIGEN_PROCESSING_AND_PRESENTATION_OF_ENDOGENOUS_ANTIGEN"
+        )
+    ),
+    line_plot = F
+)
+
+temp$Description <- paste0(temp$Description, " (p.value=", round(temp$pvalue, 4), ")")
+
+p <- ggplot() + 
+    geom_rect(
+        aes_(xmin=~xmin, xmax=~xmax, ymin=~ymin, ymax=~ymax, fill=~I(col)),
+        data = temp,
+        alpha=.9,
+        inherit.aes=FALSE
+    ) +
+    facet_wrap(Description~., ncol = 1, scales = "free_x")
+
+ggsave(
+    filename = paste(root.dir, "../Batch/Basal/LUSC/gsea_clt_4_bar.pdf", sep = "/"),
+    plot = p,
+    width = 8,
+    height = 3
+)
+```
+
+
+## GO on mfuzz
+```{R}
+files = list.files(root.dir, "mfuzz.csv", recursive = T, full.names = T)
+```
+
+```{R}
+registerDoMC(10)
+res = foreach(f = files, .combine="rbind") %dopar% {
+    data = read.csv(f, row.names = 1, stringsAsFactors = F)
+
+    cell = basename(dirname(dirname(f)))
+    disease = basename(dirname(f))
+    
+    res = NULL
+    for(i in unique(data$Clt)) {
+        temp = enrichGO(
+            data$gene[data$Clt == i],
+            org.Hs.eg.db,
+            keyType = "SYMBOL",
+            ont = "BP"
+        )
+    
+        temp = as.data.frame(temp)
+        if(nrow(temp) > 0) {
+            temp$ident = i
+            temp$Cell = cell
+            temp$Disease = disease
+            res = rbind(res, temp)
+        }
+    }
+    res
+}
+```
+
+```{r}
+library(stringr)
+res$GeneRatio_val <- sapply(res$GeneRatio, function(x) {
+    temp = str_split(x, "/")[[1]]
+    as.numeric(temp[1]) / as.numeric(temp[2])
+})
+
+write.csv(res, paste(root.dir, "all_mfuzz_go.csv", sep = "/"))
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

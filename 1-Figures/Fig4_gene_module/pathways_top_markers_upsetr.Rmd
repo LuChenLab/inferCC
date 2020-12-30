@@ -1,0 +1,1325 @@
+---
+title: "Pathway_customize"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "LungCancer10x/")
+```
+
+## R Markdown
+
+
+```{r}
+library(here)
+library(ggplot2)
+library(wesanderson)
+library(openxlsx)
+library(dplyr)
+library(stringr)
+library(scales)
+library(doMC)
+library(reticulate)
+library(ComplexHeatmap)
+library(circlize)
+library(UpSetR)
+```
+
+## Set global env
+
+```{R}
+set_here(path = "LungCancer10x/")
+
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+### extract temp information
+stage_colors = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "LUAD_Normal"="#FECC1B", "LUSC_Normal"="#778793")
+disease_colors = c("LUAD" = "#0084D1", "LUAD_Normal"="#FECC1B", "Normal"="#73BDFF", "LUSC_Normal"="#778793", "LUSC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B")
+tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+patient_colors = gg_color_hue(35)
+names(patient_colors) <- c(
+    sapply(1:23, function(x){sprintf("PA%02d", x)}),
+    sapply(1:12, function(x){sprintf("PS%02d", x)})
+)
+
+
+colors = c(stage_colors, disease_colors, tissue_colors, patient_colors)
+
+non_immu_cells <- c(
+    "Alveolar_II",
+    "Basal",
+    "Ciliated",
+    "Club",
+    "Fibroblasts",
+    "Neuroendocrine"
+)
+```
+
+```{r}
+read_clusterpfiler <- function(path, sheet = 1) {
+    kegg = read.xlsx(path, sheet = sheet)
+    
+    if (!is.null(kegg) && nrow(kegg) > 0) {
+        kegg$GeneRatio = sapply(kegg$GeneRatio, function(x) {
+            xs = str_split(x, "/")[[1]]
+            return(as.numeric(xs[1]) / as.numeric(xs[2]))
+        })
+        return(kegg)
+    }
+    return(NULL)
+}
+
+
+select_top_n <- function(data, n, group=NULL, sort_by=NULL) {
+    if (!is.null(sort_by)) {
+        data = data[order(data[, sort_by]), ]
+    }
+    
+    if (is.null(group)) {
+        if (n > 0) {
+            return (data[1:n])
+        } else {
+            return (data[nrow(data) + n : nrow(data)])
+        }
+    }
+    
+    res = NULL
+    
+    for (i in unique(data[, group])) {
+        temp = data[data[, group] == i, ]
+        
+        if (n > 0) {
+            res = rbind(res, temp[1:n, ])
+        } else {
+            res = rbind(res, temp[nrow(temp) + n: nrow(temp), ])
+        }
+    }
+    
+    return (res)
+}
+
+```
+
+
+## LUAD vs LUSC
+
+Load filtered annotations
+```{r}
+go <- read.csv(here("03_each_cells/Pathways/normal_cancer_go_LUAD第1次筛选后.csv"))
+go <- rbind(go, read.csv(here("03_each_cells/Pathways/normal_cancer_go_LUSC第1次筛选后.csv")))
+
+tmod_title = read.xlsx(here("03_each_cells/Pathways/tmod_filtered.xlsx"), colNames = F)
+tmod_title = tmod_title$X1
+```
+
+
+
+```{R}
+ad_sc <- read.csv(here("03_each_cells/Pathways/LUAD_vs_LUSC.csv"), row.names = 1, stringsAsFactors = F)
+
+ad_nl <- read.csv(here("03_each_cells/Pathways/LUAD_vs_normal.csv"), row.names = 1, stringsAsFactors = F)
+sc_nl <- read.csv(here("03_each_cells/Pathways/LUSC_vs_normal.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+```{r}
+ad_sc_theme <- theme(
+    axis.text = element_text(size = 22),
+    axis.title = element_text(size = 25),
+    title = element_text(size = 25),
+    legend.text = element_text(size = 25),
+    legend.title = element_text(size = 18),
+    legend.position = c(0.8, 0.9),
+    plot.title = element_text(size = 40, hjust = 0.5)
+)
+```
+
+
+### B cells
+
+#### GO
+```{r}
+
+data <- ad_nl[ad_nl$cell == "B" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "B" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+data <- data[data$p.adjust > 3.5 | data$p.adjust < 0, ]
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "B cells", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq) # scales::scientific(abs(bk_seq))
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/B.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+
+```
+
+
+
+### CD4
+
+#### GO
+```{r}
+
+data <- ad_nl[ad_nl$cell == "CD4" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "CD4" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+data <- data[!str_detect(data$Description, "^antigen"), ]
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "CD4", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/CD4.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+
+### CD8
+
+#### GO
+```{r}
+
+data <- ad_nl[ad_nl$cell == "CD8" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "CD8" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+# data <- data[!str_detect(data$Description, "^antigen"), ]
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "CD8", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/CD8.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+
+### DC
+
+#### GO
+```{r}
+data <- ad_nl[ad_nl$cell == "DC" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "DC" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+# data <- data[!str_detect(data$Description, "^antigen"), ]
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "DC", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/DC.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+### Granulocyte
+
+#### GO
+```{r}
+data <- ad_nl[ad_nl$cell == "Granulocyte" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "Granulocyte" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+both <- table(data$Description)
+both <- names(both)[both == 2]
+
+data <- data[(data$Description %in% both) | (data$p.adjust < -3 | data$p.adjust > 0), ]
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "Granulocyte", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/Granulocyte.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+### Macrophages
+
+#### GO
+```{r}
+data <- ad_nl[ad_nl$cell == "Macrophages" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "Macrophages" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+both <- table(data$Description)
+both <- names(both)[both == 2]
+
+# data <- data[(data$Description %in% both) | (data$p.adjust < -3 | data$p.adjust > 0), ]
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "Macrophages", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/Macrophages.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+### Mast
+
+#### GO
+```{r}
+data <- ad_nl[ad_nl$cell == "Mast" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "Mast" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+both <- table(data$Description)
+both <- names(both)[both == 2]
+
+data <- data[data$p.adjust > 4 | data$p.adjust < 0, ]
+
+dim(data)
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "Mast", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/Mast.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+
+### Monocytes
+
+#### GO
+```{r}
+data <- ad_nl[ad_nl$cell == "Monocytes" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "Monocytes" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+both <- table(data$Description)
+both <- names(both)[both == 2]
+
+data <- data[(data$Description %in% both) | (data$p.adjust < -2.1 | data$p.adjust > 4.5), ]
+
+dim(data)
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "Monocytes", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/Monocytes.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+
+### NK
+
+#### GO
+```{r}
+data <- ad_nl[ad_nl$cell == "NK" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "NK" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+both <- table(data$Description)
+both <- names(both)[both == 2]
+
+# data <- data[(data$Description %in% both) | (data$p.adjust < -2.1 | data$p.adjust > 4.5), ]
+
+dim(data)
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "NK", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            theme(legend.position = c(0.2, 0.1)) +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/NK.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+
+### Tregs
+
+#### GO
+```{r}
+data <- ad_nl[ad_nl$cell == "Tregs" & ad_nl$Required, ]
+data$Disease = "LUAD"
+data$GeneRatio = -1 * data$GeneRatio
+data$p.adjust = log10(data$p.adjust)
+
+temp <- sc_nl[sc_nl$cell == "Tregs" & sc_nl$Required, ]
+temp$Disease = "LUSC"
+temp$p.adjust = -log10(temp$p.adjust)
+
+data <- rbind(data, temp)
+
+both <- table(data$Description)
+both <- names(both)[both == 2]
+
+data <- data[(data$Description %in% both) | (data$p.adjust < -0 | data$p.adjust > 3), ]
+
+dim(data)
+```
+
+```{r fig.height=10, fig.width=15}
+bk_seq = seq.int(
+    from = floor(min(data$p.adjust)), 
+    to = ceiling(max(data$p.adjust)), 
+    by = 2
+)
+bk_seq = unique(c(bk_seq, 0))
+
+p <- ggplot(data, aes(x=reorder(Description, -p.adjust), y=p.adjust, fill=Disease)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            labs(x="", y="-log10(p.adjust)", title = "Tregs", fill="") +
+            theme_bw() +
+            ad_sc_theme +
+            scale_fill_manual(
+                values = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+            ) +
+            scale_y_continuous(
+                breaks = bk_seq,
+                labels = abs(bk_seq)
+            )
+p
+
+
+ggsave(
+    here("03_each_cells/Pathways/LUAD_LUSC_by_cells/Tregs.pdf"),
+    plot = p,
+    width = 15,
+    height = 10
+)
+
+```
+
+
+----
+
+## Non-immu cells
+
+
+
+### common pathwats of all cells (LUAD vs NL)
+```{r fig.height=12, fig.width=16}
+temp = ad_nl
+
+temp$Type = "Immu"
+temp$Type[temp$cell %in% non_immu_cells] = "Non-immu"
+
+
+temp_req = temp[temp$Required, ]
+kept <- table(temp_req$Description)
+kept <- names(kept)[kept > 2]
+temp_req <- temp_req[temp_req$Description %in% kept, ]
+
+
+temp_not_req = temp[temp$Type == "Non-immu" & !temp$Required, ]
+temp_not_req = select_top_n(temp_not_req, group = "cell", sort_by = "p.adjust", n = 3)
+
+temp <- rbind(temp_req, as.data.frame(temp_not_req))
+
+p <- ggplot(temp, aes(x=cell, y=Description, color=p.adjust, size=GeneRatio)) +
+    geom_point() +
+    facet_grid(.~Type, scale = "free_x", space = "free") +
+    labs(x="", y="") +
+    theme_bw() +
+    theme(
+        axis.text = element_text(size = 20),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        strip.text = element_text(size = 22),
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 20)
+    ) +
+    scale_color_gradientn(colors=rev(wes_palette("Zissou1", 100, type = "continuous")))
+
+
+# ggsave(
+#     filename = here("03_each_cells/Pathways/LUAD_immu_non_immu.pdf"),
+#     plot = p,
+#     width = 16,
+#     height = 12
+# )
+```
+
+### common pathwats of all cells (LUSC vs NL)
+```{r fig.height=12, fig.width=14}
+temp = sc_nl
+
+temp$Type = "Immu"
+temp$Type[temp$cell %in% non_immu_cells] = "Non-immu"
+
+
+temp_req = temp[temp$Required, ]
+kept <- table(temp_req$Description)
+kept <- names(kept)[kept > 4]
+temp_req <- temp_req[temp_req$Description %in% kept, ]
+
+
+temp_not_req = temp[temp$Type == "Non-immu" & !temp$Required, ]
+temp_not_req = select_top_n(temp_not_req, group = "cell", sort_by = "p.adjust", n = 3)
+
+temp <- rbind(temp_req, as.data.frame(temp_not_req))
+
+
+p <- ggplot(temp, aes(x=cell, y=Description, color=p.adjust, size=GeneRatio)) +
+    geom_point() +
+    facet_grid(.~Type, scale = "free_x", space = "free") +
+    theme_bw() +
+    labs(x="", y="") +
+    theme(
+        axis.text = element_text(size = 20),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        strip.text = element_text(size = 22),
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 20)
+    ) +
+    scale_color_gradientn(colors=rev(wes_palette("Zissou1", 100, type = "continuous")))
+
+
+ggsave(
+    filename = here("03_each_cells/Pathways/LUSC_immu_non_immu.pdf"),
+    plot = p,
+    width = 14,
+    height = 12
+)
+
+p
+```
+
+
+
+
+
+### common pathways between all cells (LUAD vs LUSC)
+```{r fig.height=12, fig.width=20}
+temp = ad_sc
+
+temp$Type = "Immu"
+temp$Type[temp$cell %in% non_immu_cells] = "Non-immu"
+
+
+temp_req = temp[temp$Required, ]
+kept <- table(temp_req$Description)
+kept <- names(kept)[kept > 1]
+temp_req <- temp_req[temp_req$Description %in% kept, ]
+
+
+temp_not_req = temp[temp$Type == "Non-immu" & !temp$Required, ]
+temp_not_req = select_top_n(temp_not_req, group = "cell", sort_by = "p.adjust", n = 3)
+
+temp <- rbind(temp_req, as.data.frame(temp_not_req))
+
+
+
+# temp <- temp[temp$Description %in% kept, ]
+
+p <- ggplot(temp, aes(x=cell, y=Description, color=p.adjust, size=GeneRatio)) +
+    geom_point() +
+    facet_grid(.~Type, scale = "free_x", space = "free") +
+    theme_bw() +
+    labs(x="", y="") +
+    theme(
+        axis.text = element_text(size = 20),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        strip.text = element_text(size = 22),
+        legend.text = element_text(size = 18),
+        legend.title = element_text(size = 20)
+    ) +
+    scale_color_gradientn(colors=rev(wes_palette("Zissou1", 100, type = "continuous")))
+
+
+ggsave(
+    filename = here("03_each_cells/Pathways/LUAD_LUSC_immu_non_immu.pdf"),
+    plot = p,
+    width = 20,
+    height = 12
+)
+
+p
+```
+
+
+### A heatmap to display the gene expression variants between normal and disease
+
+Load differential genes between LUAD and NL
+```{r fig.height=20, fig.width=20}
+ad_markers <- NULL
+for (i in non_immu_cells) {
+    path = here(paste0("03_each_cells/total/", i, "/normal_cancer/LUAD.xlsx"))
+    if (file.exists(path)) {
+        print(path)
+        temp = read.xlsx(path, rowNames = T, sheet = 1)
+        temp$cell = i
+        temp$gene = rownames(temp)
+        ad_markers = rbind(ad_markers, temp)
+    }
+}
+
+ad_markers$source = "LUAD - NL"
+ad_markers <- ad_markers[ad_markers$avg_logFC < -0.25 & ad_markers$p_val_adj < 0.05, ]
+```
+
+Load differential genes between LUSC and NL
+```{r fig.height=20, fig.width=20}
+sc_markers <- NULL
+for (i in non_immu_cells) {
+    path = here(paste0("03_each_cells/total/", i, "/normal_cancer/LUSC.xlsx"))
+    if (file.exists(path)) {
+        print(path)
+        temp = read.xlsx(path, rowNames = T, sheet = 1)
+        temp$cell = i
+        temp$gene = rownames(temp)
+        sc_markers = rbind(sc_markers, temp)
+    }
+}
+
+sc_markers$source = "LUSC - NL"
+sc_markers <- sc_markers[sc_markers$avg_logFC < -0.25 & sc_markers$p_val_adj < 0.05, ]
+```
+
+Load differential genes between LUSC and NL
+```{r fig.height=20, fig.width=20}
+ad_sc_markers <- NULL
+for (i in non_immu_cells) {
+    path = here(paste0("03_each_cells/total/", i, "/disease/markers.xlsx"))
+    if (file.exists(path)) {
+        print(path)
+        temp = read.xlsx(path, rowNames = T, sheet = 1)
+        temp$cell = i
+        ad_sc_markers = rbind(ad_sc_markers, temp)
+    }
+}
+
+ad_sc_markers$source = "LUAD - LUSC"
+ad_sc_markers <- ad_sc_markers[abs(ad_sc_markers$avg_logFC) > 0.25 & ad_sc_markers$p_val_adj < 0.05, ]
+```
+
+Filter markers
+```{r}
+markers = rbind(ad_markers, sc_markers)
+markers = rbind(markers, ad_sc_markers)
+
+
+genes = markers %>%
+    group_by(cell, gene) %>%
+    filter(avg_logFC > 1) %>%
+    dplyr::select(cell, gene) %>%
+    unique()
+```
+
+
+#### Prepare expression and meta
+
+```{r}
+expr = NULL
+meta = NULL
+
+for (i in non_immu_cells) {
+    path = here(paste0("03_each_cells/total/", i, "/seurat.rds"))
+    if (file.exists(path)) {
+        print(path)
+        obj = readRDS(path)
+        
+        expr = cbind(expr, obj@scale.data)
+        
+        meta = rbind(meta, obj@meta.data)
+    }
+}
+
+dim(expr)
+dim(meta)
+```
+
+#### Make heatmaps for Normal and Tumor
+
+
+```{R}
+PercentAbove <- function(x, threshold){
+  return(length(x = x[x > threshold]) / length(x = x))
+}
+
+ModifiedDotData <- function(
+  object,
+  group.by,
+  markers,
+  cols.use = c("lightgrey", "blue"),
+  col.min = -2.5,
+  col.max = 2.5,
+  dot.min = 0,
+  dot.scale = 6,
+  scale.by = 'radius'
+) {
+    library(tidyr)
+  scale.func <- switch(
+    EXPR = scale.by,
+    'size' = scale_size,
+    'radius' = scale_radius,
+    stop("'scale.by' must be either 'size' or 'radius'")
+  )
+  if (!missing(x = group.by)) {
+    object <- SetAllIdent(object = object, id = group.by)
+  }
+  
+  genes.plot <- intersect(row.names(object@raw.data), markers$Markers)
+
+  data.to.plot <- data.frame(FetchData(object = object, vars.all = genes.plot))
+  colnames(x = data.to.plot) <- genes.plot
+  data.to.plot$cell <- rownames(x = data.to.plot)
+  data.to.plot$id <- object@ident
+  data.to.plot %>% gather(
+    key = genes.plot,
+    value = expression,
+    -c(cell, id)
+  ) -> data.to.plot
+  data.to.plot %>%
+    group_by(id, genes.plot) %>%
+    summarize(
+      avg.exp = mean(expm1(x = expression)),
+      pct.exp = PercentAbove(x = expression, threshold = 0)
+    ) -> data.to.plot
+  data.to.plot %>%
+    ungroup() %>%
+    group_by(genes.plot) %>%
+    mutate(avg.exp.scale = scale(x = avg.exp)) %>%
+    mutate(avg.exp.scale = MinMax(
+      data = avg.exp.scale,
+      max = col.max,
+      min = col.min
+    )) ->  data.to.plot
+  data.to.plot$genes.plot <- factor(
+    x = data.to.plot$genes.plot,
+    levels = rev(x = genes.plot)
+  )
+  # data.to.plot$genes.plot <- factor(
+  #   x = data.to.plot$genes.plot,
+  #   levels = rev(x = sub(pattern = "-", replacement = ".", x = genes.plot))
+  # )
+  data.to.plot$pct.exp[data.to.plot$pct.exp < dot.min] <- NA
+  data.to.plot$pct.exp <- data.to.plot$pct.exp * 100
+  data.to.plot <- merge(data.to.plot, markers, by.x = "genes.plot", by.y = "Markers")
+  
+  return(data.to.plot)
+}
+
+
+
+# ggsave("LungCancer10x/01_first_plots/dotplot_08.pdf", plot = p, width = 12, height = 30, units = "in", dpi = 600)
+
+# data = ModifiedDotData(obj, markers = markers, group.by = "res.0.8")
+# 
+# 
+# p <- ggplot(data, aes(x=id, y=genes.plot, size = pct.exp, color=avg.exp.scale)) +
+
+
+```
+
+
+
+```{r fig.height=8, fig.width=10}
+
+data = NULL
+for (i in unique(meta$cell_name)) {
+    print(i)
+    temp_meta <- meta[meta$cell_name == i  & str_detect(meta$Disease, "LUAD") & meta$Batch != 3, ]
+    temp_meta <- temp_meta[order(temp_meta$Disease), ]
+    
+    path = here("03_each_cells/total/", str_replace(i, "\\s+", "_"), "/normal_cancer/LUAD.xlsx")
+    
+    if (!file.exists(path)) {
+        next
+    }
+    
+    temp_markers <- read.xlsx(path, rowNames = T)
+    temp_markers <- temp_markers[abs(temp_markers$avg_logFC) > 0.25  & temp_markers$p_val_adj < 0.05, ]
+    temp_markers <- temp_markers[order(abs(temp_markers$avg_logFC), decreasing = T), ]
+    temp_markers$Markers <- rownames(temp_markers)
+    temp_markers <- temp_markers[1: 20, ]
+    
+    
+    temp_expr = expr[, rownames(temp_meta)]
+    
+    temp_obj <- CreateSeuratObject(temp_expr, meta.data = temp_meta)
+    temp_obj@scale.data = temp_expr
+    temp = ModifiedDotData(temp_obj, group.by = "Disease", markers = temp_markers)
+    temp$Cells = i
+    
+    data = rbind(data, temp)
+}
+
+# p <- ggplot(data, aes(x=id, y=genes.plot, color = avg.exp.scale, size = pct.exp)) +
+#     geom_point() +
+#     scale_radius(range = c(0, 6), limits = c(NA, NA)) +
+#     scale_color_gradient(low = "lightgrey", high = "blue") +
+#     facet_wrap(Cells~., scales = "free") +
+#     theme_bw() +
+#     theme(
+#         axis.text = element_text(size = 15),
+#         strip.text.y = element_text(size = 15),
+#         legend.title = element_text(size = 20),
+#         legend.text = element_text(size = 15),
+#         strip.text = element_text(size = 15),
+#         plot.title = element_text(size = 30, hjust = 0.5)
+#     ) +
+#     labs(x="", y="", color = "avg.exp", title = "Most differential expressed genes (top 10)") +
+#     scale_x_discrete(breaks = c("LUAD", "LUAD_Normal"), labels = c("LUAD", "NL"))
+# 
+# ggsave(
+#     filename = here("03_each_cells/Non_immu_LUAD_NL_DEGs.pdf"),
+#     plot = p,
+#     width = 10,
+#     height = 8
+# )
+```
+
+
+```{r fig.height=8, fig.width=10}
+
+# data = NULL
+for (i in unique(meta$cell_name)) {
+    print(i)
+    temp_meta <- meta[meta$cell_name == i  & str_detect(meta$Disease, "LUSC") & meta$Batch != 3, ]
+    temp_meta <- temp_meta[order(temp_meta$Disease), ]
+    
+    path = here("03_each_cells/total/", str_replace(i, "\\s+", "_"), "/normal_cancer/LUAD.xlsx")
+    
+    if (!file.exists(path)) {
+        next
+    }
+    
+    temp_markers <- read.xlsx(path, rowNames = T)
+    temp_markers <- temp_markers[abs(temp_markers$avg_logFC) > 0.25  & temp_markers$p_val_adj < 0.05, ]
+    temp_markers <- temp_markers[order(abs(temp_markers$avg_logFC), decreasing = T), ]
+    temp_markers$Markers <- rownames(temp_markers)
+    temp_markers <- temp_markers[1: 20, ]
+    
+    
+    temp_expr = expr[, rownames(temp_meta)]
+    
+    temp_obj <- CreateSeuratObject(temp_expr, meta.data = temp_meta)
+    temp_obj@scale.data = temp_expr
+    temp = ModifiedDotData(temp_obj, group.by = "Disease", markers = temp_markers)
+    temp$Cells = i
+    
+    data = rbind(data, temp)
+}
+
+
+# p <- ggplot(data, aes(x=id, y=genes.plot, color = avg.exp.scale, size = pct.exp)) +
+#     geom_point() +
+#     scale_radius(range = c(0, 6), limits = c(NA, NA)) +
+#     scale_color_gradient(low = "lightgrey", high = "blue") +
+#     facet_wrap(Cells~., scales = "free") +
+#     theme_bw() +
+#     theme(
+#         axis.text = element_text(size = 15),
+#         strip.text.y = element_text(size = 15),
+#         legend.title = element_text(size = 20),
+#         legend.text = element_text(size = 15),
+#         strip.text = element_text(size = 15),
+#         plot.title = element_text(size = 30, hjust = 0.5)
+#     ) +
+#     labs(x="", y="", color = "avg.exp", title = "Most differential expressed genes (top 10)") +
+#     scale_x_discrete(breaks = c("LUSC", "LUSC_Normal"), labels = c("LUASC", "NL"))
+# 
+# ggsave(
+#     filename = here("03_each_cells/Non_immu_LUSC_NL_DEGs.pdf"),
+#     plot = p,
+#     width = 10,
+#     height = 8
+# )
+```
+
+```{R}
+data$Cells <- sapply(data$Cells, function(x) {
+    short_names = c(
+        "Alveolar II"="ATII",
+        "Ciliated"="Cilia",
+        "Club"="Club",
+        "Fibroblasts"="Fib",
+        "Neuroendocrine"="NE"
+    )
+    
+    short_names[x]
+})
+```
+
+
+```{R fig.height=12, fig.width=10}
+
+p <- ggplot(data, aes(x=id, y=genes.plot, color = avg.exp.scale, size = pct.exp)) +
+    geom_point() +
+    scale_radius(range = c(0, 6), limits = c(NA, NA)) +
+    scale_color_gradient(low = "lightgrey", high = "blue") +
+    facet_wrap(Cells~., scales = "free_y") +
+    theme_bw() +
+    theme(
+        axis.text = element_text(size = 18),
+        legend.title = element_text(size = 20),
+        legend.text = element_text(size = 18),
+        strip.text = element_text(size = 25),
+        plot.title = element_text(size = 30, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        legend.position = c(0.8, 0.15)
+    ) +
+    labs(
+        x="", y="", 
+        color = "avg.exp", 
+        title = "Most differential expressed genes (top 20)"
+    ) +
+    scale_x_discrete(
+        breaks = c("LUSC", "LUSC_Normal", "LUAD", "LUAD_Normal"), 
+        labels = c("LUSC", "Normal (LUSC)", "LUAD", "Normal (LUAD)")
+    )
+
+
+
+ggsave(
+    filename = here("03_each_cells/Non_immu_Tumor_NL_DEGs.pdf"),
+    plot = p,
+    width = 10,
+    height = 12
+)
+```
+
+
+```{r fig.height=6, fig.width=6}
+for(i in sort(unique(data$Cells))) {
+    print(i)
+    genes <- as.character(data[data$Cells == i, "genes.plot"])
+    
+    temp_meta <-meta[meta$cell_name == i, ]
+    temp_meta <- temp_meta[order(temp_meta$Disease), ]
+    temp_expr <- expr[genes, rownames(temp_meta)]
+    
+    # top annotation
+    ha = HeatmapAnnotation(
+        Disease = temp_meta$Disease,
+        col = list(
+            Disease = c(
+                "LUAD" = "#0084D1", 
+                "Normal (LUAD)"="#FECC1B",
+                "LUAD_Normal"="#FECC1B",
+                "Normal"="#73BDFF", 
+                "Normal (LUSC)"="#778793", 
+                "LUSC_Normal"="#778793", 
+                "LUSC"="#A0C807", 
+                "Tumor"="#6A0019", 
+                "CPI"="#C5000B"
+            )
+        ),
+        which = "column"
+    )
+    
+    draw(Heatmap(
+        temp_expr,
+        show_column_names = F,
+        cluster_rows = F,
+        cluster_columns = T,
+        top_annotation = ha,
+        column_split = temp_meta$Disease
+    ))
+    
+    break
+}
+```
+
+
+```{r fig.height=3, fig.width=6}
+temp = ad_sc_markers #[ad_sc_markers$avg_logFC > 0, ]
+
+
+temp$cell <- sapply(temp$cell, function(x) {
+    short_names = c(
+        "Alveolar_II"="ATII",
+        "Ciliated"="Cilia",
+        "Club"="Club",
+        "Fibroblasts"="Fib",
+        "Neuroendocrine"="NE",
+        "Basal"="Basal"
+    )
+    
+    short_names[x]
+})
+
+temp_markers = list()
+
+for (i in unique(temp$cell)) {
+    temp_markers[[i]] = temp$gene[temp$cell == i]
+}
+
+
+p <- upset(fromList(temp_markers), keep.order = T)
+
+p
+
+pdf(here("03_each_cells/Non_immu_LUAD_LUSC_DEGs_overlap.pdf"),  height = 3, width = 6)
+p
+dev.off()
+
+```
+
+```{r fig.height=3, fig.width=6}
+temp = ad_markers
+
+
+temp$cell <- sapply(temp$cell, function(x) {
+    short_names = c(
+        "Alveolar_II"="ATII",
+        "Ciliated"="Cilia",
+        "Club"="Club",
+        "Fibroblasts"="Fib",
+        "Neuroendocrine"="NE",
+        "Basal"="Basal"
+    )
+    
+    short_names[x]
+})
+
+
+temp_markers = list()
+
+for (i in unique(temp$cell)) {
+    temp_markers[[i]] = temp$gene[temp$cell == i]
+}
+
+
+p <- upset(fromList(temp_markers), keep.order = T)
+
+p
+
+pdf(here("03_each_cells/Non_immu_LUAD_NL_DEGs_overlap.pdf"),  height = 3, width = 6)
+p
+dev.off()
+
+```
+
+```{R}
+temp = sc_markers
+
+
+temp$cell <- sapply(temp$cell, function(x) {
+    short_names = c(
+        "Alveolar_II"="ATII",
+        "Ciliated"="Cilia",
+        "Club"="Club",
+        "Fibroblasts"="Fib",
+        "Neuroendocrine"="NE",
+        "Basal"="Basal"
+    )
+    
+    short_names[x]
+})
+
+
+temp_markers = list()
+
+for (i in unique(temp$cell)) {
+    temp_markers[[i]] = temp$gene[temp$cell == i]
+}
+
+
+p <- upset(fromList(temp_markers), keep.order = T)
+
+p
+
+pdf(here("03_each_cells/Non_immu_LUSC_NL_DEGs_overlap.pdf"),  height = 3, width = 6)
+p
+dev.off()
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

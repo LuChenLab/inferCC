@@ -1,0 +1,948 @@
+---
+title: "Cell cycle"
+author: "Zhang Yiming"
+date: "2020/2/29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+
+## Load packages
+
+```{r cars, include=FALSE}
+library(dplyr)
+library(stringr)
+library(ComplexHeatmap)
+library(circlize)
+library(reshape2)
+library(wesanderson)
+library(ggplot2)
+
+options(stringsAsFactor = F)
+```
+
+# Cell cycle using Seurat3
+
+```{r include=FALSE}
+library(Seurat)
+library(reshape2)
+library(dplyr)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+
+```{r}
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta <- readRDS(full.path("02_rds/meta.rds"))
+```
+
+
+```{R fig.height=10, fig.width=10}
+temp = meta %>%
+    group_by(cell_short, Disease, Phase) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Disease, Phase, n) %>%
+    unique() %>%
+    group_by(cell_short, Disease) %>%
+    mutate(p = n / sum(n) * 100) %>%
+    as.data.frame()
+
+p <- ggplot(temp[temp$Disease %in% c("LUAD", "LUSC", "LUAD_Normal", "LUSC_Normal"), ], 
+       aes(x=cell_short, y=p, fill=Phase, label = round(p, 2))) +
+        geom_bar(stat = "identity", position = position_dodge()) +
+        geom_text(angle = 90, position = position_dodge(width = 1)) +
+        facet_grid(Disease~.) +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0))
+
+ggsave(filename = full.path("14_cycling/cycling_percentage_barplot.pdf"),
+       plot=p,
+       width = 10,
+       height = 10
+       )
+```
+
+
+## Cell cycle
+```{r eval=FALSE, include=FALSE}
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+# Create our Seurat object and complete the initalization steps
+marrow <- CreateSeuratObject(counts = expr[, rownames(meta)], meta.data = meta)
+
+# store mitochondrial percentage in object meta data
+marrow <- PercentageFeatureSet(marrow, pattern = "^MT-", col.name = "percent.mt")
+
+# run sctransform
+marrow <- SCTransform(marrow, vars.to.regress = c("percent.mt", "Source"), verbose = FALSE)
+
+
+marrow <- RunPCA(marrow, features = VariableFeatures(marrow), ndims.print = 0, nfeatures.print = 0)
+
+
+marrow <- CellCycleScoring(marrow, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+# view cell cycle scores and phase assignments
+head(marrow[[]])
+
+temp = marrow[[]]
+
+saveRDS(temp, full.path("09_bulk/RNA_seq/DEGs/Res/cell_cycle.rds"))
+```
+
+
+
+### Calcuate G1/G2 mean score
+```{R  eval=FALSE, include=FALSE}
+
+cell_cycle = data.frame(
+    Gene=c(cell_cycle[["G1"]], cell_cycle[["G2"]]),
+    Phase=c(rep("G1", length(cell_cycle[["G1"]])), rep("G2", length(cell_cycle[["G2"]])))
+)
+
+row.names(cell_cycle) <- make.unique(as.character(cell_cycle$Gene))
+
+expr <- melt(as.matrix(
+    expr[unique(as.character(cell_cycle$Gene)), ]
+))
+
+expr <- na.omit(expr)
+
+
+expr$Phase = cell_cycle[expr$Var1, "Phase"]
+
+
+expr <- expr %>%
+    group_by(Var2, Phase) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var2, value, Phase) %>%
+    unique() %>%
+    as.data.frame()
+
+expr <- dcast(expr, Var2~Phase, fun.aggregate = mean, value.var = "value", fill=0)
+
+for (i in c("S.Score", "G2M.Score", "Phase")) {
+    expr[, i] <- meta[expr$Var2, i]
+}
+```
+
+
+```{r  eval=FALSE, include=FALSE}
+plist = list()
+plist[[1]] = ggplot(expr, aes(x=log2(G1 + 1), y=G2M.Score)) +
+    geom_point(size = 0.5) +
+    geom_density2d() +
+    annotate("text", x=4, y=1.5, label = cor(log2(expr$G1 + 1), y=expr$G2M.Score))
+
+
+plist[[2]] = ggplot(expr, aes(x=log2(G2 + 1), y=G2M.Score)) +
+    geom_point(size = 0.5) +
+    geom_density2d() +
+    annotate("text", x=4, y=1.5, label = cor(log2(expr$G2 + 1), y=expr$G2M.Score))
+
+plist[[3]] = ggplot(expr, aes(x=log2(G1 + 1), y=S.Score)) +
+    geom_point(size = 0.5) +
+    geom_density2d() +
+    annotate("text", x=4, y=1.5, label = cor(log2(expr$G1 + 1), y=expr$S.Score))
+
+plist[[4]] = ggplot(expr, aes(x=log2(G2 + 1), y=S.Score)) +
+    geom_point(size = 0.5) +
+    geom_density2d() +
+    annotate("text", x=4, y=1.5, label = cor(log2(expr$G2 + 1), y=expr$S.Score))
+
+
+cowplot::plot_grid(plotlist = plist, ncol = 2)
+```
+
+
+```{r fig.height=4, fig.width=6, eval=FALSE, include=FALSE}
+ggplot(expr, aes(x=S.Score, y=G2M.Score, color=Phase)) +
+    geom_point()
+```
+
+
+```{R eval=FALSE, include=FALSE}
+ggplot(expr, aes(x=log2(G1 + 1), y=log2(G2 + 1), color=Phase)) +
+    geom_point()
+```
+
+
+### Cell score
+```{R}
+markers <- read.csv(full.path("09_bulk/RNA_seq/MuSic/merged_markers.csv"), row.names = 1, stringsAsFactors = F)
+rownames(markers) <- make.unique(markers$Markers)
+
+
+make_cell_score <- function(expr, meta, markers, seed = 42) {
+    expr <- expr[as.character(unique(markers$Markers)), ]
+    temp_expr = melt(as.matrix(expr))
+    temp_expr$Cell = markers[temp_expr$Var1, "Cells"]
+    temp_expr$cell_short = meta[temp_expr$Var2, "cell_short"]
+    temp_expr$Disease = meta[temp_expr$Var2, "Disease"]
+    
+    set.seed(seed)
+    temp_cell_score <- temp_expr %>%
+        group_by(Cell, Var2) %>%
+        mutate(value = mean(value)) %>%
+        dplyr::select(Var2, value, Cell) %>%
+        unique() %>%
+        as.data.frame()
+    
+    temp_cell_score <- dcast(
+        temp_cell_score, Cell~Var2, 
+        fun.aggregate = mean, value.var = "value",
+        fill = 0
+    )
+    
+    temp_cell_score <- as.data.frame(temp_cell_score)
+    temp_cell_score <- temp_cell_score[!is.na(temp_cell_score$Cell), ]
+    rownames(temp_cell_score) <- as.character(temp_cell_score$Cell)
+    temp_cell_score <- temp_cell_score[, colnames(temp_cell_score) != "Cell"]
+    # temp_cell_score_scale = scale(temp_cell_score)
+    
+    temp_cell_score <- temp_cell_score[rownames(temp_cell_score) != "T", ]
+}
+
+```
+
+```{r}
+meta <- readRDS(full.path("02_rds/meta.rds"))
+```
+
+```{r}
+col_fun = colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+
+
+immu = c(
+    "B", "CD4", "CD8", "DC",
+    "Gran", "Mast", "Mo", "NK",
+    "Tregs", "Mφ"
+)
+
+
+### sort cells
+meta$isImmu <- meta$cell_short %in% immu
+meta <- meta[order(meta$cell_short, meta$isImmu), ]
+
+cells <- unique(meta$cell_short)
+
+# cell_color = wes_palette("Moonrise3", length(cell_types), type = "continuous")
+cell_color = c(
+    wes_palette("Darjeeling1"), 
+    wes_palette("Moonrise3"),
+    wes_palette("Darjeeling2"),
+    wes_palette("Moonrise1")
+)[1:length(cells)]
+
+names(cell_color) = cells
+
+cell_cycle_color = as.character(wes_palette("Royal1"))
+names(cell_cycle_color) <- c("Non-Cycling", "G2M", "S", "Cycling")
+
+
+set.seed(42)
+for (i in unique(meta$Disease)) {
+    temp_meta = meta[meta$Disease == i, ]
+    
+    temp_meta <- temp_meta %>%
+        filter(!isImmu) %>%
+        group_by(cell_short) %>%
+        sample_n(500, replace = T) %>%
+        unique() %>%
+        as.data.frame()
+    
+    rownames(temp_meta) <- temp_meta$Cells
+    
+    temp_meta = temp_meta[order(temp_meta$cell_short), ]
+    temp_meta$Phase = as.character(temp_meta$Phase)
+    temp_meta$Phase[temp_meta$Phase == "G1"] = "Non-Cycling"
+    temp_meta$Phase = factor(temp_meta$Phase, levels=c("Non-Cycling", "S", "G2M"))
+    
+    ta = HeatmapAnnotation(
+        Cycle = temp_meta$Phase,
+        Cell = temp_meta$cell_short,
+        col = list(
+            Cell=cell_color,
+            Cycle=cell_cycle_color
+        ),
+        show_legend = T,
+        show_annotation_name = T
+    )
+    
+    h <- Heatmap(
+        as.matrix(temp_cell_score[!rownames(temp_cell_score) %in% immu, rownames(temp_meta)]),
+        name = "Score",
+        col = col_fun,
+        border = T,
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        column_split = temp_meta$Phase,
+        column_title = i,
+        top_annotation = ta
+    )
+    
+    draw(h)
+}
+```
+
+
+
+```{r}
+
+col_fun = colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+
+
+immu = c(
+    "B", "CD4", "CD8", "DC",
+    "Gran", "Mast", "Mo", "NK",
+    "Tregs", "Mφ"
+)
+
+
+### sort cells
+meta$isImmu <- meta$cell_short %in% immu
+meta <- meta[order(meta$cell_short, meta$isImmu), ]
+
+cells <- unique(meta$cell_short)
+
+# cell_color = wes_palette("Moonrise3", length(cell_types), type = "continuous")
+cell_color = c(
+    wes_palette("Darjeeling1"), 
+    wes_palette("Moonrise3"),
+    wes_palette("Darjeeling2"),
+    wes_palette("Moonrise1")
+)[1:length(cells)]
+
+names(cell_color) = cells
+
+cell_cycle_color = as.character(wes_palette("Royal1"))
+names(cell_cycle_color) <- c("Non-Cycling", "G2M", "S", "Cycling")
+
+make_cell_score_seurat <- function(obj, meta, markers, scale.data = F, use.sum = F, seed=42) {
+    expr = obj@raw.data
+    
+    if (scale.data) {
+        expr = obj@scale.data
+    }
+    
+    expr <- expr[as.character(unique(markers$gene)), ]
+    temp_expr = melt(as.matrix(expr))
+    temp_expr$Clt = markers[temp_expr$Var1, "ident"]
+    
+    set.seed(seed) 
+    temp_cell_score <- temp_expr %>%
+        group_by(Clt, Var2) %>%
+        mutate(value1 = sum(value)) %>%
+        group_by(Clt, Var2) %>%
+        mutate(value = mean(value)) %>%
+        dplyr::select(Var2, value, Clt, value1) %>%
+        unique() %>%
+        as.data.frame()
+    
+    if (use.sum) {
+        temp_cell_score$value = temp_cell_score$value1
+    }
+    
+    temp_cell_score <- dcast(
+        temp_cell_score, Clt~Var2, 
+        fun.aggregate = mean, value.var = "value",
+        fill = 0
+    )
+    
+    temp_cell_score <- as.data.frame(temp_cell_score)
+    temp_cell_score <- temp_cell_score[!is.na(temp_cell_score$Clt), ]
+    temp_cell_score <- temp_cell_score[, colnames(temp_cell_score) != "Clt"]
+    # temp_cell_score_scale = scale(temp_cell_score)
+
+    temp_cell_score
+}
+
+
+make_heatmap_seurat <- function(
+    obj, cell_score, 
+    samplen=200, seed=42, 
+    merged = T, column_title=NULL, 
+    ident = NULL) {
+    temp_meta = obj@meta.data[order(obj@meta.data$Clt), ]
+    temp_meta$Phase = as.character(meta[as.character(temp_meta$Cells), "Phase"])
+    temp_meta$Phase[temp_meta$Phase == "G1"] = "Non-Cycling"
+    
+    if (merged) {
+        temp_meta$Phase[temp_meta$Phase %in% c("G2M", "S")] = "Cycling"
+        temp_meta$Phase = factor(temp_meta$Phase, levels=c("Non-Cycling", "Cycling"))
+    } else {
+        temp_meta$Phase = factor(temp_meta$Phase, levels=c("Non-Cycling", "S", "G2M"))
+    }
+    
+    if (!is.null(ident)) {
+        temp_meta = temp_meta[ident, ]
+    }
+    
+    set.seed(seed)
+    temp_meta <- temp_meta %>%
+        group_by(Clt) %>%
+        sample_n(samplen, replace = T) %>%
+        unique() %>%
+        as.data.frame()
+    
+    rownames(temp_meta) <- temp_meta$Cells
+    temp_meta = temp_meta[order(temp_meta$Clt), ]
+    
+    temp_meta <- temp_meta[intersect(rownames(temp_meta), colnames(cell_score)), ]
+    temp_meta = temp_meta[order(temp_meta$Phase, temp_meta$Clt, temp_meta$Batch), ]
+    
+    
+    cell_color = c(
+        wes_palette("Darjeeling1"), 
+        wes_palette("Moonrise3"),
+        wes_palette("Darjeeling2"),
+        wes_palette("Moonrise1")
+    )[1:length(unique(temp_meta$Clt))]
+    
+    names(cell_color) = unique(temp_meta$Clt)
+    
+    batch_colors = as.character(wes_palette("Moonrise3"))
+    names(batch_colors) <- c("WCH", "DL", 3:5)
+    
+    ta = HeatmapAnnotation(
+        Cycle = temp_meta$Phase,
+        Cluster = temp_meta$Clt,
+        Batch = temp_meta$Batch,
+        col = list(
+            Cluster=cell_color,
+            Cycle=cell_cycle_color,
+            Batch=batch_colors
+        ),
+        show_legend = T,
+        show_annotation_name = T,
+        annotation_legend_param = list(
+            Cluster=list(direction = "horizontal"),
+            Cycle=list(direction = "horizontal"),
+            Batch=list(direction = "horizontal")
+        )
+    )
+    
+    h <- Heatmap(
+        as.matrix(cell_score[, rownames(temp_meta)]),
+        name = "Score",
+        col = col_fun,
+        border = T,
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        column_split = temp_meta$Phase,
+        top_annotation = ta,
+        column_title = column_title,
+        row_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        column_title_gp = gpar(fontfamily = "Arial Unicode MS"),
+        heatmap_legend_param = list(
+            labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+            title_gp = gpar(fontfamily = "Arial Unicode MS"),
+            direction = "horizontal"
+        ),
+        use_raster = T
+    )
+    
+    h
+}
+
+
+
+calculate_sample_cycle_percentage <- function(obj, meta) {
+    temp_meta = obj@meta.data[order(obj@meta.data$Clt), ]
+    temp_meta$Phase = as.character(meta[as.character(temp_meta$Cells), "Phase"])
+    temp_meta$Phase[temp_meta$Phase == "G1"] = "Non-Cycling"
+    temp_meta$Phase[temp_meta$Phase %in% c("G2M", "S")] = "Cycling"
+    
+    temp_meta %>%
+        group_by(Phase, Clt) %>%
+        add_tally() %>%
+        dplyr::select(Phase, Clt, n) %>% # PatientID, 
+        unique() %>%
+        group_by(Clt) %>% #PatientID, 
+        mutate(p = n / sum(n) * 100) %>%
+        as.data.frame()
+}
+```
+
+
+### ATII
+
+```{R}
+# obj <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/seurat.rds"))
+
+obj <- readRDS(full.path("11_CNV/each_cells/ATII/LUAD/seurat_obj.rds"))
+
+markers <- read.csv(
+    full.path("11_CNV/each_cells/ATII/LUAD/cluster_markers.csv"),   # 03_each_cells/Batch
+    row.names = 1, stringsAsFactors = F
+)
+```
+
+
+
+```{R fig.height=4, fig.width=6}
+markers <- markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(50, wt = avg_logFC) %>%
+    unique() %>%
+    as.data.frame()
+
+temp_cell_score = make_cell_score_seurat(obj, obj@meta.data, markers, scale.data = T)
+obj@meta.data$Clt <- as.numeric(obj@meta.data$res.0.03) + 1
+obj@meta.data$Cells <- rownames(obj@meta.data)
+obj@meta.data$Batch <- ifelse(
+    meta[rownames(obj@meta.data), "Batch"] == 3, "DL", "WCH"
+)
+
+
+# temp_sd = apply(temp_cell_score, 2, sd)
+# plot(density(temp_sd))
+# temp_cell_score1 <- temp_cell_score[, temp_sd > 0.4]
+
+pdf(full.path("14_cycling/ATII_LUAD.pdf"), width = 6, height = 4)
+draw(
+    make_heatmap_seurat(obj, temp_cell_score, column_title = "ATII"),
+    heatmap_legend_side = "bottom", annotation_legend_side = "bottom",
+    merge_legend = T
+)
+dev.off()
+```
+
+
+```{R}
+obj@meta.data$Clt <- obj@meta.data$Clt
+perc = NULL
+temp_perc = calculate_sample_cycle_percentage(obj, meta)
+temp_perc$Cell = "ATII"
+temp_perc$Disease = "LUAD"
+perc = rbind(perc, temp_perc)
+```
+
+
+
+### Basal
+```{R}
+# obj <- readRDS(full.path("03_each_cells/Batch/Basal/LUSC/seurat.rds"))
+obj <- readRDS(full.path("11_CNV/each_cells/Basal/LUSC/seurat_obj.rds"))
+
+markers <- read.csv(
+    full.path("11_CNV/each_cells/Basal/LUSC/cluster_markers.csv"), 
+    row.names = 1, 
+    stringsAsFactors = F
+)
+```
+
+
+```{R}
+markers <- markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(50, wt = avg_logFC) %>%
+    unique() %>%
+    as.data.frame()
+
+temp_cell_score = make_cell_score_seurat(obj, obj@meta.data, markers, scale.data = T)
+
+obj@meta.data$Clt <- factor(
+    as.character(as.numeric(obj@meta.data$res.0.2)  + 1 ),
+    levels = as.character(sort(unique(as.numeric(obj@meta.data$res.0.2) + 1)))
+)
+
+obj@meta.data$Cells <- rownames(obj@meta.data)
+obj@meta.data$Batch <- ifelse(
+    meta[rownames(obj@meta.data), "Batch"] == 3, "DL", "WCH"
+)
+
+pdf(full.path("14_cycling/Basal_LUSC.pdf"), width = 6, height = 4)
+draw(
+    make_heatmap_seurat(obj, temp_cell_score, column_title = "Basal"),
+    heatmap_legend_side = "bottom", annotation_legend_side = "bottom",
+    merge_legend = T
+)
+dev.off()
+```
+
+
+```{R}
+temp_perc = calculate_sample_cycle_percentage(obj, meta)
+temp_perc$Cell = "Basal"
+temp_perc$Disease = "LUSC"
+perc = rbind(perc, temp_perc)
+```
+
+
+### NE
+```{R}
+# obj <- readRDS(full.path("03_each_cells/Batch/NE/LUAD/seurat.rds"))
+
+obj <- readRDS(full.path("11_CNV/each_cells/NE/LUAD/seurat_obj.rds"))
+
+
+markers <- read.csv(
+    full.path("11_CNV/each_cells/NE/LUAD/cluster_markers.csv"), 
+    row.names = 1, stringsAsFactors = F
+)
+```
+
+
+```{R}
+markers <- markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(50, wt = avg_logFC) %>%
+    unique() %>%
+    as.data.frame()
+
+temp_cell_score = make_cell_score_seurat(obj, obj@meta.data, markers, scale.data = T)
+
+obj@meta.data$Clt <- as.character(as.numeric(obj@meta.data$res.0.1) + 1)
+# temp_sd = apply(temp_cell_score, 2, sd)
+# plot(density(temp_sd))
+# temp_cell_score1 <- temp_cell_score[, temp_sd > 0.4]
+
+pdf(full.path("14_cycling/NE_LUAD.pdf"), width = 8, height = 4)
+draw(make_heatmap_seurat(obj, temp_cell_score, column_title = "NE (LUAD)"))
+dev.off()
+```
+
+```{R}
+temp_perc = calculate_sample_cycle_percentage(obj, meta)
+temp_perc$Cell = "NE"
+temp_perc$Disease = "LUAD"
+perc = rbind(perc, temp_perc)
+```
+
+
+### Epi
+```{R}
+# obj <- readRDS(full.path("03_each_cells/Batch/Epi/LUAD/seurat.rds"))
+
+obj <- readRDS(full.path("11_CNV/each_cells/Epi/LUAD/seurat_obj.rds"))
+
+markers <- read.csv(
+    full.path("11_CNV/each_cells/Epi/LUAD/cluster_markers.csv"), 
+    row.names = 1, stringsAsFactors = F
+)
+```
+
+
+```{R}
+markers <- markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(20, wt = avg_logFC) %>%
+    unique() %>%
+    as.data.frame()
+
+temp_cell_score = make_cell_score_seurat(obj, obj@meta.data, markers, scale.data = T)
+
+obj@meta.data$Clt <- as.character(as.numeric(obj@meta.data$res.0.1) + 1)
+# temp_sd = apply(temp_cell_score, 2, sd)
+# plot(density(temp_sd))
+# temp_cell_score1 <- temp_cell_score[, temp_sd > 0.4]
+
+# pdf(full.path("14_cycling/Epi_LUAD.pdf"), width = 8, height = 4)
+draw(make_heatmap_seurat(obj, temp_cell_score, column_title = "Epi (LUAD)"))
+# dev.off()
+```
+
+```{R}
+temp_perc = calculate_sample_cycle_percentage(obj, meta)
+temp_perc$Cell = "Epi"
+temp_perc$Disease = "LUAD"
+perc = rbind(perc, temp_perc)
+```
+
+### Fib LUAD
+```{R}
+obj <- readRDS(full.path("11_CNV/each_cells/Fib/LUAD/seurat_obj.rds"))
+
+markers <- read.csv(
+    full.path("11_CNV/each_cells/Fib/LUAD/cluster_markers.csv"), 
+    row.names = 1, stringsAsFactors = F
+)
+```
+
+
+```{R}
+markers <- markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(50, wt = avg_logFC) %>%
+    unique() %>%
+    as.data.frame()
+
+temp_cell_score = make_cell_score_seurat(obj, obj@meta.data, markers, scale.data = T)
+
+obj@meta.data$Clt <- as.character(as.numeric(obj@meta.data$res.0.1) + 1)
+# temp_sd = apply(temp_cell_score, 2, sd)
+# plot(density(temp_sd))
+# temp_cell_score1 <- temp_cell_score[, temp_sd > 0.4]
+
+pdf(full.path("14_cycling/Fib_LUAD.pdf"), width = 8, height = 4)
+draw(make_heatmap_seurat(obj, temp_cell_score, column_title = "Fib (LUAD)"))
+dev.off()
+```
+
+```{R}
+temp_perc = calculate_sample_cycle_percentage(obj, meta)
+temp_perc$Cell = "Fib"
+temp_perc$Disease = "LUAD"
+perc = rbind(perc, temp_perc)
+```
+
+
+### Fib LUSC
+```{R}
+obj <- readRDS(full.path("11_CNV/each_cells/Fib/LUSC/seurat_obj.rds"))
+
+markers <- read.csv(
+    full.path("11_CNV/each_cells/Fib/LUSC/cluster_markers.csv"), 
+    row.names = 1, stringsAsFactors = F
+)
+```
+
+
+```{R}
+markers <- markers %>%
+    filter(p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    top_n(50, wt = avg_logFC) %>%
+    unique() %>%
+    as.data.frame()
+
+temp_cell_score = make_cell_score_seurat(obj, obj@meta.data, markers, scale.data = T)
+
+obj@meta.data$Clt <- as.character(as.numeric(obj@meta.data$res.0.1) + 1)
+# temp_sd = apply(temp_cell_score, 2, sd)
+# plot(density(temp_sd))
+# temp_cell_score1 <- temp_cell_score[, temp_sd > 0.4]
+
+pdf(full.path("14_cycling/Fib_LUSC.pdf"), width = 8, height = 4)
+draw(make_heatmap_seurat(obj, temp_cell_score, column_title = "Fib (LUSC)"))
+dev.off()
+```
+
+
+```{R}
+temp_perc = calculate_sample_cycle_percentage(obj, meta)
+temp_perc$Cell = "Fib"
+temp_perc$Disease = "LUSC"
+perc = rbind(perc, temp_perc)
+```
+
+
+```{R}
+library(openxlsx)
+
+perc_mtx_LUAD = dcast(
+    perc[perc$Disease == "LUAD", ], 
+    PatientID + Phase ~ Cell + Clt, 
+    fun.aggregate = mean, value.var = "n",
+    fill = 0
+)
+
+perc_mtx_LUSC = dcast(
+    perc[perc$Disease == "LUSC", ], 
+    PatientID + Phase ~ Cell + Clt, 
+    fun.aggregate = mean, value.var = "n",
+    fill = 0
+)
+
+
+perc_perc_LUAD = dcast(
+    perc[perc$Disease == "LUAD", ], 
+    PatientID + Phase ~ Cell + Clt, 
+    fun.aggregate = mean, value.var = "p",
+    fill = 0
+)
+
+perc_perc_LUSC = dcast(
+    perc[perc$Disease == "LUSC", ], 
+    PatientID + Phase ~ Cell + Clt, 
+    fun.aggregate = mean, value.var = "p",
+    fill = 0
+)
+
+
+wb = createWorkbook()
+addWorksheet(wb, "LUAD_num")
+writeData(wb, 1, perc_mtx_LUAD)
+
+addWorksheet(wb, "LUAD_perc")
+writeData(wb, 2, perc_perc_LUAD)
+
+addWorksheet(wb, "LUSC_num")
+writeData(wb, 3, perc_mtx_LUSC)
+
+addWorksheet(wb, "LUSC_perc")
+writeData(wb, 4, perc_perc_LUSC)
+```
+
+### cycling by disease
+```{r}
+temp_meta = meta
+temp_meta$Phase = as.character(temp_meta$Phase)
+temp_meta$Phase[temp_meta$Phase == "G1"] = "Non-Cycling"
+temp_meta$Phase[temp_meta$Phase %in% c("G2M", "S")] = "Cycling"
+
+temp_meta = temp_meta %>%
+    group_by(PatientID, Phase, Disease, cell_short) %>%
+    add_tally() %>%
+    dplyr::select(PatientID, Phase, Disease, cell_short, n) %>%
+    unique() %>%
+    group_by(PatientID, Disease, cell_short) %>%
+    mutate(p = n / sum(n) * 100) %>%
+    as.data.frame()
+
+
+
+perc_mtx <- dcast(
+    temp_meta, PatientID + Phase ~ cell_short + Disease, 
+    value.var = "n", fun.aggregate = mean, fill = 0
+)
+
+perc_perc <- dcast(
+    temp_meta, PatientID + Phase ~ cell_short + Disease, 
+    value.var = "p", fun.aggregate = mean, fill = 0
+)
+
+
+addWorksheet(wb, "All_cell_num")
+writeData(wb, 5, perc_mtx)
+
+addWorksheet(wb, "All_cell_perc")
+writeData(wb, 6, perc_perc)
+
+saveWorkbook(wb, file = full.path("14_cycling/percentage_stats.xlsx"), overwrite = T)
+```
+
+
+### Cycling by Stage
+
+```{r fig.height=12, fig.width=12}
+temp_meta = meta
+temp_meta$Phase = as.character(temp_meta$Phase)
+temp_meta$Phase[temp_meta$Phase == "G1"] = "Non-Cycling"
+temp_meta$Phase[temp_meta$Phase %in% c("G2M", "S")] = "Cycling"
+
+temp <- temp_meta %>%
+    group_by(cell_short, Stage, Phase) %>%
+    add_tally() %>%
+    dplyr::select(cell_short, Stage, Phase, n) %>%
+    unique() %>%
+    group_by(cell_short, Stage) %>%
+    mutate(p = n / sum(n)) %>%
+    as.data.frame()
+
+ggplot(temp, aes(x=Stage, y=n, fill=Phase)) + 
+    geom_bar(stat = "identity", position = position_dodge()) +
+    facet_wrap(.~cell_short, scales = "free")
+```
+
+
+```{r fig.height=8, fig.width=12}
+temp$lab = paste0(round(temp$p, 2), "\n(", temp$n, ")")
+
+ggplot(temp, aes(x=Stage, y=p, fill=Phase, label = lab)) + 
+    geom_bar(stat = "identity") +
+    facet_wrap(.~cell_short, scales = "free") +
+    geom_text(size = 3, position = position_stack(vjust = 0.5))
+```
+
+
+## Cell cycle percentage by cells
+
+```{r}
+make_percentage_barplot_by_clt <- function(obj, meta) {
+    temp_meta = obj@meta.data
+    temp_meta$Phase = as.character(meta[rownames(temp_meta), "Phase"])
+    temp_meta$Phase[temp_meta$Phase == "G1"] = "Non-Cycling"
+    temp_meta$Phase[temp_meta$Phase %in% c("G2M", "S")] = "Cycling"
+    
+    temp <- temp_meta %>%
+        group_by(Clt, Phase) %>%
+        add_tally() %>%
+        dplyr::select(Clt, Phase, n) %>%
+        unique() %>%
+        group_by(Clt) %>%
+        mutate(p = n / sum(n)) %>%
+        as.data.frame()
+    
+    temp$lab = paste0(round(temp$p, 2), "\n(", temp$n, ")")
+    
+    ggplot(temp, aes(x=as.character(Clt), y=p, fill=Phase, label = lab)) + 
+        geom_bar(stat = "identity") +
+        geom_text(size = 3, position = position_stack(vjust = 0.5))
+}
+```
+
+
+### ATII
+```{R fig.height=3, fig.width=6}
+atii <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/seurat.rds"))
+atii@meta.data$Clt <- as.character(as.numeric(atii@meta.data$res.0.25) + 1)
+
+make_percentage_barplot_by_clt(atii, meta) + labs(x="", y="", title = "ATII")
+```
+
+### Basal
+```{R fig.height=3, fig.width=6}
+basal <- readRDS(full.path("03_each_cells/Batch/Basal/LUSC/seurat.rds"))
+basal@meta.data$Clt <- as.character(as.numeric(basal@meta.data$res.0.09) + 1)
+
+make_percentage_barplot_by_clt(basal, meta) + labs(x="", y="", title = "Basal")
+```
+
+
+### NE
+```{R fig.height=3, fig.width=6}
+ne <- readRDS(full.path("03_each_cells/Batch/NE/LUAD/seurat.rds"))
+ne@meta.data$Clt <- as.character(as.numeric(ne@meta.data$res.0.1) + 1)
+
+make_percentage_barplot_by_clt(ne, meta) + labs(x="", y="", title = "NE")
+```
+
+### Epi
+```{R fig.height=3, fig.width=6}
+epi <- readRDS(full.path("03_each_cells/Batch/Epi/LUAD/seurat.rds"))
+epi@meta.data$Clt <- as.character(as.numeric(epi@meta.data$res.0.1) + 1)
+
+make_percentage_barplot_by_clt(epi, meta) + labs(x="", y="", title = "Epi")
+```
+
+
+### Fib LUAD
+```{R fig.height=3, fig.width=6}
+fib_ad <- readRDS(full.path("03_each_cells/Batch/Fib/LUAD/seurat.rds"))
+fib_ad@meta.data$Clt <- as.character(as.numeric(fib_ad@meta.data$res.0.1) + 1)
+
+make_percentage_barplot_by_clt(fib_ad, meta) + labs(x="", y="", title = "Fib (LUAD)")
+```
+
+### Fib LUSC
+```{R fig.height=3, fig.width=6}
+fib_sc <- readRDS(full.path("03_each_cells/Batch/Fib/LUSC/seurat.rds"))
+fib_sc@meta.data$Clt <- as.character(as.numeric(fib_sc@meta.data$res.0.1) + 1)
+
+make_percentage_barplot_by_clt(fib_sc, meta) + labs(x="", y="", title = "Fib (LUSC)")
+```
+
+
+# Re calcualte after inferCNV
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

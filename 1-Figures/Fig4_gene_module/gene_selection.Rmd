@@ -1,0 +1,1720 @@
+---
+title: "Gene selection"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "LungCancer10x/"
+```
+
+
+```{r cars}
+full.path <- function(...) {
+    paste(root.dir, ..., sep = "/")
+}
+
+atii_genes = c(
+    "CYP2B7P", "'PIGR'", "MUC1", "SPINK1", "CKS1B",
+    "SFTPA1", "SFTPA2", "IGHG1"
+)
+
+basal_genes = c(
+    "CCND1", "UBB", "H2AFZ", "IGFBP7", "VIM"
+)
+```
+
+
+## load packages
+```{r include=FALSE}
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(reshape2)
+library(openxlsx)
+library(stringr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(openxlsx)
+```
+
+## load single cell obj
+```{r include=FALSE}
+atii <- readRDS(full.path("03_each_cells/Batch/ATII/LUAD/seurat.rds"))
+basal <- readRDS(full.path("03_each_cells/Batch/Basal/LUSC/seurat.rds"))
+```
+
+```{R}
+atii@meta.data$Clt = paste("C", atii@meta.data$res.0.1)
+temp = atii@meta.data %>%
+  group_by(Clt, Stage) %>%
+  add_tally() %>%
+  dplyr::select(Clt, Stage, n) %>%
+  unique() %>%
+  group_by(Clt) %>%
+  mutate(p = n / sum(n) * 100)
+```
+
+### Cluster drug gene
+```{r}
+gene_drug_luad <- c("ALKBH3", "ALOX5AP", "BRAF", "CASP8", "CCDC130", "EGFR", "EIF2S1", "ERP27", "G6PD", "INSR", "KRAS", "MET", "PSMB4", "RBPJ", "ROS1", "RPS6KA1", "SYT12", "TNFSF9")
+```
+
+
+```{r}
+format_expr_by_mean_for_heatmap <- function(object, group.by, genes.use=NULL) {
+    if (is.null(genes.use)) {
+        genes.use = rownames(object@scale.data)
+    }
+    
+    expr <- reshape2::melt(object@scale.data[genes.use, ])
+    expr$group = object@meta.data[expr$Var2, group.by]
+    
+    expr <- expr %>% 
+        group_by(Var1, group) %>%
+        mutate(value = mean(value)) %>%
+        dplyr::select(Var1, group, value) %>%
+        unique()
+    
+    expr <- reshape2::dcast(expr, Var1~group, fun.aggregate = mean)
+    
+    rownames(expr) <- expr$Var1
+
+    return(expr[, colnames(expr) != "Var1"])
+}
+```
+
+
+```{r fig.height=6, fig.width=8}
+expr <- format_expr_by_mean_for_heatmap(atii, group.by = "res.0.1", genes.use = gene_drug_luad)
+pdf(full.path("03_each_cells/Batch/ATII/LUAD/drug_gene.pdf"), width = 8, height = 6)
+Heatmap(
+    as.matrix(t(scale(t(expr)))),
+    heatmap_legend_param = list(
+        title = "Mean expr.",
+        labels_gp = gpar(fontsize = 12),
+        title_gp = gpar(fontsize = 15)
+    ),
+    column_names_rot = 30,
+    column_names_gp = gpar(fontsize = 20),
+    row_names_gp = gpar(fontsize = 15),
+    col = colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+)
+dev.off()
+```
+
+
+
+### Violin plot by stage
+```{r fig.height=6, fig.width=9}
+expr <- melt(as.matrix(atii@scale.data[intersect(atii_genes, rownames(atii@scale.data)), ]))
+expr$Stage <- atii@meta.data[expr$Var2, "Stage"]
+
+
+ggviolin(
+    data = expr,
+    x = "Stage",
+    y = "value",
+    fill = "Stage",
+    palette = c(
+        "I"="#65A9A3", 
+        "II"="#4A933E", 
+        "III"="#EC7A21", 
+        "IV"="#D73F47", 
+        "LUAD_Normal"="#FECC1B", 
+        "LUSC_Normal"="#778793"
+    ),
+    add = "boxplot", 
+    add.params = list(fill = "white")
+) + facet_wrap(.~Var1, scales = "free") +
+    theme(
+        legend.position = c(0.8, 0.2),
+        legend.direction = "horizontal"
+    ) +
+    labs(x = "", y = "")
+
+```
+
+```{r fig.height=4, fig.width=9}
+expr <- melt(as.matrix(basal@scale.data[intersect(basal_genes, rownames(basal@scale.data)), ]))
+expr$Stage <- basal@meta.data[expr$Var2, "Stage"]
+
+
+ggviolin(
+    data = expr,
+    x = "Stage",
+    y = "value",
+    fill = "Stage",
+    palette = c(
+        "I"="#65A9A3", 
+        "II"="#4A933E", 
+        "III"="#EC7A21", 
+        "IV"="#D73F47", 
+        "LUAD_Normal"="#FECC1B", 
+        "LUSC_Normal"="#778793"
+    ),
+    add = "boxplot", 
+    add.params = list(fill = "white")
+) + facet_wrap(.~Var1, scales = "free") +
+    theme(
+        legend.position = c(0.8, 0.2),
+        legend.direction = "horizontal"
+    ) +
+    labs(x = "", y = "")
+
+```
+
+## make violin plot of bulk data
+```{r}
+bulk = read.xlsx(full.path("09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+
+eg <- bitr(rownames(bulk), fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = org.Hs.eg.db)
+
+bulk <- bulk[eg$ENSEMBL, ]
+```
+
+
+```{r fig.height=9, fig.width=9}
+eg1 <- eg[eg$SYMBOL %in% atii_genes, ]
+expr <- bulk[eg1$ENSEMBL, ]
+rownames(expr) <- eg1$SYMBOL
+
+expr <- melt(as.matrix(expr))
+expr$Disease <- sapply(expr$Var2, function(x) {
+    str_replace_all(x, "\\d+", "")
+})
+expr <- expr[expr$Disease != "BSPN", ]
+
+
+ggviolin(
+    data = expr,
+    x = "Disease",
+    y = "value",
+    fill = "Disease",
+    palette = c(
+        "LUAD"="#0084D1", 
+        "BSPN"="#9CD7D7", 
+        "LUSC"="#A0C807", 
+        "Not"="grey"
+    ),
+    add = "boxplot", 
+    add.params = list(fill = "white")
+) + 
+    stat_compare_means(label.y.npc = "top", label.x.npc = "right", label.sep = "\n") +
+    facet_wrap(.~Var1, scales = "free") +
+    theme(
+        legend.position = "none",
+        # legend.direction = "horizontal"
+    ) +
+    scale_y_log10() +
+    labs(x = "", y = "")
+
+```
+
+
+```{r fig.height=6, fig.width=9}
+eg1 <- eg[eg$SYMBOL %in% basal_genes, ]
+expr <- bulk[eg1$ENSEMBL, ]
+rownames(expr) <- eg1$SYMBOL
+
+expr <- melt(as.matrix(expr))
+expr$Disease <- sapply(expr$Var2, function(x) {
+    str_replace_all(x, "\\d+", "")
+})
+expr <- expr[expr$Disease != "BSPN", ]
+
+
+ggviolin(
+    data = expr,
+    x = "Disease",
+    y = "value",
+    fill = "Disease",
+    palette = c(
+        "LUAD"="#0084D1", 
+        "BSPN"="#9CD7D7", 
+        "LUSC"="#A0C807", 
+        "Not"="grey"
+    ),
+    add = "boxplot", 
+    add.params = list(fill = "white")
+) + 
+    stat_compare_means(label.y.npc = "top", label.x.npc = "right", label.sep = "\n") +
+    facet_wrap(.~Var1, scales = "free") +
+    theme(
+        legend.position = "none",
+        # legend.direction = "horizontal"
+    ) +
+    scale_y_log10() +
+    labs(x = "", y = "")
+
+```
+
+
+## make plot of cnv
+```{r}
+wgs <- readRDS(full.path("09_bulk/DNA/computedMatrix/wgs.rds"))
+
+
+bulk_meta <- read.xlsx(full.path("09_bulk/RNATAC50commonSample-1119.xlsx"))
+bulk_meta <- bulk_meta[!is.na(bulk_meta$SampleID), ]
+rownames(bulk_meta) <- bulk_meta$SampleID
+bulk_meta$Stage <- str_replace(bulk_meta$Stage, "[^IV]", "")
+bulk_meta$Stage[is.na(bulk_meta$Stage)] <- "BSPN"
+
+
+
+make_point_plot_of_wgs <- function(gene) {
+    temp_wgs = wgs[wgs$gene_name == gene, ]
+    rownames(temp_wgs) <- paste(temp_wgs$SampleID, temp_wgs$SampleType, sep = "-")
+    temp_data = melt(as.matrix(temp_wgs[, str_detect(colnames(temp_wgs), "^V")]))
+    temp_data$Var2 <- as.numeric(as.character(str_replace_all(temp_data$Var2, "^V", "")))
+    
+    temp_data$SampleType = sapply(temp_data$Var1, function(x) {str_split(x, "-")[[1]][2]})
+    temp_data$SampleID = sapply(temp_data$Var1, function(x) { str_replace(str_split(x, "-")[[1]][1], "\\d+", "") })
+    
+    temp_data$SampleType = factor(temp_data$SampleType, levels = c("Tumor", "Normal"))
+    
+    p <- ggplot(
+        temp_data[temp_data$SampleID %in% c("LUAD", "LUSC"), ], 
+        aes(x=Var2, y = value, color = SampleType)
+    ) +
+        geom_point(size = 0.4) +
+        facet_grid(.~SampleID+SampleType) +
+        geom_smooth(method = loess) +
+        labs(x = "", y = "", color = "") +
+        theme_bw() +
+        theme(
+            axis.text.x = element_blank(),
+            legend.position = "bottom",
+            legend.text = element_text(size = 15),
+            strip.text = element_text(size = 15),
+            axis.text.y = element_text(size = 10)
+        )
+    
+    return (p)
+}
+```
+
+
+```{r fig.height=3, fig.width=4}
+for (i in atii_genes) {
+    tryCatch({
+        p <- make_point_plot_of_wgs(i)
+        p <- p + labs(title = i)
+        print(p)
+    }, error = function(x) {
+        
+    })
+}
+```
+
+
+```{r fig.height=3, fig.width=4}
+for (i in basal_genes) {
+    tryCatch({
+        p <- make_point_plot_of_wgs(i)
+        p <- p + labs(title = i)
+        print(p)
+    }, error = function(x) {
+        
+    })
+}
+```
+
+
+
+```{r fig.height=3, fig.width=4}
+genes = c("SOX4", "ADAR", "TP63", "KLF6", "AHR", "POGZ", "HOXD1", "ELF3", "PITX1", "JUNB", "ID2", "ZFP36L2")
+for(i in genes) {
+      tryCatch({
+        p <- make_point_plot_of_wgs(i)
+        p <- p + labs(title = i)
+        print(p)
+    }, error = function(x) {
+        
+    })
+}
+```
+
+
+## Surv
+```{r}
+
+read_expr <- function(path) {
+    library(SummarizedExperiment)
+    library(stringr)
+    library(clusterProfiler)
+    library(org.Hs.eg.db)
+    
+    expr <- readRDS(path)
+    
+    expr <- as.data.frame(assay(expr))
+    
+    # rownames(expr) <- make.unique(sapply(rownames(expr), function(x) {
+    #     str_split(x, "\\|")[[1]][1]
+    # }))
+
+    et <- bitr(rownames(expr), fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = org.Hs.eg.db)
+    expr <- expr[et$ENSEMBL, ]
+    rownames(expr) <- make.unique(et$SYMBOL)
+    
+    colnames(expr) <- sapply(colnames(expr), function(x) {
+        temp = str_split(x, "-")[[1]]
+        
+        paste(temp[1:3], collapse = "-")
+    })
+    
+    expr
+}
+
+
+
+luad_cli <- readRDS(full.path("TCGA", "LUAD_clinical.rds"))
+rownames(luad_cli) <- luad_cli$submitter_id
+luad_expr <- read_expr(full.path("TCGA", "LUAD_counts.rds"))
+luad_fpkm <- read_expr(full.path("TCGA", "LUAD.rds"))
+
+lusc_cli <- readRDS(full.path("TCGA", "LUSC_clinical.rds"))
+rownames(lusc_cli) <- lusc_cli$submitter_id
+lusc_expr <- read_expr(full.path("TCGA", "LUSC_counts.rds"))
+lusc_fpkm <- read_expr(full.path("TCGA", "LUSC.rds"))
+
+
+make_surv_plot <- function(clinical, title, subtitle="") {
+    p <- TCGAanalyze_survival(
+        clinical,
+        "group",
+        filename = NULL,
+        risk.table = F,
+        conf.int = F,
+        ncensor.plot = TRUE,
+        labels = c("high", "low"),
+        color = c("red", "blue"),
+        conf.int.style = "step",  # customize style of confidence intervals,
+        pval.coord = c(0.1, 0.1)
+    )
+    p <- p$plot
+    p <- p + 
+        labs(title = title, subtitle = subtitle) +
+        ggplot2::theme(
+            aspect.ratio = 1,
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 15),
+            legend.position = c(0.75, 0.9),
+            legend.title = element_blank(),
+            legend.text = element_text(size = 15),
+            plot.title = element_text(size = 15, hjust = 0.5)
+        )
+    
+    return(p)
+}
+
+
+surv_plot_by_gene <- function(clinical, expr, gene, by = 3, title="") {
+    library(TCGAbiolinks)
+    library(ggplot2)
+    
+    temp = as.numeric(as.character(expr[gene, ]))
+    
+    if (by == "mean") {
+        high <- colnames(expr)[expr[gene, ] > mean(temp)]
+    } else if (by > 1) {
+        high <- colnames(expr)[expr[gene, ] > summary(temp)[by]]
+    } else {
+        high <- expr[gene, ]
+        high <- sort(high, decreasing = T)
+        high <- names(high)[1:round(length(high) * by)]
+    }
+    
+    clinical$group = "low"
+    clinical[high, "group"] = "high"
+    
+    return(make_surv_plot(clinical, title))
+}
+
+
+surv_plot_by_gene_set <- function(clinical, expr, gene_set, by = 3, title = "", by.mean = T) {
+    library(TCGAbiolinks)
+    library(ggplot2)
+    
+    if (length(setdiff(gene_set, rownames(expr))) > 0) {
+        print(setdiff(gene_set, rownames(expr)))
+    }
+
+    gene_set <- intersect(gene_set, rownames(expr))
+    
+    if (by < 1) {
+        expr = t(expr[gene_set, ])
+        
+        expr <- expr[order(apply(expr, 1, mean), decreasing = T), ]
+        
+        high <- rownames(expr)[1:round(nrow(expr) * by)]
+    } else {
+        
+        if (by.mean) {
+            expr = as.data.frame(t(expr[gene_set, ]))
+            expr$mean <- apply(expr, 1, mean)
+    
+            high <- rownames(expr)[expr$mean > summary(expr$mean)[by]]
+            high <- sapply(high, function(x) {
+                str_replace_all(x, "\\.", "-")
+            })
+        } else {
+            high = rep(TRUE, ncol(expr))
+            
+            for (i in gene_set) {
+                temp = as.numeric(as.character(expr[i, ]))
+                high <- high & expr[i, ] > summary(temp)[by]
+            }
+            
+            high <- colnames(expr)[high]
+        }
+
+    }
+    
+    clinical$group = "low"
+    clinical[high, "group"] = "high"
+    
+    return(make_surv_plot(clinical, title))
+}
+
+```
+
+
+```{r fig.height=6, fig.width=6}
+
+# CK1SB 2 3 4 5
+# CYP2B7P 3 4 5
+# PIGR 4
+
+for(i in atii_genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(luad_cli, luad_expr, i, by = 0.1, title = paste(i, "(LUAD)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+
+
+```{r fig.height=6, fig.width=6}
+
+# UBB 3 2 fpkm 2 3 4
+# VIM 3 2
+# IGFBP7 4 2 fpkm 3
+# CCND1 fpkm 2 3
+
+for(i in basal_genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(lusc_cli, lusc_fpkm, i, by = 3, title = paste(i, "(LUAD)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+```{r fig.height=6, fig.width=6}
+
+# UBB 3 2 fpkm 2 3 4
+# VIM 3 2
+# IGFBP7 4 2 fpkm 3
+# CCND1 fpkm 2 3
+
+for(i in basal_genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(lusc_cli, lusc_expr, i, by = 2, title = paste(i, "(LUAD)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+
+
+```{R}
+for(i in genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(luad_cli, luad_expr, i, by = 5, title = paste(i, "(LUAD, 75)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+```{R}
+for(i in genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(lusc_cli, lusc_expr, i, by = 2, title = paste(i, "(LUSC, 75)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+
+```{R}
+genes <- c(
+  # 'ADAR','DSP','ELF3','ETS2',
+  # 'H1F0','HES1','HMGA1','HMGB2',
+  # 'HMGB3','HOPX','JUND','KLF6',
+  # 'LGR4','MYC','NKX2-1','PLXNB2',
+  # 'RNF213','SOX4','TAX1BP1','ID1',
+  # 'ID2','ID3','IFI16','HLA-DRB1',
+  # 'ZFP36','ZFP36L1','ZFP36L2','TOX4'
+  "HIST1H4C", "UBE2C", "KPNA2"
+)
+
+
+data = NULL
+for (i in genes) {
+  for(j in 2:5) {
+      tryCatch({
+          p <- surv_plot_by_gene(luad_cli, luad_expr, i, by = j, title = paste(i, j, "LUAD"))
+          
+          data = rbind(
+            data,
+            data.frame(
+              Disease="LUAD", Gene=i, Clt=j,
+              p = str_replace_all(p$layers[[4]]$geom_params$label, "p [=><] ", "")
+            )
+          )
+          
+          
+          p <- surv_plot_by_gene(lusc_cli, lusc_expr, i, by = j, title = paste(i, j, "LUSC"))
+          
+          data = rbind(
+            data,
+            data.frame(
+              Disease="LUSC", Gene=i, Clt=j,
+              p = str_replace_all(p$layers[[4]]$geom_params$label, "p [=><] ", "")
+            )
+          )
+      }, error = function(x) {})
+  }
+}
+
+
+markers = read.csv(full.path("11_CNV/each_cells/Basal/LUSC/cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+
+markers <- markers %>%
+    group_by(ident) %>%
+    top_n(3, wt = avg_logFC) %>%
+    as.data.frame()
+
+
+for (j in 2:5) {
+  p <- surv_plot_by_gene_set(lusc_cli, lusc_expr, markers$gene[markers$ident == 4], by = j, title = j)
+  print(p)
+}
+
+```
+
+
+```{R}
+for(i in genes) {
+    for (j in 2:5) {
+      tryCatch({
+          p <- surv_plot_by_gene(lusc_cli, lusc_expr, i, by = j, title = paste(i, "LUSC"))
+          data = rbind(
+              data,
+              data.frame(
+                Disease="LUSC", Gene=i, Clt=j,
+                p = str_replace_all(p$layers[[4]]$geom_params$label, "p [=><] ", "")
+              )
+            )
+      }, error = function(x) {})
+    }
+}
+```
+
+
+```{r}
+data$Clt <- sapply(data$Clt, function(x) {
+    ids = c("", "75", "median", "mean", "25")
+    ids[x]
+})
+
+
+temp = reshape2::dcast(data, Gene~Disease+Clt, value.var = "p")
+```
+
+
+```{R}
+for(i in genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(luad_cli, luad_expr, i, by = 4, title = paste(i, "(LUAD, mean)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+
+```{R}
+for(i in genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(lusc_cli, lusc_expr, i, by = 4, title = paste(i, "(LUSC, mean)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+
+
+```{R}
+for(i in genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(luad_cli, luad_expr, i, by = 5, title = paste(i, "(LUAD, 25)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+
+```{R}
+for(i in genes) {
+    tryCatch({
+        p <- surv_plot_by_gene(lusc_cli, lusc_expr, i, by = 5, title = paste(i, "(LUSC, 25)"))
+        print(p)
+    }, error = function(x) {})
+}
+```
+
+
+---------
+
+## Batch find target genes
+批量挑选一部分基因出来
+
+### bulk
+```{r}
+bulk <- read.xlsx(full.path("09_bulk/RNA_seq/RSEM.xlsx"), rowNames = T)
+gene_pos <- read.table(full.path("09_bulk/RNA_seq/gene_pos.txt"), header = F, row.names = 5)
+gene_pos$V6 <- make.unique(as.character(gene_pos$V6))
+rownames(bulk) <- gene_pos[rownames(bulk), "V6"]
+
+tcga <- read.csv(full.path("TCGA/Lung.csv"), row.names = 1, stringsAsFactors = F)
+
+east <- read_east_asian()
+gtex <- readRDS(full.path("09_bulk/GTEx/gtex_lung.rds"))
+
+sysu <- read.xlsx(full.path("SYSU/CHOICE_Study_Tumor_Adjacent_RNA-seq_Data.xlsx"), rowNames = T)
+
+
+common_genes = intersect(rownames(bulk), rownames(tcga))
+common_genes = intersect(common_genes, rownames(east))
+common_genes = intersect(common_genes, rownames(gtex))
+common_genes = intersect(common_genes, rownames(sysu))
+
+
+bulk_expr <- cbind(bulk[common_genes, ], tcga[common_genes, ])
+bulk_expr <- cbind(bulk_expr, east[common_genes, ])
+bulk_expr <- cbind(bulk_expr, gtex[common_genes, ])
+bulk_expr <- cbind(bulk_expr, sysu[common_genes, ])
+
+
+bulk_meta <-read.csv(full.path("09_bulk/RNA_seq/MuSic/All_est_meta.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+```{r}
+bulk_expr <- melt(as.matrix(bulk_expr))
+
+for (i in colnames(bulk_meta)) {
+    bulk_expr[, i] <- bulk_meta[bulk_expr$Var2, i]
+}
+
+bulk_expr <- na.omit(bulk_expr)
+```
+
+
+```{r}
+
+check_path <- function(path) {
+    if(!file.exists(path)) {
+        dir.create(path, recursive = T, showWarnings = F)
+    }
+}
+
+make_plots_of_pipe <- function(obj, targets, clinical, tcga_expr, output) {
+    
+    
+    ### single cell
+    temp_output = paste(output, "single_cell", sep = "/")
+    check_path(temp_output)
+    
+    expr <- melt(as.matrix(obj@scale.data[intersect(targets, rownames(obj@scale.data)), ]))
+    expr$Stage <- obj@meta.data[expr$Var2, "Stage"]
+    
+    for (i in unique(expr$Var1)) {
+        p <- ggviolin(
+            data = expr[expr$Var1 == i, ],
+            x = "Stage",
+            y = "value",
+            fill = "Stage",
+            palette = c(
+                "I"="#65A9A3", 
+                "II"="#4A933E", 
+                "III"="#EC7A21", 
+                "IV"="#D73F47", 
+                "LUAD_Normal"="#FECC1B", 
+                "LUSC_Normal"="#778793"
+            ),
+            add = "boxplot", 
+            add.params = list(fill = "white")
+        ) +
+            theme(
+                legend.position = c(0.8, 0.9),
+                legend.direction = "horizontal"
+            ) +
+            labs(x = "", y = "")
+        
+        ggsave(
+            filename = paste0(temp_output, "/", i, ".svg"), 
+            plot = p, height = 4, width = 6,
+        )
+    }
+    
+    ### bulk 
+    temp_output = paste(output, "bulk", sep = "/")
+    check_path(temp_output)
+    
+    for (i in unique(targets)) {
+        
+        expr = bulk_expr[bulk_expr$Var1 == i & bulk_expr$Source != "GTEx", ]
+        
+        if (nrow(expr) > 0) {
+            
+
+            p <- ggviolin(
+                data = expr,
+                x = "Disease",
+                y = "value",
+                fill = "Disease",
+                palette = c(
+                    "LUAD" = "#0084D1",  "NL(AD)"="#FECC1B",  "NL"="#778793", 
+                    "BSPN"="#C93311",  "NL(SC)"="#778793",  "LUSC"="#A0C807"
+                ),
+                add = "boxplot", 
+                add.params = list(fill = "white")
+            ) +
+                theme(
+                    legend.position = "bottom",
+                    legend.direction = "horizontal"
+                ) +
+                labs(x = "", y = "") +
+                stat_compare_means()
+            
+            if (length(unique(expr$Source)) > 1) {
+                p = p + facet_wrap(.~Source, scale = "free")
+            }
+        
+            ggsave(
+                filename = paste0(temp_output, "/", i, ".svg"), 
+                plot = p, height = 6, width = 8,
+            )
+        }
+    }
+    
+    
+    ### WGS
+    temp_output = paste(output, "WGS", sep = "/")
+    check_path(temp_output)
+    
+    for (i in targets) {
+        tryCatch({
+            p <- make_point_plot_of_wgs(i)
+            p <- p + labs(title = i)
+            
+            ggsave(
+                filename = paste0(temp_output, "/", i, ".svg"), 
+                plot = p, height = 3, width = 4,
+            )
+        }, error = function(x) {
+            
+        })
+    }
+    
+    ### Survival
+    labels = c("", "75", "median", "mean", "25")
+    
+    for(i in targets) {
+        
+        for (j in c(2, 3, 4, 5)) {
+            
+            temp_output = paste(output, "Surv", labels[j] , sep = "/")
+            check_path(temp_output)
+            
+            tryCatch({
+                p <- surv_plot_by_gene(clinical, tcga_expr, i, by = j, title = i)
+                
+                ggsave(
+                    filename = paste0(temp_output, "/", i, ".svg"), 
+                    plot = p, height = 4, width = 4,
+                )
+            }, error = function(x) {})
+        }
+
+    }
+}
+
+```
+
+
+```{R}
+atii_mfuzz <- read.csv(full.path("03_each_cells/Batch/ATII/LUAD/mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+for(i in unique(atii_mfuzz$Clt)) {
+    print(i)
+    make_plots_of_pipe(
+        atii, 
+        atii_mfuzz$gene[atii_mfuzz$Clt == i], 
+        luad_cli, 
+        luad_expr, 
+        full.path("03_each_cells/Batch/ATII/LUAD/", "mfuzz", i)
+    )
+}
+
+
+basal_mfuzz <- read.csv(full.path("03_each_cells/Batch/Basal/LUSC/mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+for(i in unique(basal_mfuzz$Clt)) {
+    print(i)
+    make_plots_of_pipe(
+        basal, 
+        basal_mfuzz$gene[basal_mfuzz$Clt == i], 
+        lusc_cli, 
+        lusc_expr, 
+        full.path("03_each_cells/Batch/Basal/LUSC/", "mfuzz", i)
+    )
+}
+```
+
+
+### Test gene on protein level
+```{R}
+read_protein <- function(path, scale = F) {
+    
+    wb <- loadWorkbook(path)
+    sheets <- wb$sheet_names
+    
+    res = NULL
+    data <- read.xlsx(wb, sheet = which(sheets == "SNR532"))
+    data <- data[, !colnames(data) %in% c("Block", "Column", "Row")]
+    
+    if (scale) {
+      data[, 3:ncol(data)] <- t(scale(t(data[, 3:ncol(data)])))
+    }
+    # data[, 3:ncol(data)] <- scale(data[, 3:ncol(data)])
+    data <- reshape2::melt(data, id.vars = c("Name", "ID"))
+    data$source = "SNR532"
+    res = rbind(data, res)
+    
+    data <- read.xlsx(wb, sheet = which(sheets == "SNR635"))
+    data <- data[, !colnames(data) %in% c("Block", "Column", "Row")]
+    if (scale) {
+      data[, 3:ncol(data)] <- t(scale(t(data[, 3:ncol(data)])))
+    }
+    
+    # data[, 3:ncol(data)] <- scale(data[, 3:ncol(data)])
+    data <- reshape2::melt(data, id.vars = c("Name", "ID"))
+    data$source = "SNR635"
+    
+    res = rbind(res, data)
+    
+    res$variable = as.character(res$variable)
+    res$variable[str_detect(res$variable, "^LA")] <- "LUAD"
+    res$variable[str_detect(res$variable, "^LS")] <- "LUSC"
+    res$variable[str_detect(res$variable, "^NC")] <- "Normal"
+    res <- res[res$variable %in% c("LUAD", "LUSC", "Normal"), ]
+    
+    return(res)
+}
+
+
+data1 <- read_protein(full.path("10_protein/1_round.xlsx"))
+data2 <- read_protein(full.path("10_protein/2_round.xlsx"))
+```
+
+
+```{r}
+
+for (i in atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"]) {
+    print(i)
+    temp = data1[data1$Name == i, ]
+    temp_output = full.path("03_each_cells/Batch/ATII/LUAD/mfuzz/M.Iprotein/1")
+    check_path(temp_output)
+    
+    if (nrow(temp) > 0) {
+        p = ggviolin(
+             data=temp,
+             x="variable",
+             y="value",
+             fill="variable",
+             palette = c(
+                "LUAD"="#0084D1", 
+                "BSPN"="#9CD7D7", 
+                "LUSC"="#A0C807", 
+                "Normal"="grey"
+            ),
+            add = "boxplot", 
+            add.params = list(fill = "white")
+        ) + 
+            facet_grid(.~source) +
+            stat_compare_means(comparisons = list(c("LUAD", "Normal"), c("LUSC", "Normal"), c("LUAD", "LUSC")))
+        
+        ggsave(
+            filename = paste0(temp_output, "/", i, ".svg"), 
+            plot = p, height = 4, width = 6,
+        )
+    }
+    
+    temp_output = full.path("03_each_cells/Batch/ATII/LUAD/mfuzz/M.I/protein/2")
+    check_path(temp_output)
+    temp = data2[data2$Name == i, ]
+    
+    if (nrow(temp) > 0) {
+        p = ggviolin(
+             data=temp,
+             x="variable",
+             y="value",
+             fill="variable",
+             palette = c(
+                "LUAD"="#0084D1", 
+                "BSPN"="#9CD7D7", 
+                "LUSC"="#A0C807", 
+                "Normal"="grey"
+            ),
+            add = "boxplot", 
+            add.params = list(fill = "white")
+        ) + 
+            facet_grid(.~source) +
+            stat_compare_means(comparisons = list(c("LUAD", "Normal"), c("LUSC", "Normal"), c("LUAD", "LUSC")))
+        
+        ggsave(
+            filename = paste0(temp_output, "/", i, ".svg"), 
+            plot = p, height = 4, width = 6,
+        )
+    }
+}
+```
+
+
+```{r}
+
+for (i in basal_mfuzz$gene[basal_mfuzz$Clt == "M.I"]) {
+    temp = data1[data1$Name == i, ]
+    temp_output = full.path("03_each_cells/Batch/Basal/LUSC/mfuzz/M.I/protein/1")
+    check_path(temp_output)
+    
+    if (nrow(temp) > 0) {
+        p = ggviolin(
+             data=temp,
+             x="variable",
+             y="value",
+             fill="variable",
+             palette = c(
+                "LUAD"="#0084D1", 
+                "BSPN"="#9CD7D7", 
+                "LUSC"="#A0C807", 
+                "Normal"="grey"
+            ),
+            add = "boxplot", 
+            add.params = list(fill = "white")
+        ) + 
+            facet_grid(.~source) +
+            stat_compare_means(comparisons = list(c("LUAD", "Normal"), c("LUSC", "Normal"), c("LUAD", "LUSC")))
+        
+        ggsave(
+            filename = paste0(temp_output, "/", i, ".svg"), 
+            plot = p, height = 4, width = 6,
+        )
+    }
+    
+    temp_output = full.path("03_each_cells/Batch/Basal/LUSC/mfuzz/M.I/protein/2")
+    check_path(temp_output)
+    temp = data2[data2$Name == i, ]
+    
+    if (nrow(temp) > 0) {
+        p = ggviolin(
+             data=temp,
+             x="variable",
+             y="value",
+             fill="variable",
+             palette = c(
+                "LUAD"="#0084D1", 
+                "BSPN"="#9CD7D7", 
+                "LUSC"="#A0C807", 
+                "Normal"="grey"
+            ),
+            add = "boxplot", 
+            add.params = list(fill = "white")
+        ) + 
+            facet_grid(.~source) +
+            stat_compare_means(comparisons = list(c("LUAD", "Normal"), c("LUSC", "Normal"), c("LUAD", "LUSC")))
+        
+        ggsave(
+            filename = paste0(temp_output, "/", i, ".svg"), 
+            plot = p, height = 4, width = 6,
+        )
+    }
+}
+```
+
+
+## Overlap with cluster makrers
+
+```{r}
+atii_mfuzz <- read.csv(full.path("03_each_cells/Batch/ATII/LUAD/mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+atii_markers <- read.csv(full.path("03_each_cells/Batch/ATII/LUAD/cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+
+atii_markers <- atii_markers %>%
+    filter(avg_logFC > 0.25, p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    as.data.frame()
+
+
+temp_genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"]
+sort(temp_genes[temp_genes %in% atii_markers$gene])
+```
+
+```{R}
+basal_mfuzz <- read.csv(full.path("03_each_cells/Batch/Basal/LUSC/mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+
+
+basal_markers <- read.csv(full.path("03_each_cells/Batch/Basal/LUSC/cluster_markers.csv"), row.names = 1, stringsAsFactors = F)
+
+basal_markers <- atii_markers %>%
+    filter(avg_logFC > 0.25, p_val_adj < 0.05) %>%
+    group_by(ident) %>%
+    as.data.frame()
+
+
+temp_genes = basal_mfuzz$gene[basal_mfuzz$Clt == "M.I"]
+sort(temp_genes[temp_genes %in% basal_markers$gene])
+```
+
+## Overlap with top 10% network
+```{R}
+atii_network <- readRDS(full.path("03_each_cells/ATII_Basal/network/atii_stage.rds"))
+
+atii_network = atii_network[["I"]]$centrality
+atii_network <- atii_network[order(atii_network$Betweenness, decreasing = T), ]
+atii_network <- atii_network[1:round(0.1 * nrow(atii_network)), ]
+
+temp_genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"]
+sort(temp_genes[temp_genes %in% rownames(atii_network)])
+```
+
+```{R}
+basal_network <- readRDS(full.path("03_each_cells/ATII_Basal/network/basal_stage.rds"))
+
+basal_network = basal_network[["I"]]$centrality
+basal_network <- basal_network[order(basal_network$Betweenness, decreasing = T), ]
+basal_network <- basal_network[1:round(0.2 * nrow(atii_network)), ]
+
+temp_genes = basal_mfuzz$gene[basal_mfuzz$Clt == "M.I"]
+sort(temp_genes[temp_genes %in% rownames(basal_network)])
+```
+
+
+## TF
+```{R}
+tf <- read.xlsx(full.path("09_bulk/RNA_seq/DEGs/Res/Overlap.xlsx"), rowNames = T, sheet = 3)
+tf = data.frame(TF=unique(tf$gene))
+```
+
+```{r}
+known_tf <- readRDS(full.path("12_TF/Teichmann_TFlist.Rds"))
+known_tf <- bitr(known_tf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+```
+
+
+#### Overlap with scRNA-seq
+```{R}
+atii = readRDS(full.path("09_bulk/RNA_seq/DEGs/Res/ATII_markers.rds"))
+atii <- atii[atii$p_val_adj < 0.05 & atii$avg_logFC < -0.25, ]
+
+
+basal = readRDS(full.path("09_bulk/RNA_seq/DEGs/Res/Basal_markers.rds"))
+basal <- basal[basal$p_val_adj < 0.05 & basal$avg_logFC < -0.25, ]
+```
+
+
+### ATII only and Basal only
+```{r}
+sc_only = NULL
+temp = atii[atii$gene %in% known_tf$SYMBOL & !atii$gene %in% tf$TF, ]
+temp$cell = "ATII"
+sc_only = rbind(sc_only, temp)
+
+temp = basal[basal$gene %in% known_tf$SYMBOL & !basal$gene %in% tf$TF, ]
+temp$cell = "Basal"
+sc_only = rbind(sc_only, temp)
+
+write.csv(sc_only, full.path("09_bulk/RNA_seq/DEGs/Res/sc_only_tf.csv"))
+```
+
+
+```{R}
+tf$is_ATII = tf$TF %in% atii$gene
+tf$is_Basal = tf$TF %in% basal$gene
+
+tf <- tf[tf$is_ATII | tf$is_Basal, ]
+rownames(tf) <- tf$TF
+```
+
+
+#### Plot WGS
+```{R}
+out_dir = full.path("09_bulk/RNA_seq/DEGs/WGS/")
+dir.create(out_dir, showWarnings = F, recursive = T)
+
+tf$WGS = NA
+
+for (i in tf$TF) {
+    tryCatch({
+      
+      p = make_point_plot_of_wgs(i)
+      p = p + labs(title = i)
+      
+      tf[i, "WGS"] = "have"
+      
+      ggsave(
+        filename = paste0(out_dir, i, ".pdf"),
+        plot = p,
+        width = 4,
+        height = 3
+      )
+    }, error = function(e) {
+      print(i)
+    })
+}
+```
+
+
+
+#### Protein
+```{r}
+out_dir = full.path("09_bulk/RNA_seq/DEGs/Protein")
+dir.create(out_dir, showWarnings = F, recursive = T)
+
+tf$Protein = NA
+
+for(i in tf$TF) {
+    temp = data1[data1$Name == i, ]
+    if (nrow(temp) > 0) {
+        p = ggviolin(
+             data=temp,
+             x="variable",
+             y="value",
+             fill="variable",
+             palette = c(
+                "LUAD"="#0084D1", 
+                "BSPN"="#9CD7D7", 
+                "LUSC"="#A0C807", 
+                "Normal"="grey"
+            ),
+            add = "boxplot", 
+            add.params = list(fill = "white")
+        ) + 
+            facet_grid(.~source) +
+            stat_compare_means(comparisons = list(c("LUAD", "Normal"), c("LUSC", "Normal"), c("LUAD", "LUSC")))
+        
+        tf[i,"Protein"] = "have"
+        
+        ggsave(
+            filename = paste0(out_dir, "/", i, ".pdf"), 
+            plot = p, height = 4, width = 6,
+        )
+    }
+}
+```
+
+
+
+#### Surv
+```{r}
+labels = c("", "75", "median", "mean", "25")
+
+for (i in c("LUAD", "LUSC")) {
+  for (j in labels) {
+    if (j != "") {
+      tf[, paste(i, j, sep = "_")] = NA
+    }
+  }
+}
+
+    
+for(i in tf$TF) {
+    
+    for (j in c(2, 3, 4, 5)) {
+      temp_output = full.path("09_bulk/RNA_seq/DEGs/Surv", "LUAD",  labels[j])
+      dir.create(temp_output, showWarnings = F, recursive = T)
+      
+      tryCatch({
+          p <- surv_plot_by_gene(luad_cli, luad_expr, i, by = j, title = i)
+          
+          tf[i, paste0("LUAD_", labels[j])] = str_replace_all(p$layers[[4]]$aes_params$label, "p = ", "")
+          
+          ggsave(
+              filename = paste0(temp_output, "/", i, ".svg"), 
+              plot = p, height = 4, width = 4,
+          )
+      }, error = function(x) {})
+      
+      
+      temp_output = full.path("09_bulk/RNA_seq/DEGs/Surv", "LUSC",  labels[j])
+      dir.create(temp_output, showWarnings = F, recursive = T)
+      
+      tryCatch({
+          p <- surv_plot_by_gene(lusc_cli, lusc_expr, i, by = j, title = i)
+          
+          tf[i, paste0("LUSC_", labels[j])] = str_replace_all(p$layers[[4]]$aes_params$label, "p = ", "")
+          
+          ggsave(
+              filename = paste0(temp_output, "/", i, ".svg"), 
+              plot = p, height = 4, width = 4,
+          )
+      }, error = function(x) {})
+    }
+
+}
+```
+
+```{R}
+write.xlsx(tf, full.path("09_bulk/RNA_seq/DEGs/Res/tf.xlsx"))
+```
+
+
+
+
+## ATII
+
+```{r}
+make_wgs_plot <- function(data, outdir = full.path("11_CNV/each_cells/ATII/DEGs/WGS")) {
+    library(doMC)
+    temp = data
+    registerDoMC(5)
+    foreach(i = 1:nrow(temp), .errorhandling = "pass") %dopar% {
+        outdir_ = paste(outdir, temp[i, "ident"], sep = "/")
+        
+        dir.create(outdir_, recursive = T, showWarnings = F)
+        
+        p <- make_point_plot_of_wgs(temp[i, "gene"])
+        p <- p + labs(title = temp[i, "gene"])
+        
+        ggsave(
+            filename = paste0(outdir, "/", temp[i, "gene"], ".pdf"),
+            plot = p,
+            width = 4,
+            height = 3
+        )
+    }
+}
+
+
+make_surv_stats <- function(data, outdir, cli, expr) {
+    labels = c("", "75", "median", "mean", "25")
+    temp = data
+    for (j in c(2, 3, 4, 5)) {
+        temp[, labels[j]] = NA
+    }
+    
+    registerDoMC(5)
+    
+    for(i in 1:nrow(temp)) {
+          for (j in c(2, 3, 4, 5)) {
+            temp_output = paste(outdir, labels[j], sep = "/")
+            dir.create(temp_output, showWarnings = F, recursive = T)
+            
+            tryCatch({
+                p <- surv_plot_by_gene(cli, expr, i, by = j, title = i)
+                
+                temp[i, labels[j]] = str_replace_all(p$layers[[4]]$aes_params$label, "p = ", "")
+                
+                ggsave(
+                    filename = paste0(temp_output, "/", i, ".svg"), 
+                    plot = p, height = 4, width = 4,
+                )
+            }, error = function(x) {})
+        }
+      
+    }
+    temp
+}
+```
+
+
+```{R}
+markers <- read.csv(
+    full.path("11_CNV/each_cells/ATII/cluster_markers_LUAD.csv"), 
+    row.names = 1, stringsAsFactor = F
+)
+
+stage <- read.csv(
+    full.path("11_CNV/each_cells/ATII/stage_markers_LUAD.csv"), 
+    row.names = 1, stringsAsFactor = F
+)
+
+
+temp <- markers %>%
+  filter(p_val_adj < 0.05 & avg_logFC > 0.25) %>%
+  group_by(ident) %>%
+  top_n(50, wt=avg_logFC) %>%
+  as.data.frame()
+temp = temp[temp$ident != 5, ]
+
+make_wgs_plot(temp, full.path("11_CNV/each_cells/ATII/DEGs/WGS"))
+temp = make_surv_stats(temp, full.path("11_CNV/each_cells/ATII/DEGs/Surv"), luad_cli, luad_expr)
+temp$is_TF = temp$gene %in% tf$TF
+temp$is_stage_specific = temp$gene %in% stage[stage$avg_logFC > 0.25 & stage$p_val_adj < 0.05 & stage$ident == "I", "gene"]
+```
+
+
+```{r}
+markers <- read.csv(
+    full.path("11_CNV/each_cells/Basal/cluster_markers_LUSC.csv"), 
+    row.names = 1, stringsAsFactor = F
+)
+
+stage <- read.csv(
+    full.path("11_CNV/each_cells/Basal/stage_markers_LUSC.csv"), 
+    row.names = 1, stringsAsFactor = F
+)
+
+
+temp1 <- markers %>%
+  filter(p_val_adj < 0.05 & avg_logFC > 0.25) %>%
+  group_by(ident) %>%
+  top_n(50, wt=avg_logFC) %>%
+  as.data.frame()
+
+temp1 = temp1[temp1$ident == 4, ]
+
+make_wgs_plot(temp1, full.path("11_CNV/each_cells/Basal/DEGs/WGS"))
+
+temp1 = make_surv_stats(temp1, full.path("11_CNV/each_cells/Basal/DEGs/Surv"), lusc_cli, lusc_expr)
+temp1$is_TF = temp1$gene %in% tf$TF
+temp1$is_stage_specific = temp1$gene %in% stage[stage$avg_logFC > 0.25 & stage$p_val_adj < 0.05 & stage$ident == "I", "gene"]
+```
+
+
+```{r}
+wb = createWorkbook()
+addWorksheet(wb, "ATII")
+writeData(wb, 1, temp)
+
+addWorksheet(wb, "Basal")
+writeData(wb, 2, temp1)
+
+saveWorkbook(wb, full.path("11_CNV/each_cells/cluster_select.xlsx"), overwrite = T)
+```
+
+
+
+```{R}
+genes = c(
+  "AQP5",
+  "AZGP1",
+  "CEACAM5",
+  "CHI3L1",
+  "CRABP2",
+  "EEF1A2",
+  "PIGR",
+  "SPINK1",
+  "CP",
+  "BIRC5",
+  "KPNA2"
+)
+
+eg = bitr(genes, fromType = "SYMBOL", toType = "ENSEMBL", org.Hs.eg.db)
+```
+
+
+```{R}
+atii <- readRDS(full.path("11_CNV/each_cells/ATII/LUAD/seurat_obj.rds"))
+atii@meta.data$ident <- as.character(as.numeric(atii@meta.data$res.0.03) + 1)
+
+basal <- readRDS(full.path("11_CNV/each_cells/Basal/LUSC/seurat_obj.rds"))
+basal@meta.data$ident <- as.character(as.numeric(basal@meta.data$res.0.2) + 1)
+
+
+genes = c("AQP3", "GAPDH", "NKX2-1", "PPT1", "SPHK1", "SUSD2", "VDAC3", "G6PD")
+```
+
+
+```{r}
+DotPlot(atii, genes.plot = genes, group.by = "ident", x.lab.rot = T, do.return = T) +
+  coord_flip() + labs(title = "ATII")
+```
+
+
+```{r}
+DotPlot(basal, genes.plot = genes, group.by = "ident", x.lab.rot = T, do.return = T) +
+  coord_flip() + labs(title = "Basal")
+```
+
+
+###
+```{R}
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+```
+
+
+
+```{r fig.height=6, fig.width=8}
+genes = c("PIGR", "SUSD2", "BTG2", "EGR1", "CRABP2", "NKX2-1", "SPHK1", "AQP3", "PPT1", "VDAC3") # "TTF1", 
+
+temp_expr <- expr[
+  intersect(genes, rownames(expr)), 
+  row.names(meta)[
+    as.character(meta$cell_short) %in% c("ATII", "Basal", "NE", "Fib", "Epi") &
+      !is.na(meta$Malignant)
+  ]
+]
+
+# temp_expr <- melt(t(scale(t(as.matrix(temp_expr)))))
+
+temp_expr <- melt(log10(as.matrix(temp_expr) + 1))
+
+
+temp_expr$Cell <- meta[as.character(temp_expr$Var2), "cell_short"]
+temp_expr$Malignant <- meta[as.character(temp_expr$Var2), "Malignant"]
+
+
+# ggplot(temp_expr, aes(x=Cell, y=value, fill=Malignant)) + 
+#   facet_wrap(.~Var1, scales = "free") +
+#   geom_boxplot()
+
+temp_expr$Cell <- factor(temp_expr$Cell, levels = sort(unique(temp_expr$Cell)))
+
+p <- ggpubr::ggboxplot(
+  temp_expr, "Cell", "value", 
+  fill = "Malignant",
+  palette = c("#00AFBB", "#E7B800"),
+   ) +
+  facet_wrap(.~Var1, scales = "free") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+ggsave(
+  filename = full.path("11_CNV/selected_genes_log10_val.pdf"),
+  plot = p, width = 8, height = 6
+)
+```
+
+
+```{R}
+### Survival
+labels = c("", "75", "median", "mean", "25")
+
+output = full.path("11_CNV/selected_genes/LUAD")
+clinical = luad_cli
+tcga_expr = luad_expr
+
+for(i in genes) {
+    
+    for (j in c(2, 3, 4, 5)) {
+        
+        temp_output = paste(output, labels[j] , sep = "/")
+        check_path(temp_output)
+        
+        tryCatch({
+            p <- surv_plot_by_gene(clinical, tcga_expr, i, by = j, title = i)
+            
+            ggsave(
+                filename = paste0(temp_output, "/", i, ".svg"), 
+                plot = p, height = 4, width = 4,
+            )
+        }, error = function(x) {})
+    }
+
+}
+```
+
+```{r}
+output = full.path("11_CNV/selected_genes/LUSC")
+clinical = lusc_cli
+tcga_expr = lusc_expr
+
+for(i in genes) {
+    
+    for (j in c(2, 3, 4, 5)) {
+        
+        temp_output = paste(output, labels[j] , sep = "/")
+        check_path(temp_output)
+        
+        tryCatch({
+            p <- surv_plot_by_gene(clinical, tcga_expr, i, by = j, title = i)
+            
+            ggsave(
+                filename = paste0(temp_output, "/", i, ".svg"), 
+                plot = p, height = 4, width = 4,
+            )
+        }, error = function(x) {})
+    }
+
+}
+```
+
+
+
+```{r}
+temp_expr <- expr[
+  intersect(genes, rownames(expr)), 
+  row.names(meta)[
+    as.character(meta$cell_short) %in% c("ATII", "Basal", "NE", "Fib", "Epi") &
+      !is.na(meta$Malignant)
+  ]
+]
+
+temp_expr <- melt(as.matrix(temp_expr))
+temp_expr$Disease <- str_replace_all(meta[as.character(temp_expr$Var2), "Disease"], "_Normal", "")
+temp_expr$Malignant <- meta[as.character(temp_expr$Var2), "Malignant"]
+temp_expr$Cell <- meta[as.character(temp_expr$Var2), "cell_short"]
+
+temp <- temp_expr %>%
+  group_by(Var1, Cell, Malignant, Disease) %>%
+  mutate(val = mean(value)) %>%
+  dplyr::select(Var1, Cell, Malignant, Disease, val) %>%
+  unique()
+
+
+temp <- temp[temp$Cell %in% c("ATII", "Basal"), ]
+```
+
+
+### line plot of mean expression
+```{r}
+genes = c("SFTPA2", "SFTPB", "SFTPC", "CLDN18", "ABCA3", "LAMP3", "LPCAT1", "ILB", "NKX2-1", "FOXA1", "MUC13", "TP63")
+
+temp = melt(as.matrix(expr[intersect(genes, row.names(expr)), ]))
+temp$cell = meta[temp$Var2, "cell_short"]
+temp$Malignant = meta[temp$Var2, "Malignant"]
+temp$Stage = meta[temp$Var2, "Stage"]
+```
+
+
+```{r}
+temp <- temp %>%
+  group_by(Var1, cell, Malignant, Stage) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value, cell, Malignant, Stage) %>%
+  unique() %>%
+  as.data.frame()
+
+temp <- temp[!is.na(temp$Malignant), ]
+```
+
+
+```{r fig.height=12, fig.width=12}
+ggplot(temp[temp$Malignant, ], aes(x=Stage, y=value, fill = Stage)) +
+  geom_point() +
+  facet_grid(cell~Var1, scales = "free")
+```
+
+
+```{r fig.height=12, fig.width=12}
+ggplot(temp[!temp$Malignant, ], aes(x=Stage, y=value, fill = Stage)) +
+  geom_point() +
+  facet_grid(cell~Var1, scales = "free")
+```
+
+
+```{r}
+genes = c('PIGR',
+'SUSD2',
+'BTG2',
+'EGR1',
+'CRABP2',
+'NKX2-1',
+'SPHK1',
+'AQP3',
+'PPT1',
+'VDAC3',
+'AQP5',
+'CEACAM5',
+'EEF1A2',
+'AZGP1',
+'SPINK1',
+'KPNA2',
+'CHI3L1',
+'BIRC5',
+'CP',
+'KLF6',
+'ANXA1',
+'CTTN',
+'ATF3',
+'S100A13',
+'ELF3'
+)
+
+temp = stage[stage$type == 1 & stage$ident == "I" & stage$cell %in% c("AT2", "Basal"), ]
+
+temp = temp[temp$gene %in% genes, ]
+```
+
+
+```{r}
+expr = readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+meta$Disease = str_replace_all(meta$Disease, "_Normal", "")
+meta <- meta[meta$cell_short %in% c("AT2", "Basal") & meta$Disease %in% c("LUAD", "LUSC"), ]
+
+obj <- CreateSeuratObject(
+    expr[, rownames(meta)],
+    meta.data = meta
+)
+
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = obj@raw.data), value = TRUE)
+    percent.mito <- Matrix::colSums(obj@raw.data[mito.genes, ])/Matrix::colSums(obj@raw.data)
+    
+obj <- AddMetaData(object =obj, metadata = percent.mito, col.name = "percent.mito")
+
+pcs = min(100, min(nrow(obj@raw.data), ncol(obj@raw.data)) - 1)
+
+obj <- NormalizeData(object = obj, normalization.method = "LogNormalize", scale.factor = 10000)
+obj <- FindVariableGenes(object = obj, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+obj <- ScaleData(object = obj, vars.to.regress = c("nUMI", "percent.mito"))
+```
+
+
+```{r}
+saveRDS(obj, full.path("02_rds/AT2_basal.rds"))
+```
+
+
+```{r}
+obj <- readRDS(full.path("02_rds/AT2_basal.rds"))
+
+obj@meta.data$Disease = str_replace_all(obj@meta.data$Disease, "_Normal", "")
+
+obj@meta.data$clt = paste(
+  obj@meta.data$cell_short, 
+  paste0(
+    ifelse(obj@meta.data$Malignant, "Malignant", "Non"),
+    "(", obj@meta.data$Disease, ")"
+  ),
+  sep = "_"
+)
+```
+
+```{r}
+DotPlot(obj, genes.plot = genes, group.by = "clt", do.return = T) +
+  coord_flip() +
+  theme(
+    axi
+  )
+```
+
+```{r}
+obj <- readRDS(full.path("11_CNV/each_cells/ATII/LUAD/seurat_obj.rds"))
+```
+
+
+```{r fig.height=8, fig.width=5}
+DotPlot(obj, genes.plot = sort(genes), group.by = "res.0.03", do.return = T) +
+  coord_flip()
+```
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

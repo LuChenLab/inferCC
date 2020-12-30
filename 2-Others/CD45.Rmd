@@ -1,0 +1,643 @@
+---
+title: "CD45+"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+## R Markdown
+
+
+```{r include=FALSE}
+library(doMC)
+library(stringr)
+library(dplyr)
+library(reshape2)
+
+extrafont::loadfonts()
+```
+
+
+```{r}
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+meta$Disease = str_replace_all(meta$Disease, "_Normal", "")
+```
+
+```{r}
+plot(density(as.numeric(as.character(expr["PTPRC", ]))))
+```
+
+
+```{R}
+umap <- read.csv(full.path("02_rds/umap.csv"), row.names = 1, stringsAsFactors = F)
+# umap <- umap[colnames(expr)[expr["PTPRC", ] > 2], ]
+```
+
+
+```{r fig.height=6, fig.width=6}
+ggplot(umap, aes(x=UMAP_1, y=UMAP_2)) + 
+    geom_point_rast(size = 0.1)
+```
+
+```{r}
+umap$Disease = meta[rownames(umap), "Disease"]
+
+
+plist = list()
+
+for (i in unique(umap$Disease)) {
+    plist[[i]] = ggplot(umap[umap$Disease == i, ], aes(x=UMAP_1, y=UMAP_2)) + 
+        geom_point_rast(size = 0.1) + labs(title = i)
+}
+
+cowplot::plot_grid(plotlist = plist)
+```
+
+
+```{r}
+umap$Malignant = meta[rownames(umap), "Malignant"]
+
+plist = list()
+
+for (j in c("LUAD", "LUSC")) {
+    for (i in c(T, F)) {
+        lab = paste(j, ifelse(i, "Malignant", "Non"))
+        plist[[lab]] = ggplot(umap[umap$Malignant == i & umap$Disease == j, ], aes(x=UMAP_1, y=UMAP_2)) + 
+            geom_point_rast(size = 0.1) + labs(title = lab)
+    }
+}
+
+
+cowplot::plot_grid(plotlist = plist)
+```
+
+
+## Make umap color by disease for different cell types
+
+```{r}
+stage_colors = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "LUAD_Normal"="#FECC1B", "LUSC_Normal"="#778793")
+disease_colors = c("LUAD" = "#0084D1", "LUAD_Normal"="#FECC1B", "Normal"="#73BDFF", "LUSC_Normal"="#778793", "LUSC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B")
+tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+```
+
+
+```{r}
+library(ggrastr)
+umap$Disease = meta[rownames(umap), "Disease"]
+umap$Malignant = ifelse(meta[rownames(umap), "Malignant"] == T, "Malignant", "Non-Malignant")
+umap$cell = meta[rownames(umap), "cell_short"]
+umap$Stage = sapply(meta[rownames(umap), "Stage"], function(x) {
+    if (x %in% c("I", "II")) {
+        return("Early")
+    } 
+    return("Advanced")
+})
+
+
+cols = as.character(wes_palette("Darjeeling1"))[1:2]
+names(cols) <- c("Malignant", "Non-Malignant")
+
+# pdf(full.path("11_CNV/umap/disease_malignant_by_cells.pdf"), height = 12, width = 8)
+# for (i in sort(c( "Gran", "B","Mast", "DC", "CD4", "CD8", "NK", "Mφ", "Tregs"))) {
+#     plist = list()
+# 
+#     for (j in c("LUAD", "LUSC")) {
+#         
+#         temp = umap[umap$Disease == j & umap$cell == i, ]
+#         
+#         min_x = min(temp[, 1]) + 2
+#         min_y = min(temp[, 2]) + 1
+#         
+#         plist[[length(plist) + 1]] = ggplot(temp, aes(x=UMAP_1, y=UMAP_2, color = Disease)) + 
+#             geom_point_rast(size = 0.1) + labs(title = j) +
+#             scale_color_manual(values = disease_colors) +
+#             annotate("text", x = min_x, y = min_y, label = paste0(i, "(n=", sum(umap$Disease == j & umap$cell == i), ")")) +
+#             theme(legend.position = "none")
+#     }
+#     
+#     
+#     for (j in c("LUAD", "LUSC")) {
+#         for (k in c(T, F)) {
+#             lab = paste(j, ifelse(k, "Malignant", "Non"))
+#             
+#             temp = umap[umap$Malignant == k & umap$Disease == j & umap$cell == i, ]
+#             
+#             min_x = min(temp[, 1]) + 2
+#             min_y = min(temp[, 2]) + 1
+#             
+#             plist[[length(plist) + 1]] = ggplot(temp, aes(x=UMAP_1, y=UMAP_2, color = Disease)) + 
+#                 geom_point_rast(size = 0.1) + labs(title = lab) +
+#                 scale_color_manual(values = disease_colors) +
+#                 annotate("text", x = min_x, y = min_y, label = paste0(i, "(n=", sum(umap$Malignant == k & umap$Disease == j & umap$cell == i), ")")) +
+#                 theme(legend.position = "none")
+#         }
+#     }
+#     
+#     p <- cowplot::plot_grid(plotlist = plist, ncol = 2)
+#     print(p)
+# }
+# dev.off()
+
+```
+
+
+# Mφ
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "Mφ" & umap$Disease %in% c("LUAD") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Disease)) +
+    geom_point_rast(size = 0.1) + 
+    # stat_ellipse() +
+    scale_color_manual(values = disease_colors) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "Mφ (LUAD)") +
+    ylim(-11, 15.5) +
+    xlim(-8.5, 9)
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/Mo_AD.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "Mφ" & umap$Disease %in% c("LUSC") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Disease)) +
+    geom_point_rast(size = 0.1) + 
+    # stat_ellipse() +
+    scale_color_manual(values = disease_colors) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "Mφ (LUSC)") +
+    ylim(-11, 15.5) +
+    xlim(-8.5, 9)
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/Mo_SC.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "Mφ" & umap$Disease %in% c("LUAD") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Malignant)) +
+    geom_point_rast(size = 0.1) +
+    stat_ellipse() +
+    scale_color_manual(values = cols) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = c(0.7, 0.15),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "Mφ (LUAD)", color = "") +
+    ylim(-11, 15.5) +
+    xlim(-8.5, 9)
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/Mo_AD_M_vs_NM.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "Mφ" & umap$Disease %in% c("LUSC") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Malignant)) +
+    geom_point_rast(size = 0.1) + 
+    stat_ellipse() +
+    scale_color_manual(values = cols) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = c(0.7, 0.15),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "Mφ (LUSC)", color = "") +
+    ylim(-11, 15.5) +
+    xlim(-8.5, 9)
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/Mo_SC_M_vs_NM.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+
+## B
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "B" & umap$Disease %in% c("LUAD") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Disease)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUAD") +
+    # stat_ellipse() +
+    scale_color_manual(values = disease_colors) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "B (LUAD)", color = "") +
+    ylim(-11, 12) +
+    xlim(-13, 14)
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/B_AD.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "B" & umap$Disease %in% c("LUSC") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Disease)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUSC") +
+    # stat_ellipse() +
+    scale_color_manual(values = disease_colors) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "B (LUSC)", color = "") +
+    ylim(-11, 12) +
+    xlim(-13, 14)
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/B_SC.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "B" & umap$Disease %in% c("LUAD") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Malignant)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUAD") +
+    stat_ellipse() +
+    scale_color_manual(values = cols) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = c(0.7, 0.15),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "B (LUAD)", color = "") +
+    ylim(-11, 12) +
+    xlim(-13, 14)
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/B_AD_M_vs_NM.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "B" & umap$Disease %in% c("LUSC") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Malignant)) +
+    geom_point_rast(size = 0.1) + 
+    stat_ellipse() +
+    scale_color_manual(values = cols) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = c(0.7, 0.15),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "B (LUSC)", color = "") +
+    ylim(-11, 12) +
+    xlim(-13, 14)
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/B_SC_M_vs_NM.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+
+
+## AT2
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "AT2" & umap$Disease %in% c("LUAD") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Disease)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUAD") +
+    # stat_ellipse() +
+    scale_color_manual(values = disease_colors) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "AT2 (LUAD)", color = "") +
+    ylim(-11, 12) +
+    xlim(-13, 10)
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/AT2_AD.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "AT2" & umap$Disease %in% c("LUSC") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Disease)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUSC") +
+    # stat_ellipse() +
+    scale_color_manual(values = disease_colors) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "AT2 (LUSC)", color = "") +
+    ylim(-11, 12) +
+    xlim(-13, 10)
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/AT2_SC.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "AT2" & umap$Disease %in% c("LUAD") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Malignant)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUAD") +
+    stat_ellipse() +
+    scale_color_manual(values = cols) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = c(0.7, 0.15),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "AT2 (LUAD)", color = "") +
+    ylim(-11, 12) +
+    xlim(-13, 10)
+
+
+p
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/AT2_AD_M_vs_NM.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "AT2" & umap$Disease %in% c("LUSC") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Malignant)) +
+    geom_point_rast(size = 0.1) + 
+    stat_ellipse() +
+    scale_color_manual(values = cols) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = c(0.7, 0.15),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "AT2 (LUSC)", color = "") +
+    ylim(-11, 12) +
+    xlim(-13, 10)
+
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/AT2_SC_M_vs_NM.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+
+## Basal
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "Basal" & umap$Disease %in% c("LUAD") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Disease)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUAD") +
+    # stat_ellipse() +
+    scale_color_manual(values = disease_colors) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "Basal (LUAD)", color = "") +
+    ylim(-15, 12) +
+    xlim(-13, 10)
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/Basal_AD.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "Basal" & umap$Disease %in% c("LUSC") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Disease)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUSC") +
+    # stat_ellipse() +
+    scale_color_manual(values = disease_colors) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "Basal (LUSC)", color = "") +
+    ylim(-15, 12) +
+    xlim(-13, 10)
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/Basal_SC.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "Basal" & umap$Disease %in% c("LUAD") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Malignant)) +
+    geom_point_rast(size = 0.1) + labs(title = "LUAD") +
+    stat_ellipse() +
+    scale_color_manual(values = cols) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = c(0.7, 0.15),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "Basal (LUAD)", color = "") +
+    ylim(-15, 12) +
+    xlim(-13, 10)
+
+
+p
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/Basal_AD_M_vs_NM.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=4}
+p <- ggplot(umap[umap$cell == "Basal" & umap$Disease %in% c("LUSC") & !is.na(umap$Malignant), ], aes(x=UMAP_1, y=UMAP_2, color = Malignant)) +
+    geom_point_rast(size = 0.1) + 
+    stat_ellipse() +
+    scale_color_manual(values = cols) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        legend.position = c(0.7, 0.15),
+        panel.grid = element_blank(),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15),
+        plot.title = element_text(size = 20, hjust = 0.5)
+    ) +
+    labs(x="UMAP1", y="UMAP2", title = "Basal (LUSC)", color = "") +
+    ylim(-15, 12) +
+    xlim(-13, 10)
+
+
+p
+
+
+ggsave(
+    filename = full.path("11_CNV/umap/cells/Basal_SC_M_vs_NM.pdf"),
+    plot = p, width = 4, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=8, fig.width=8}
+plist = list()
+for (i in c("Early", "Advanced")) {
+    for (j in c("LUAD", "LUSC")) {
+        
+        temp = umap[umap$Disease == j & umap$cell == "Mo" & umap$Stage == i, ]
+        
+        min_x = min(temp[, 1]) + 2
+        min_y = min(temp[, 2]) + 1
+        
+        plist[[length(plist) + 1]] = ggplot(temp, aes(x=UMAP_1, y=UMAP_2, color = Disease)) + 
+            geom_point_rast(size = 0.1) + labs(title = j) +
+            scale_color_manual(values = disease_colors) +
+            annotate("text", x = min_x, y = min_y, label = paste0("Mo - ", i,  "(n=", sum(umap$Disease == j & umap$cell == i), ")")) +
+            theme(legend.position = "none")
+    }
+}
+
+cowplot::plot_grid(plotlist = plist, ncol = 2)
+```
+
+```{r}
+temp = umap %>%
+    filter(Disease %in% c("LUAD", "LUSC")) %>%
+    group_by(cell, Disease, Malignant) %>%
+    add_tally() %>%
+    # mutate(num_malignant_by_cell = n) %>%
+    # group_by(cell, Disease) %>%
+    # add_tally() %>%
+    dplyr::select(cell, Disease, Malignant, n) %>%
+    unique() %>%
+    as.data.frame()
+
+temp$Malignant <- ifelse(temp$Malignant, "Malignant", "Non")
+
+temp <- dcast(temp, cell+Disease~Malignant, value.var = "n", fun.aggregate = mean, fill = 0)
+temp$num_of_cell = temp$Malignant + temp$Non
+
+
+temp <- dcast(temp, cell~Disease, value.var = "num_of_cell", fun.aggregate = mean, fill = 0)
+```
+
+
+```{r}
+genes = c("MARCO", "MSR1", "MRC1", "CD14", "S100A8", "CEACAM8", "S100A12")  # , "CD16"
+```
+
+
+
+```{r fig.height=4, fig.width=4}
+obj@meta.data = meta
+DimPlot(obj, reduction.use = "umap", group.by = "cell_short", no.legend = T)
+DimPlot(obj, reduction.use = "umap", group.by = "cell_short", cells.use = rownames(obj@meta.data)[obj@meta.data$cell_short == "Mo"], no.legend = T)
+```
+
+```{r}
+for (i in unique(meta$cell_short)) {
+    p <- DimPlot(obj, reduction.use = "umap", group.by = "cell_short", cells.use = rownames(obj@meta.data)[obj@meta.data$cell_short == i], do.return = T)
+    
+    print(p)
+}
+```
+
+
+
+```{r fig.height=12, fig.width=12}
+FeaturePlot(obj, genes, reduction.use = "umap")
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

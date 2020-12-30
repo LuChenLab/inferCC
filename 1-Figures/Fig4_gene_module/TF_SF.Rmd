@@ -1,0 +1,2231 @@
+---
+title: "TF_SF"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "LungCancer10x/12_TF/")
+
+root.dir = "LungCancer/10x"
+
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+```{R include=FALSE}
+library(here)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(reshape2)
+library(dplyr)
+library(ComplexHeatmap)
+library(circlize)
+library(wesanderson)
+library(stringr)
+library(bigSCale)
+library(GNET2)
+
+options(stringsAsFactors = FALSE)
+set_here("LungCancer10x/")
+```
+
+```{r}
+# obj <- readRDS(here("02_rds/seurat_obj_multi_reduction.rds"))
+```
+
+
+```{R}
+short_names <- c(
+    "APII"="ATII",
+    "Alveolar II"="ATII",
+    "Basal"="Basal",
+    "B cells"="B",
+    "CD4+"="CD4",
+    "CD4"="CD4",
+    "CD8+"="CD8",
+    "CD8"="CD8",
+    "Ciliated"="Cilia",
+    "Club"="Club",
+    "DC"="DC",
+    "Dendritic"="DC",
+    "Endothelial"="EC",
+    "Epithelial"="Epi",
+    "Exhaust T"="Exh T",
+    "Fibroblasts"="Fib",
+    "Granulocyte"="Gran",
+    "Mast"="Mast",
+    "Mascrophages"="Mφ",
+    "Macrophages"="Mφ",
+    "Monocytes"="Mo",
+    "Neuroendocrine"="NE",
+    "NK"="NK",
+    "Tregs"="Tregs"
+)
+
+short_names <- as.data.frame(short_names)
+
+# meta_after <- read.csv(here("02_rds/meta_after_singleR.csv"), row.names = 1, stringsAsFactors = F)
+# meta_after$cell_name <- short_names[meta_after$cell_name, 1]
+
+# obj@meta.data[rownames(meta_after)[!is.na(meta_after$cell_name)], "cell_name"] <- meta_after$cell_name[!is.na(meta_after$cell_name)]
+```
+
+
+```{r}
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+stage_colors = c("I"="#65A9A3", "II"="#4A933E", "III"="#EC7A21", "IV"="#D73F47", "LUAD_Normal"="#FECC1B", "LUSC_Normal"="#778793")
+disease_colors = c("LUAD" = "#0084D1", "LUAD_Normal"="#FECC1B", "Normal"="#73BDFF", "LUSC_Normal"="#778793", "LUSC"="#A0C807", "LELC"="#6A0019", "CPI"="#C5000B")
+tissue_colors = c("Bronichi"="#FB290F", "Lymph node"="#488F17", "Tumor"="#FC8210")
+
+
+cluster_cols = c(
+    as.character(wes_palette("Zissou1")),
+    as.character(wes_palette("Royal2")),
+    as.character(wes_palette("Royal1")),
+    as.character(wes_palette("Darjeeling2")),
+    as.character(wes_palette("Darjeeling1"))
+)
+
+patient_colors = gg_color_hue(35)
+
+names(patient_colors) <- c(
+    sapply(1:23, function(x){sprintf("PA%02d", x)}),
+    sapply(1:12, function(x){sprintf("PS%02d", x)})
+)
+
+```
+
+
+```{r}
+tf <- readRDS(here("12_TF/Teichmann_TFlist.Rds"))
+
+tf <- bitr(tf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+
+
+
+test_tf = c('PIGR',
+'SUSD2',
+'BTG2',
+'EGR1',
+'CRABP2',
+'NKX2-1',
+'SPHK1',
+'AQP3',
+'PPT1',
+'VDAC3',
+'AQP5',
+'CEACAM5',
+'EEF1A2',
+'AZGP1',
+'SPINK1',
+'KPNA2',
+'CHI3L1',
+'BIRC5',
+'CP',
+'KLF6',
+'Annexin A1',
+'Cortactin',
+'ATF3',
+'S100A13',
+'ESE1') 
+
+test_tf[test_tf %in% tf$SYMBOL]
+```
+
+
+
+```{R}
+expr <- obj@scale.data[intersect(tf$SYMBOL, rownames(obj@scale.data)), rownames(obj@meta.data)[obj@meta.data$Batch != 3]]
+
+expr <- melt(as.matrix(expr))
+expr$Disease <- obj@meta.data[expr$Var2, "Disease"]
+expr$Stage <- obj@meta.data[expr$Var2, "Stage"]
+expr$cell_name <- obj@meta.data[expr$Var2, "cell_name"]
+
+
+expr <- expr %>%
+    group_by(cell_name, Disease, Stage) %>%
+    mutate(value = mean(value)) %>%
+    unique()
+```
+
+```{r}
+expr <- read.table(
+    here("12_TF/mean_by_patient_cell_disease_stage.tsv"), 
+    sep = "\t", 
+    header = T,
+    row.names = 1
+)
+```
+
+
+```{r fig.height=12, fig.width=16}
+temp <- expr[intersect(rownames(temp), tf$SYMBOL), ]
+
+
+ha <- HeatmapAnnotation(
+    Patient=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][1]
+    }),
+    Disease=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][2]
+    }),
+    Stage=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][3]
+    }),
+    col = list(
+        Patient=patient_colors,
+        Disease=disease_colors,
+        Stage=stage_colors
+    )
+)
+
+
+Heatmap(
+    scale(temp),
+    name = "Expr",
+    top_annotation = ha,
+    column_split = sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][4]
+    }),
+    show_column_names = F,
+    show_row_names = F,
+    column_title_rot = 90
+)
+```
+
+
+```{r}
+sf <- readRDS(here("12_TF/Han_Molecular_Cell.Rds"))
+
+sf <- bitr(sf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+```
+
+
+```{r fig.height=12, fig.width=16}
+temp <- expr[intersect(rownames(temp), sf$SYMBOL), ]
+
+
+ha <- HeatmapAnnotation(
+    Patient=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][1]
+    }),
+    Disease=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][2]
+    }),
+    Stage=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][3]
+    }),
+    col = list(
+        Patient=patient_colors,
+        Disease=disease_colors,
+        Stage=stage_colors
+    )
+)
+
+
+Heatmap(
+    temp,
+    top_annotation = ha,
+    column_split = sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][4]
+    }),
+    show_column_names = F,
+    show_row_names = F,
+    column_title_rot = 90
+)
+```
+
+
+```{r}
+rbp <- readRDS(here("12_TF/RBP.Rds"))
+
+rbp <- bitr(rbp$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+```
+
+```{r fig.height=12, fig.width=16}
+temp <- expr[intersect(rownames(temp), rbp$SYMBOL), ]
+
+
+ha <- HeatmapAnnotation(
+    Patient=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][1]
+    }),
+    Disease=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][2]
+    }),
+    Stage=sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][3]
+    }),
+    col = list(
+        Patient=patient_colors,
+        Disease=disease_colors,
+        Stage=stage_colors
+    )
+)
+
+
+Heatmap(
+    temp,
+    top_annotation = ha,
+    column_split = sapply(colnames(temp), function(x) {
+        str_split(x, "\\.")[[1]][4]
+    }),
+    show_column_names = F,
+    show_row_names = F,
+    column_title_rot = 90
+)
+```
+
+## TF in Basal
+```{R}
+basal <- readRDS(here("03_each_cells/total/Basal/seurat.rds"))
+```
+
+```{R fig.height=12, fig.width=16}
+ha <- HeatmapAnnotation(
+    Stage = basal@meta.data$Stage,
+    Patient = basal@meta.data$PatientID,
+    Disease = basal@meta.data$Disease,
+    col = list(
+        Patient = patient_colors,
+        Disease = disease_colors,
+        Stage = stage_colors
+    )
+)
+
+col_fun <- colorRamp2(c(min(basal@scale.data), 0, max(basal@scale.data)), c("blue", "white", "red"))
+
+Heatmap(
+    basal@scale.data[intersect(rownames(basal@scale.data), tf$SYMBOL), rownames(basal@meta.data)],
+    show_row_names = F,
+    show_column_names = F,
+    top_annotation = ha,
+    col = col_fun
+)
+```
+
+
+```{R fig.height=12, fig.width=16}
+ha <- HeatmapAnnotation(
+    Stage = basal@meta.data$Stage,
+    Patient = basal@meta.data$PatientID,
+    Disease = basal@meta.data$Disease,
+    col = list(
+        Patient = patient_colors,
+        Disease = disease_colors,
+        Stage = stage_colors
+    )
+)
+
+col_fun <- colorRamp2(c(min(basal@scale.data), 0, max(basal@scale.data)), c("blue", "white", "red"))
+
+
+Heatmap(
+    basal@scale.data[intersect(rownames(basal@scale.data), sf$SYMBOL), rownames(basal@meta.data)],
+    show_row_names = F,
+    show_column_names = F,
+    top_annotation = ha,
+    col = col_fun
+)
+```
+
+
+```{R fig.height=12, fig.width=16}
+ha <- HeatmapAnnotation(
+    Stage = basal@meta.data$Stage,
+    Patient = basal@meta.data$PatientID,
+    Disease = basal@meta.data$Disease,
+    col = list(
+        Patient = patient_colors,
+        Disease = disease_colors,
+        Stage = stage_colors
+    )
+)
+
+
+Heatmap(
+    basal@scale.data[intersect(rownames(basal@scale.data), rbp$SYMBOL), rownames(basal@meta.data)],
+    show_row_names = F,
+    show_column_names = F,
+    top_annotation = ha,
+    col = col_fun
+)
+```
+
+```{r}
+expr = melt(as.matrix(basal@scale.data))
+expr$Patient = meta_after[as.character(expr$Var2), "PatientID"]
+expr$Disease = meta_after[as.character(expr$Var2), "Disease"]
+expr$Stage = meta_after[as.character(expr$Var2), "Stage"]
+
+expr <- expr %>%
+    group_by(Var1, Patient, Disease, Stage) %>%
+    mutate(value = mean(value)) %>%
+    dplyr::select(Var1, Patient, Disease, Stage, value) %>%
+    unique()
+
+expr$ident = paste(expr$Patient, expr$Disease, expr$Stage)
+
+expr <- dcast(expr, Var1~ident, fun.aggregate = mean, value.var = "value")
+rownames(expr) <- expr$Var1
+expr <- expr[, colnames(expr) != "Var1"]
+```
+
+
+```{r}
+ha <- HeatmapAnnotation(
+    Stage = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][3] }),
+    Patient = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][1] }),
+    Disease = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][2] }),
+    col = list(
+        Patient = patient_colors,
+        Disease = disease_colors,
+        Stage = stage_colors
+    )
+)
+
+
+col_fun = colorRamp2(c(min(expr), 0, max(expr)), c("blue", "white", "red"))
+
+pdf(paste0(here("12_TF/TF/", cell, ".pdf")), width = 2 + ncol(expr), height = 2 + nrow(expr))
+draw(
+    Heatmap(
+        as.matrix(expr),
+        name = "Expr",
+        show_row_names = F,
+        show_column_names = F, 
+        top_annotation = ha,
+        col = col_fun
+    ),
+    merge_legend = TRUE,
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom"
+)
+
+dev.off()
+```
+
+
+```{r}
+library(doMC)
+meta_after <- read.csv(here("02_rds/meta_after_singleR.csv"), row.names = 1, stringsAsFactors = F)
+
+dir.create(here("12_TF/TF/"), recursive = T, showWarnings = F)
+registerDoMC(5)
+foreach(f=list.files(here("03_each_cells/total"), pattern = "seurat.rds", recursive = T, full.names = T)) %dopar% {
+    obj <- readRDS(f)
+    
+    cell = str_replace_all(basename(dirname(f)), "/", "")
+    
+    expr = melt(as.matrix(obj@scale.data[intersect(tf$SYMBOL, rownames(obj@scale.data)), ]))
+    expr$Patient = meta_after[as.character(expr$Var2), "PatientID"]
+    expr$Disease = meta_after[as.character(expr$Var2), "Disease"]
+    expr$Stage = meta_after[as.character(expr$Var2), "Stage"]
+    
+    expr <- expr %>%
+        group_by(Var1, Patient, Disease, Stage) %>%
+        mutate(value = mean(value)) %>%
+        dplyr::select(Var1, Patient, Disease, Stage, value) %>%
+        unique()
+    
+    expr$ident = paste(expr$Patient, expr$Disease, expr$Stage)
+    
+    expr <- dcast(expr, Var1~ident, fun.aggregate = mean, value.var = "value")
+    rownames(expr) <- expr$Var1
+    expr <- expr[, colnames(expr) != "Var1"]
+    
+    
+    ha <- HeatmapAnnotation(
+        Stage = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][3] }),
+        Patient = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][1] }),
+        Disease = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][2] }),
+        col = list(
+            Patient = patient_colors,
+            Disease = disease_colors,
+            Stage = stage_colors
+        ),
+        annotation_legend_param = list(
+            Stage = list(direction = "horizontal", nrow = 1),
+            Patient = list(direction = "horizontal", nrow = 3),
+            Disease = list(direction = "horizontal", nrow = 1)
+        )
+    )
+    
+    col_fun = colorRamp2(c(min(expr), 0, max(expr)), c("blue", "white", "red"))
+    
+    pdf(paste0(here("12_TF/TF/"), cell, ".pdf"), width = 16, height = 16)
+    draw(
+        Heatmap(
+            as.matrix(expr),
+            name = "Expr",
+            show_row_names = F,
+            show_column_names = F, 
+            top_annotation = ha,
+            col = col_fun,
+            heatmap_legend_param = list(direction = "horizontal")
+        ),
+        merge_legend = TRUE,
+        heatmap_legend_side = "bottom", 
+        annotation_legend_side = "bottom"
+    )
+    
+    dev.off()
+}
+```
+
+
+```{R}
+dir.create(here("12_TF/SF/"), recursive = T, showWarnings = F)
+registerDoMC(5)
+foreach(f=list.files(here("03_each_cells/total"), pattern = "seurat.rds", recursive = T, full.names = T)) %dopar% {
+    obj <- readRDS(f)
+    
+    cell = str_replace_all(basename(dirname(f)), "/", "")
+    
+    expr = melt(as.matrix(obj@scale.data[intersect(rbp$SYMBOL, rownames(obj@scale.data)), ]))
+    expr$Patient = meta_after[as.character(expr$Var2), "PatientID"]
+    expr$Disease = meta_after[as.character(expr$Var2), "Disease"]
+    expr$Stage = meta_after[as.character(expr$Var2), "Stage"]
+    
+    expr <- expr %>%
+        group_by(Var1, Patient, Disease, Stage) %>%
+        mutate(value = mean(value)) %>%
+        dplyr::select(Var1, Patient, Disease, Stage, value) %>%
+        unique()
+    
+    expr$ident = paste(expr$Patient, expr$Disease, expr$Stage)
+    
+    expr <- dcast(expr, Var1~ident, fun.aggregate = mean, value.var = "value")
+    rownames(expr) <- expr$Var1
+    expr <- expr[, colnames(expr) != "Var1"]
+    
+    
+    ha <- HeatmapAnnotation(
+        Stage = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][3] }),
+        Patient = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][1] }),
+        Disease = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][2] }),
+        col = list(
+            Patient = patient_colors,
+            Disease = disease_colors,
+            Stage = stage_colors
+        ),
+        annotation_legend_param = list(
+            Stage = list(direction = "horizontal", nrow = 1),
+            Patient = list(direction = "horizontal", nrow = 3),
+            Disease = list(direction = "horizontal", nrow = 1)
+        )
+    )
+    
+    col_fun = colorRamp2(c(min(expr), 0, max(expr)), c("blue", "white", "red"))
+    
+    pdf(paste0(here("12_TF/SF/"), cell, ".pdf"), width = 16, height = 16)
+    draw(
+        Heatmap(
+            as.matrix(expr),
+            name = "Expr",
+            show_row_names = F,
+            show_column_names = F, 
+            top_annotation = ha,
+            col = col_fun,
+            heatmap_legend_param = list(direction = "horizontal")
+        ),
+        merge_legend = TRUE,
+        heatmap_legend_side = "bottom", 
+        annotation_legend_side = "bottom"
+    )
+    
+    dev.off()
+}
+```
+
+
+```{R}
+dir.create(here("12_TF/RBP/"), recursive = T, showWarnings = F)
+registerDoMC(5)
+foreach(f=list.files(here("03_each_cells/total"), pattern = "seurat.rds", recursive = T, full.names = T)) %dopar% {
+    obj <- readRDS(f)
+    
+    cell = str_replace_all(basename(dirname(f)), "/", "")
+    
+    expr = melt(as.matrix(obj@scale.data[intersect(rbp$SYMBOL, rownames(obj@scale.data)), ]))
+    expr$Patient = meta_after[as.character(expr$Var2), "PatientID"]
+    expr$Disease = meta_after[as.character(expr$Var2), "Disease"]
+    expr$Stage = meta_after[as.character(expr$Var2), "Stage"]
+    
+    expr <- expr %>%
+        group_by(Var1, Patient, Disease, Stage) %>%
+        mutate(value = mean(value)) %>%
+        dplyr::select(Var1, Patient, Disease, Stage, value) %>%
+        unique()
+    
+    expr$ident = paste(expr$Patient, expr$Disease, expr$Stage)
+    
+    expr <- dcast(expr, Var1~ident, fun.aggregate = mean, value.var = "value")
+    rownames(expr) <- expr$Var1
+    expr <- expr[, colnames(expr) != "Var1"]
+    
+    
+    ha <- HeatmapAnnotation(
+        Stage = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][3] }),
+        Patient = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][1] }),
+        Disease = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][2] }),
+        col = list(
+            Patient = patient_colors,
+            Disease = disease_colors,
+            Stage = stage_colors
+        ),
+        annotation_legend_param = list(
+            Stage = list(direction = "horizontal", nrow = 1),
+            Patient = list(direction = "horizontal", nrow = 3),
+            Disease = list(direction = "horizontal", nrow = 1)
+        )
+    )
+    
+    col_fun = colorRamp2(c(min(expr), 0, max(expr)), c("blue", "white", "red"))
+    
+    pdf(paste0(here("12_TF/RBP/"), cell, ".pdf"), width = 16, height = 16)
+    draw(
+        Heatmap(
+            as.matrix(expr),
+            name = "Expr",
+            show_row_names = F,
+            show_column_names = F, 
+            top_annotation = ha,
+            col = col_fun,
+            heatmap_legend_param = list(direction = "horizontal")
+        ),
+        merge_legend = TRUE,
+        heatmap_legend_side = "bottom", 
+        annotation_legend_side = "bottom"
+    )
+    
+    dev.off()
+}
+```
+
+
+### make heatmap of DEGs 
+```{r}
+make_heatmap <- function(symbols, output_dir) {
+    library(ComplexHeatmap)
+    library(circlize)
+    library(dplyr)
+    library(reshape2)
+    library(stringr)
+    library(openxlsx)
+    
+    dir.create(output_dir, recursive = T, showWarnings = F)
+    registerDoMC(5)
+    foreach(f=list.files(here("03_each_cells/total"), pattern = "seurat.rds", recursive = T, full.names = T)) %dopar% {
+        obj <- readRDS(f)
+        
+        cell = str_replace_all(basename(dirname(f)), "/", "")
+        
+        # load DEGs
+        degs = c()
+        for (i in c("LUAD", "LUSC")) {
+            i = paste0(dirname(f), "/normal_cancer/", i, ".xlsx")
+            
+            if (file.exists(i)) {
+                markers <- read.xlsx(i, rowNames = T)
+                markers <- markers[markers$avg_logFC < -0.25 & markers$p_val_adj < 0.05, ]
+                degs <- c(degs, rownames(markers))
+            }
+        }
+        
+        i = paste0(dirname(f), "disease/markers.xlsx")
+        if (file.exists(i)) {
+            markers = read.xlsx(i)
+            markers <- markers[abs(markers$avg_logFC) > 0.25 & markers$p_val_adj < 0.05, ]
+            degs = c(degs, markers$gene)
+        }
+        
+        if (length(degs) > 0) {
+            symbols <- symbols[symbols %in% degs]
+        }
+        
+        # format expression matrix
+        expr = melt(as.matrix(obj@scale.data[intersect(symbols, rownames(obj@scale.data)), ]))
+        expr$Patient = meta_after[as.character(expr$Var2), "PatientID"]
+        expr$Disease = meta_after[as.character(expr$Var2), "Disease"]
+        expr$Stage = meta_after[as.character(expr$Var2), "Stage"]
+        
+        expr <- expr %>%
+            group_by(Var1, Patient, Disease, Stage) %>%
+            mutate(value = mean(value)) %>%
+            dplyr::select(Var1, Patient, Disease, Stage, value) %>%
+            unique()
+        
+        expr$ident = paste(expr$Patient, expr$Disease, expr$Stage)
+        
+        expr <- dcast(expr, Var1~ident, fun.aggregate = mean, value.var = "value")
+        rownames(expr) <- expr$Var1
+        expr <- expr[, colnames(expr) != "Var1"]
+        
+        
+        # make heatmap
+        ha <- HeatmapAnnotation(
+            Stage = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][3] }),
+            Patient = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][1] }),
+            Disease = sapply(colnames(expr), function(x) { str_split(x, " ")[[1]][2] }),
+            col = list(
+                Patient = patient_colors,
+                Disease = disease_colors,
+                Stage = stage_colors
+            ),
+            annotation_legend_param = list(
+                Stage = list(direction = "horizontal", nrow = 1),
+                Patient = list(direction = "horizontal", nrow = 3),
+                Disease = list(direction = "horizontal", nrow = 1)
+            )
+        )
+        
+        col_fun = colorRamp2(c(min(expr), 0, max(expr)), c("blue", "white", "red"))
+        
+        pdf(paste0(output_dir, cell, ".pdf"), width = 16, height = 16)
+        draw(
+            Heatmap(
+                as.matrix(expr),
+                name = "Expr",
+                show_row_names = F,
+                show_column_names = F, 
+                top_annotation = ha,
+                col = col_fun,
+                heatmap_legend_param = list(direction = "horizontal")
+            ),
+            merge_legend = TRUE,
+            heatmap_legend_side = "bottom", 
+            annotation_legend_side = "bottom"
+        )
+        
+        dev.off()
+    }
+}
+```
+
+
+```{R}
+make_heatmap(tf$SYMBOL, here("12_TF/TF_DEGs/"))
+make_heatmap(sf$SYMBOL, here("12_TF/SF_DEGs/"))
+make_heatmap(rbp$SYMBOL, here("12_TF/RBP_DEGs/"))
+```
+
+
+
+## TF in ATII
+```{R}
+atii <- readRDS(here("03_each_cells/total/Alveolar_II/seurat.rds"))
+```
+
+```{R fig.height=12, fig.width=16}
+ha <- HeatmapAnnotation(
+    Stage = atii@meta.data$Stage,
+    Patient = atii@meta.data$PatientID,
+    Disease = atii@meta.data$Disease,
+    col = list(
+        Patient = patient_colors,
+        Disease = disease_colors,
+        Stage = stage_colors
+    )
+)
+
+
+Heatmap(
+    atii@scale.data[intersect(rownames(atii@scale.data), tf$SYMBOL), rownames(atii@meta.data)],
+    show_row_names = F,
+    show_column_names = F,
+    top_annotation = ha
+)
+```
+
+
+```{R fig.height=12, fig.width=16}
+ha <- HeatmapAnnotation(
+    Stage = atii@meta.data$Stage,
+    Patient = atii@meta.data$PatientID,
+    Disease = atii@meta.data$Disease,
+    col = list(
+        Patient = patient_colors,
+        Disease = disease_colors,
+        Stage = stage_colors
+    )
+)
+
+col_fun <- colorRamp2(c(min(atii@scale.data), 0, max(atii@scale.data)), c("blue", "white", "red"))
+
+Heatmap(
+    atii@scale.data[intersect(rownames(atii@scale.data), sf$SYMBOL), rownames(atii@meta.data)],
+    show_row_names = F,
+    show_column_names = F,
+    top_annotation = ha,
+    col = col_fun
+)
+```
+
+
+```{R fig.height=12, fig.width=16}
+ha <- HeatmapAnnotation(
+    Stage = atii@meta.data$Stage,
+    Patient = atii@meta.data$PatientID,
+    Disease = atii@meta.data$Disease,
+    col = list(
+        Patient = patient_colors,
+        Disease = disease_colors,
+        Stage = stage_colors
+    )
+)
+
+col_fun <- colorRamp2(c(min(atii@scale.data), 0, max(atii@scale.data)), c("blue", "white", "red"))
+
+
+Heatmap(
+    atii@scale.data[intersect(rownames(atii@scale.data), rbp$SYMBOL), rownames(atii@meta.data)],
+    show_row_names = F,
+    show_column_names = F,
+    top_annotation = ha,
+    col = col_fun
+)
+```
+
+
+```{r}
+write.csv(tf, here("12_TF/Teichmann_TFlist.csv"))
+
+write.csv(sf, here("12_TF/Han_Molecular_Cell.csv"))
+
+write.csv(rbp, here("12_TF/RBP.csv"))
+```
+
+
+### Test overlap with DEGs
+```{r}
+atii_luad <- read.xlsx(here("03_each_cells/total/Alveolar_II/normal_cancer/LUAD.xlsx"), rowNames = T)
+atii_luad <- atii_luad[atii_luad$p_val_adj < 0.05 & atii_luad$avg_logFC < -0.25, ]
+atii_luad_tf <- tf[tf$SYMBOL %in% rownames(atii_luad), ]
+```
+
+```{r}
+ego <- enrichGO(
+    gene          = atii_luad_tf$ENSEMBL,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = 'ENSEMBL',
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.01,
+    qvalueCutoff  = 0.05
+)
+
+go_sim <- simplify(ego)
+
+ego <- as.data.frame(ego)
+go_sim <- as.data.frame(go_sim)
+```
+
+```{r}
+atii_lusc <- read.xlsx(here("03_each_cells/total/Alveolar_II/normal_cancer/LUSC.xlsx"), rowNames = T)
+atii_lusc <- atii_lusc[atii_lusc$p_val_adj < 0.05 & atii_lusc$avg_logFC < -0.25, ]
+atii_lusc_tf <- tf[tf$SYMBOL %in% rownames(atii_lusc), ]
+```
+
+```{r}
+ego1 <- enrichGO(
+    gene          = atii_lusc_tf$ENSEMBL,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = 'ENSEMBL',
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.01,
+    qvalueCutoff  = 0.05
+)
+
+go_sim1 <- simplify(ego1)
+
+ego1 <- as.data.frame(ego1)
+go_sim1 <- as.data.frame(go_sim1)
+```
+
+## Test ATII of bigSCale
+
+```{r}
+tf <- readRDS(here("12_TF/Teichmann_TFlist.Rds"))
+tf <- bitr(tf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+
+sf <- readRDS(here("12_TF/Han_Molecular_Cell.Rds"))
+sf <- bitr(sf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+
+rbp <- readRDS(here("12_TF/RBP.Rds"))
+rbp <- bitr(rbp$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+
+gene.names = unique(c(tf$SYMBOL, sf$SYMBOL, rbp$SYMBOL))
+```
+
+```{r}
+obj <- readRDS("03_each_cells/total/Alveolar_II/seurat.rds")
+```
+
+```{r}
+network = list()
+
+for(i in unique(obj@meta.data$Disease)) {
+
+    cells = rownames(obj@meta.data)[obj@meta.data$Disease == i]
+
+    network[[i]] <- compute.network(
+        expr.data = obj@raw.data[, ],
+        gene.names = intersect(rownames(obj@raw.data), gene.names)
+    )
+}
+```
+
+```{r}
+saveRDS(network, "12_TF/network/ATII.rds")
+```
+
+```{r}
+comparison=compare.centrality(
+    list(network[["LUAD"]]$centrality, network[["LUSC"]]$centrality),
+    c('LUAD','LUSC')
+)
+```
+
+
+## GNET
+```{r}
+library(GNET2)
+library(openxlsx)
+
+
+```
+
+
+```{R}
+#' Calculate Gaussian Likelihood score.
+#' 
+#' @param x A n by p matrix.
+#' @param group_labels A vector of length n, indicating the group of rows.
+#' @return The sum of log likelihood score of each group on each column.
+#' @examples
+#' calc_likelihood_score(x = matrix(rnorm(5*10),5,10), group_labels = c(rep(1,2),rep(2,3)))
+#' @export
+calc_likelihood_score <- function(x,group_labels){
+    score_total <- 0
+    for(i in unique(group_labels)){
+        if(sum(group_labels==i) > 1){
+            x_i <- x[group_labels==i,,drop=FALSE]
+            mean_x_i <- rep(colMeans(x_i), each = nrow(x_i))
+            sd_x_i = rep(colSds(x_i), each = nrow(x_i))
+            density_scores <- dnorm(x_i, mean_x_i, sd_x_i, log = TRUE)
+            density_scores[is.infinite(density_scores)]=0 # subgroup with all 0 in gene i are set to 0
+            score_total <- score_total + sum(density_scores)
+        }
+    }
+    return(score_total)
+}
+
+calc_likelihood_vec <- function(x,group_labels){
+    score_total <- 0
+    for(i in unique(group_labels)){
+        if(sum(group_labels==i) > 1){
+            x_i <- x[group_labels==i]
+            score_total <- score_total+sum(dnorm(x_i,mean = mean(x_i),sd = sd(x_i),log = TRUE))
+        }
+    }
+    return(score_total)
+}
+
+calc_correlation <- function(x){
+    # remove any columns with 0 variance
+    x <- x[,apply(x,2,var)>0]
+  
+    if(nrow(x)<=2 | ncol(x)<=2){
+        # should not go further divide
+        return(1)
+    }else{
+        x_cor <- cor(x)
+        return(mean(abs(x_cor[upper.tri(x_cor)])))
+    }
+}
+
+
+get_correlation_list <- function(x,group_labels){
+    cor_list <- rep(0,length(group_labels))
+    for(i in unique(group_labels)){
+        if(sum(group_labels==i)==1){
+            cor_list[group_labels==i] <- 0
+        }else{
+            cor_list[group_labels==i] <- calc_correlation(x[,group_labels==i,drop=FALSE])
+        }
+    }
+    return(cor_list)
+}
+
+get_leaf_group_labels <- function(group_table,format_plot=FALSE){
+    if(!format_plot){
+        group_table <- group_table[,2:ncol(group_table),drop=FALSE]
+    }
+    leaf_label <- rep(0,ncol(group_table))
+    next_label <- 0
+    for(i in seq_len(nrow(group_table))){
+        current_label <- group_table[i,]
+        for(j in seq_len(2)-1){
+            leaf_label[current_label==j] <- next_label
+            next_label <- next_label+1
+        }
+    }
+    return(leaf_label)
+}
+
+
+build_moduleR <- function(X,Y,max_depth,cor_cutoff,min_divide_size){
+    feature_remaining <- seq_len(ncol(X))
+    feature_num <- 0
+    subgroup_indicator <- rep(0,nrow(X))
+    groups <- c(0)
+    group_table <- matrix(-1, nrow = max_depth, ncol = nrow(X)+1)
+    while (feature_num < max_depth & length(groups)>0 & length(feature_remaining)>0){
+        best_score <- (-(10^6))
+        best_feature <- (-1)
+        for(i in groups){
+            current_split_group <- subgroup_indicator == i
+            y_current_split <- Y[current_split_group,,drop=FALSE]
+            for (j in feature_remaining){
+                feature_vals <- X[current_split_group,j]
+                divide_vals <- feature_vals[feature_vals != max(feature_vals)]
+                score_nosplit <- calc_likelihood_score(y_current_split,rep(1,length(feature_vals)))
+                for (k in divide_vals){
+                    subgroup_divide <- 1-(feature_vals <= k)
+                    score <- calc_likelihood_score(y_current_split,subgroup_divide) - score_nosplit
+                    if (score > best_score){
+                        best_score <- score
+                        best_feature <- j
+                        subgroup_group_labels <- rep(-1,length(current_split_group))
+                        subgroup_group_labels[current_split_group] <- subgroup_divide
+                    }
+                }
+            }
+        }
+        feature_num <- feature_num+1
+        group_table[feature_num,] <- c(best_feature-1,subgroup_group_labels)
+        subgroup_indicator_new <- get_leaf_group_labels(group_table)
+        subgroup_indicator_new[subgroup_indicator==-1] <- (-1)
+        subgroup_indicator <- subgroup_indicator_new
+        for (i in seq_len(2)-1){
+            new_divide_i <- subgroup_group_labels==i
+            if (sum(new_divide_i) <= min_divide_size){
+                subgroup_indicator[new_divide_i] <- (-1)
+            }else if(calc_correlation(t(Y[new_divide_i,])) >= cor_cutoff){
+                subgroup_indicator[new_divide_i] <- (-1)
+            }
+        }
+        groups <- unique(subgroup_indicator[subgroup_indicator!=-1])
+        feature_remaining <- feature_remaining[feature_remaining!=best_feature]
+    }
+    # remove unused rows
+    group_table <- group_table[apply(group_table, 1, function(x)sum(x!=-1))>0,]
+    return(group_table)
+}
+
+get_group_kmeans <- function(x){
+  suppressWarnings({ km <- kmeans(x,centers = 3)})
+  grp <- rep(0,length(x))
+  o <- order(km$centers)
+  grp[km$cluster==o[1]] <- -1
+  grp[km$cluster==o[3]] <- 1
+  return(grp)
+}
+
+
+build_split_table <- function(X){
+  split_table <- matrix(0,nrow = nrow(X),ncol = ncol(X))
+  for(i in seq_len(ncol(split_table))){
+    split_table[,i] <- get_group_kmeans(X[,i])
+  }
+  return(split_table)
+}
+
+
+build_moduleR_heuristic <- function(X,Y,max_depth,cor_cutoff,min_divide_size,split_table){
+  feature_remaining <- seq_len(ncol(X))
+  feature_num <- 0
+  subgroup_indicator <- rep(0,nrow(X))
+  groups <- c(0)
+  group_table <- matrix(-1, nrow = max_depth, ncol = nrow(X)+1)
+  while (feature_num < max_depth & length(groups)>0 & length(feature_remaining)>0){
+    best_score <- (-(10^6))
+    best_feature <- (-1)
+    for(i in groups){
+      current_split_group <- subgroup_indicator == i
+      y_current_split <- Y[current_split_group,,drop=FALSE]
+      for (j in feature_remaining){
+        feature_vals <- X[current_split_group,j]
+        score_nosplit <- calc_likelihood_score(y_current_split,rep(1,length(feature_vals)))
+        subgroup_divide_1 <- as.numeric(split_table[current_split_group,j]>=0) #low expressed/no change
+        subgroup_divide_2 <- as.numeric(split_table[current_split_group,j]>0) #high expressed/no change
+        score_split1 <- score_split2 <- (-(10^6))
+        if(length(unique(subgroup_divide_1))==2){
+          score_split1 <- calc_likelihood_score(y_current_split,subgroup_divide_1) - score_nosplit
+        }
+        if(length(unique(subgroup_divide_2))==2){
+          score_split2 <- calc_likelihood_score(y_current_split,subgroup_divide_2) - score_nosplit
+        }
+        if(score_split1 <= score_split2){
+          score <- score_split2
+          subgroup_divide <- subgroup_divide_2
+        }else{
+          score <- score_split1
+          subgroup_divide <- subgroup_divide_1
+        }
+        if (score > best_score){
+          best_score <- score
+          best_feature <- j
+          subgroup_group_labels <- rep(-1,length(current_split_group))
+          subgroup_group_labels[current_split_group] <- subgroup_divide
+        }
+      }
+    }
+    feature_num <- feature_num+1
+    group_table[feature_num,] <- c(best_feature-1,subgroup_group_labels)
+    subgroup_indicator_new <- get_leaf_group_labels(group_table)
+    subgroup_indicator_new[subgroup_indicator==-1] <- (-1)
+    subgroup_indicator <- subgroup_indicator_new
+    for (i in seq_len(2)-1){
+      new_divide_i <- subgroup_group_labels==i
+      if (sum(new_divide_i) <= min_divide_size){
+        subgroup_indicator[new_divide_i] <- (-1)
+      }else if(calc_correlation(t(Y[new_divide_i,])) >= cor_cutoff){
+        subgroup_indicator[new_divide_i] <- (-1)
+      }
+    }
+    groups <- unique(subgroup_indicator[subgroup_indicator!=-1])
+    feature_remaining <- feature_remaining[feature_remaining!=best_feature]
+  }
+  # remove unused rows
+  group_table <- group_table[apply(group_table, 1, function(x)sum(x!=-1))>0,]
+  return(group_table)
+}
+
+build_moduleR_heuristic2 <- function(X,Y,max_depth,cor_cutoff,min_divide_size){
+  feature_remaining <- seq_len(ncol(X))
+  feature_num <- 0
+  subgroup_indicator <- rep(0,nrow(X))
+  groups <- c(0)
+  group_table <- matrix(-1, nrow = max_depth, ncol = nrow(X)+1)
+  while (feature_num < max_depth & length(groups)>0 & length(feature_remaining)>0){
+    best_score <- (-(10^6))
+    best_feature <- (-1)
+    for(i in groups){
+      current_split_group <- subgroup_indicator == i
+      y_current_split <- Y[current_split_group,,drop=FALSE]
+      for (j in feature_remaining){
+        feature_vals <- X[current_split_group,j]
+        score_nosplit <- calc_likelihood_score(y_current_split,rep(1,length(feature_vals)))
+        subgroup_divide <- suppressWarnings({as.numeric(kmeans(feature_vals,centers = 2)$cluster)-1})
+        if(mean(feature_vals[subgroup_divide==0]) > mean(feature_vals[subgroup_divide==1])){
+          # 0 is always left and 1 is always right
+          subgroup_divide <- 1- subgroup_divide
+        }
+        score <- calc_likelihood_score(y_current_split,subgroup_divide) - score_nosplit
+        if (score > best_score){
+          best_score <- score
+          best_feature <- j
+          subgroup_group_labels <- rep(-1,length(current_split_group))
+          subgroup_group_labels[current_split_group] <- subgroup_divide
+        }
+      }
+    }
+    feature_num <- feature_num+1
+    group_table[feature_num,] <- c(best_feature-1,subgroup_group_labels)
+    subgroup_indicator_new <- get_leaf_group_labels(group_table)
+    subgroup_indicator_new[subgroup_indicator==-1] <- (-1)
+    subgroup_indicator <- subgroup_indicator_new
+    for (i in seq_len(2)-1){
+      new_divide_i <- subgroup_group_labels==i
+      if (sum(new_divide_i) <= min_divide_size){
+        subgroup_indicator[new_divide_i] <- (-1)
+      }else if(calc_correlation(t(Y[new_divide_i,])) >= cor_cutoff){
+        subgroup_indicator[new_divide_i] <- (-1)
+      }
+    }
+    groups <- unique(subgroup_indicator[subgroup_indicator!=-1])
+    feature_remaining <- feature_remaining[feature_remaining!=best_feature]
+  }
+  # remove unused rows
+  group_table <- group_table[apply(group_table, 1, function(x)sum(x!=-1))>0,]
+  return(group_table)
+}
+
+assign_regul <- function(regulator_data,gene_data,gene_group_table,min_group_size,
+                         max_depth,cor_cutoff,min_divide_size,heuristic = TRUE,split_table = NULL){
+    X <- t(regulator_data)
+    group_group_labels <- unique(gene_group_table)
+    group_group_labels <- group_group_labels[group_group_labels!=-1]
+    reg_group_table <- matrix(-1,nrow = max(gene_group_table)+1,ncol = ncol(regulator_data))
+    group_table <- matrix(-1,nrow = max_depth*(max(gene_group_table)+1),
+                          ncol = ncol(regulator_data)+2)
+    i <- 0
+    group_table_start <- 1
+    for (group_idx in group_group_labels){
+        gene_idx <- gene_group_table == group_idx
+        if (sum(gene_idx) >= min_group_size){
+            Y <- t(gene_data[gene_idx,,drop=FALSE])
+            if(heuristic){
+              group_table_i <- build_moduleR_heuristic(X,Y,max_depth,cor_cutoff,min_divide_size,split_table)
+            }else{
+              group_table_i <- build_module(X,Y,max_depth,cor_cutoff,min_divide_size)
+            }
+            if(length(ncol(group_table_i))!=0){
+              group_table_i <- group_table_i[apply(group_table_i, 1, function(x)(sum(x!=0)))!=0,]
+              if(length(ncol(group_table_i))!=0){
+                reg_group_table[i+1,] <- get_leaf_group_labels(group_table_i)
+                group_table_end <- group_table_start+nrow(group_table_i)-1
+                group_table[group_table_start:group_table_end,2:ncol(group_table)] <- group_table_i
+                group_table[group_table_start:group_table_end,1] <- i
+                i <- i+1
+                group_table_start <- group_table_end+1
+              }
+            }
+        }
+    }
+    # remove unused rows
+    group_table <- group_table[apply(group_table, 1, function(x)sum(x!=-1))>0,]
+    return(list(group_table,reg_group_table))
+}
+
+assign_gene <- function(gene_data,reg_group_table){
+    gene_group_table <- rep(-1,nrow(gene_data))
+    for(gene_idx in seq_len(nrow(gene_data))){
+        exp_gene <- as.numeric(gene_data[gene_idx,])
+        gene_group_table[gene_idx] <- which.max(
+            apply(reg_group_table, 1, function(x)calc_likelihood_vec(exp_gene,x)))-1
+    }
+    return(gene_group_table)
+}
+
+
+kneepointDetection <- function (vect){
+    n <- length(vect)
+    MinError <- 1e+08
+    MinIndex <- 1
+    for (i in 2:(n - 2)){
+        a <- data.frame('V1'=seq_len(i), 'V2'=vect[seq_len(i)])
+        l1 <- lm(a[, 2] ~ a[, 1], data = a)
+        e1 <- sum(abs(l1$residuals))
+        a <- data.frame('V1'=(i + 1):n, 'V2'=vect[(i + 1):n])
+        l2 <- lm(a[, 2] ~ a[, 1], data = a)
+        e2 <- sum(abs(l2$residuals))
+        Error <- e1 + e2
+        if (MinError > Error){
+            MinError <- Error
+            MinIndex <- i
+        }
+    }
+    return(MinIndex)
+}
+
+
+assign_first_cluster <- function(gene_data,regulator_data,max_depth,init_group_num,
+                                 init_method='boosting',max_group=5){
+    if(init_method=='boosting'){
+        ipt_mat <- matrix(0,nrow = nrow(gene_data),ncol = nrow(regulator_data))
+        rownames(ipt_mat) <- rownames(gene_data)
+        colnames(ipt_mat) <- rownames(regulator_data)
+        for(i in seq_len(nrow(gene_data))){
+            dtrain <- xgb.DMatrix(data = t(regulator_data), label=gene_data[i,])
+            bst <- xgb.train(data=dtrain, max.depth=max_depth, eta=0.1, nthread = 4,nrounds =2)
+            if(length(xgb.dump(model = bst, with_stats = TRUE))!=4){
+              # A constant tree: no predictors were used. 
+              importance_matrix <- xgb.importance(model = bst)
+            }
+            ipt_mat[i,importance_matrix$Feature] <- importance_matrix$Gain
+        }
+    }else{
+        ipt_mat <- gene_data
+    }
+    avg_cor_list <- c()
+    for(i in 2:min(init_group_num,nrow(gene_data)-1)){
+        gene_group_table <- suppressWarnings({as.numeric(kmeans(ipt_mat,centers = i)$cluster)-1})
+        avg_cor_list <- c(avg_cor_list,mean(get_correlation_list(t(gene_data),gene_group_table)))
+    }
+    if(length(avg_cor_list)>=3){
+        o <- order(avg_cor_list,decreasing = TRUE)
+        y <- avg_cor_list[o]
+        kn <- kneepointDetection(y)
+        groups_keep <- o[seq_len(max(kn,max_group))]
+    }else{
+        groups_keep <- seq_len(length(avg_cor_list))
+    }
+    gene_group_table[!(gene_group_table %in% groups_keep)] <- (-1)
+    return(gene_group_table)
+}
+
+run_gnet <- function(gene_data,regulator_data,init_method = 'boosting',init_group_num = 5,max_depth = 3,
+                     cor_cutoff = 0.9,min_divide_size = 3,min_group_size = 2,max_iter = 5,heuristic = TRUE,
+                     max_group=5,force_split = 0.5){
+    message('Determining initial group number...')
+    gene_group_table <- assign_first_cluster(gene_data,regulator_data,max_depth,
+                                             init_group_num,init_method,max_group)
+    split_table <- build_split_table(t(regulator_data))
+    message('Building module networks...')
+    for (i in seq_len(max_iter)) {
+        message('Iteration ',i)
+        assign_reg_names <- assign_regul(regulator_data,gene_data,gene_group_table,min_group_size,
+                                         max_depth,cor_cutoff,min_divide_size,heuristic,split_table)
+        gene_group_table_new <- assign_gene(gene_data,assign_reg_names[[2]])
+        max_group_idx <- as.numeric(names(which.max(table(gene_group_table_new))))
+        if(max(table(gene_group_table_new))>round(length(gene_group_table_new)*force_split)){
+            gene_group_table_largest <- assign_first_cluster(gene_data[gene_group_table_new == max_group_idx,],
+                                                             regulator_data,max_depth,init_group_num,init_method,max_group)
+            gene_group_table_largest[gene_group_table_largest==-1] <- (-1-max(gene_group_table_new))
+            gene_group_table_new[gene_group_table_new==max_group_idx] <- gene_group_table_largest+max(gene_group_table_new)
+            gene_group_table_new <- as.numeric(as.factor(gene_group_table_new))
+            group_to_remove <- as.numeric(names(table(gene_group_table_new))[table(gene_group_table_new) <= min_group_size])
+            gene_group_table_new[gene_group_table_new %in% group_to_remove] <- -1
+            gene_group_table_new <- as.numeric(as.factor(gene_group_table_new))-1
+        }
+        
+        if(all(length(gene_group_table)==length(gene_group_table_new)) && all(gene_group_table==gene_group_table_new)){
+            message('Converged.')
+            break
+        }else{
+            gene_group_table <- gene_group_table_new
+        }
+    }
+    message('Generating final network modules...')
+    assign_reg_names <- assign_regul(regulator_data,gene_data,gene_group_table,min_group_size,
+                                     max_depth,cor_cutoff,min_divide_size,heuristic,split_table)
+    gene_group_table <- assign_gene(gene_data,assign_reg_names[[2]])
+    message('Done.')
+    tree_table_all <- assign_reg_names[[1]]
+    colnames(tree_table_all) <- c('group','feature',colnames(gene_data))
+    group_order <- order(gene_group_table)
+    gene_list_all <- data.frame('gene'  = rownames(gene_data)[group_order],
+                                'group' = gene_group_table[group_order])
+    return(list('reg_group_table'=tree_table_all,'gene_group_table'=gene_list_all))
+}
+
+
+gnet <- function(input,reg_names,init_method= 'boosting',init_group_num = 4,max_depth = 3,
+                 cor_cutoff = 0.9,min_divide_size = 3,min_group_size = 2,max_iter = 5,
+                 heuristic = TRUE,max_group = 0,force_split = 0.5){
+    if(is(input,class2 = "SummarizedExperiment")){
+        input <- assay(input)
+    }
+    if(max_group == 0){
+      max_group <- init_group_num
+    }
+    input <- input[apply(input, 1, var) > 0.0001,]
+    gene_data <- input[!rownames(input)%in%reg_names,,drop=FALSE]
+    regulator_data <- input[reg_names,,drop=FALSE]
+    result_all <- run_gnet(gene_data,regulator_data,init_method,init_group_num,max_depth,cor_cutoff,
+                           min_divide_size,min_group_size,max_iter,heuristic,max_group,force_split)
+    reg_group_table <- result_all[[1]]
+    gene_group_table <- result_all[[2]]
+    
+    # sanity check: remove all modules without any genes assigned
+    table_genes <- table(gene_group_table$group)
+    groups_left <- as.numeric(names(table_genes)[table_genes>1])
+    avg_cor_list <- rep(0,length(groups_left))
+    reg_group_table_out <- reg_group_table <- reg_group_table[reg_group_table[,1]%in%groups_left,]
+    gene_group_table_out <- gene_group_table
+    for(i in seq_len(length(groups_left))){
+        reg_group_table_out[reg_group_table[,1]==groups_left[i],1] <- i
+        gene_group_table_out[gene_group_table[,2]==groups_left[i],2] <- i
+        cor_m <- cor(t(gene_data[gene_group_table$group==groups_left[i],,drop=FALSE]))
+        avg_cor_list[i] <- mean(cor_m[upper.tri(cor_m)])
+    }
+    if(nrow(reg_group_table_out)<=2)warning('Too few modules generated, you may wish to try with higher cor_cutoff.')
+    return(list('gene_data' = gene_data,'regulator_data' = regulator_data,'group_score' = avg_cor_list,
+                'reg_group_table' = reg_group_table_out,'gene_group_table' = gene_group_table_out))
+}
+
+sum_scores <- function(el_all,el_input){
+  scores <- rep(0,nrow(el_all))
+  for (i in 1:nrow(el_all)) {
+    idx <- (el_input[,1] == el_all[i,1] & el_input[,2] == el_all[i,2]) | (el_input[,2] == el_all[i,1] & el_input[,1] == el_all[i,2])
+    scores[i] <- sum(abs(el_input[idx,3]))
+  }
+  return(scores)
+}
+
+#' Extract the network from the gnet result
+#' 
+#' Extract the network as edge list from the gnet result. For a module, each regulator and downstream gene will form a directed edge.
+#' @param gnet_result Returned results from gnet().
+#' 
+#' @return A three column edge list from the gnet result.The third column are the sum of scores of any groups with the regulator-target interaction.
+#' @examples
+#' set.seed(1)
+#' init_group_num = 8
+#' init_method = 'kmeans'
+#' exp_data <- matrix(rnorm(50*10),50,10)
+#' reg_names <- paste0('TF',1:5)
+#' rownames(exp_data) <- c(reg_names,paste0('gene',1:(nrow(exp_data)-length(reg_names))))
+#' colnames(exp_data) <- paste0('condition_',1:ncol(exp_data))
+#' se <- SummarizedExperiment::SummarizedExperiment(assays=list(counts=exp_data))
+#' gnet_result <- gnet(se,reg_names,init_method,init_group_num)
+#' edge_list <- extract_edges(gnet_result)
+#' @export
+extract_edges <- function(gnet_result){
+  el <- NULL
+  for (i in 1:length(gnet_result$group_score)) {
+    tf_i <- rownames(gnet_result$regulator_data)[gnet_result$reg_group_table[gnet_result$reg_group_table[,1]==i,2]+1]
+    if(sum(is.na(tf_i))>0)print(i)
+    gene_i <- gnet_result$gene_group_table$gene[gnet_result$gene_group_table$group==i]
+    d <- rbind.data.frame(expand.grid(tf_i,tf_i,stringsAsFactors =F),
+                          expand.grid(tf_i,gene_i,stringsAsFactors =F),stringsAsFactors =F)
+    d <- cbind.data.frame(d,gnet_result$group_score[i],stringsAsFactors =F)
+    el <- rbind.data.frame(el,d,stringsAsFactors =F)
+  }
+  
+  g_all <- graph_from_edgelist(as.matrix(el[,1:2]),directed = F)
+  el1a <- unique(get.edgelist(g_all))
+  el1b <- sum_scores(el1a,el)
+  el <- cbind.data.frame(el1a,'score'=el1b)
+  
+  colnames(el)<- c('regulator','target','score')
+  el1 <- el %>% group_by_(.dots = c('regulator','target')) %>% summarise_all(list('score' = sum))
+  el2 <- data.frame('regulator'=as.character(el1$regulator),
+                    'target'=as.character(el1$target),
+                    'score'=as.numeric(el1$score),stringsAsFactors = F)
+  el2 <- el2[el1$regulator!= el2$target,]
+  el2$score <- el2$score/max(el2$score)
+  rownames(el2) <- 1:nrow(el2)
+  return(el2)
+}
+```
+
+
+
+### Find Markers of Basal and ATII by stages
+```{r}
+library(openxlsx)
+
+tf <- readRDS(full.path("12_TF/Teichmann_TFlist.Rds"))
+tf <- bitr(tf$Ensembl.ID_hg, fromType = "ENSEMBL", toType = "SYMBOL", OrgDb = "org.Hs.eg.db")
+
+
+modify = read.xlsx(full.path("11_CNV/each_cells/cluster_res.xlsx"))
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+expr <- readRDS(full.path("02_rds/all_cell_expr.rds"))
+```
+
+
+```{r}
+get_pseudobulk <- function(expr, cells) {
+    expr = expr[, intersect(colnames(expr), cells)]
+    
+    print(dim(expr))
+    set.seed(42)
+    expr = expr[, sample(1:ncol(expr))]
+    
+    bk = round(ncol(expr) / 10)
+    
+    i = 1
+    res = NULL
+    while (i < ncol(expr)) {
+        temp = as.data.frame(rowSums(expr[, intersect(1:ncol(expr), i:(i + bk))]))
+        
+        colnames(temp) <- paste("C", i)
+
+        if (is.null(res)) {
+          res = temp
+        } else {
+          common_genes = intersect(rownames(res), rownames(temp))
+          res[common_genes, paste("C", i)] = temp[common_genes, paste("C", i)]
+        }
+        
+        i = i + bk
+    }
+    
+    return (res)
+}
+
+
+
+for (i in unique(sc_lfc$cell)) {
+
+    disease = unique(sc_lfc[sc_lfc$cell == i, "ident"])
+    
+    for (j in disease) {
+        print(full.path("11_CNV/each_cells", i, j, "seurat_obj.rds"))
+        
+        
+        if (!file.exists(full.path("11_CNV/each_cells", i, j, "seurat_obj.rds"))) {
+            next
+        }
+        
+        tryCatch({
+            
+            
+            for (k in c(T, F)) {
+                out_rds = full.path("11_CNV/each_cells", i, j, paste0("gnet_", ifelse(k, "Malignant", "Non_Malignant"), ".rds"))
+                
+                if (file.exists(out_rds)) {
+                    file.remove(out_rds)
+                }
+                
+                cells = meta[meta$cell_short == i & meta$Disease == j & meta$Malignant == k, ]
+                
+                set.seed(42)
+                
+                temp_lfc = sc_lfc[abs(sc_lfc$avg_logFC) > 0.25 & sc_lfc$p_val_adj < 0.05 & sc_lfc$cell == i & sc_lfc$ident == j, ]
+                
+                obj <- get_pseudobulk(expr[c(temp_lfc$gene, "PPT1"), ], cells) # 
+                colnames(obj) <- paste0(ifelse(k, "M", "NM"), 1:ncol(obj))
+            
+                obj = as.data.frame(t(scale(t(obj))))
+                obj = na.omit(obj)
+                # obj <- obj[apply(obj, 1, sd) > 0, ]
+                
+                obj$ID = rownames(obj)
+                obj$Desc = obj$ID
+                obj <- obj[, c("ID", "Desc", colnames(obj)[!colnames(obj) %in% c("ID", "Desc")])]
+                
+                if (is.null(temp_obj)) {
+                  temp_obj = obj
+                } else {
+                  common_genes = intersect(temp_obj$ID, obj$ID)
+                  temp_obj = cbind(temp_obj[common_genes, ], obj[common_genes, colnames(obj)[!colnames(obj) %in% c("ID", "Desc")]])
+                }
+                
+                # 根据恶性非恶性过滤
+                if (k) {
+                  temp_lfc = sc_lfc[sc_lfc$avg_logFC > 0.25 & sc_lfc$p_val_adj < 0.05 & sc_lfc$cell == i & sc_lfc$ident == j, ]
+                } else {
+                  temp_lfc = sc_lfc[sc_lfc$avg_logFC < -0.25 & sc_lfc$p_val_adj < 0.05 & sc_lfc$cell == i & sc_lfc$ident == j, ]
+                }
+                obj = obj[obj$ID %in% c(temp_lfc$gene, "PPT1"), ]
+                
+                write.table(obj,
+                            paste0("LungCancer/10x/11_CNV/each_cells/", i, "/", j, "/", paste0("tf_", ifelse(k, "Malignant", "Non_Malignant"), ".txt")),
+                            quote = F, sep = "\t", row.names = F, col.names = T
+                            )
+                write.table(obj[!obj$ID %in% c(tf$SYMBOL, "PPT1"), ],
+                            paste0("LungCancer/10x/11_CNV/each_cells/", i, "/", j, "/", paste0("rna_", ifelse(k, "Malignant", "Non_Malignant"), ".txt")),
+                            quote = F, sep = "\t", row.names = F)
+                write.table(c(tf$SYMBOL[tf$SYMBOL %in% obj$ID], "PPT1"), 
+                            paste0("LungCancer/10x/11_CNV/each_cells/", i, "/", j, "/", paste0("tf_name_", ifelse(k, "Malignant", "Non_Malignant"), ".txt")), 
+                            quote = F, col.names = F, row.names = F)
+                # print(dim(obj))
+                # 
+                # se <- SummarizedExperiment::SummarizedExperiment(assays=list(counts=as.matrix(obj)))
+                # 
+                # gnet_result <- GNET2::gnet(se, tf$SYMBOL[tf$SYMBOL %in% temp_lfc$gene], init_method = "kmeans", init_group_num = 10)
+                # 
+                # saveRDS(gnet_result, out_rds)
+                # 
+                # rm(gnet_result)
+            }
+            
+            write.table(temp_obj,
+                        paste0("LungCancer/10x/11_CNV/each_cells/", i, "/", j, "/", paste0("tf_Mix.txt")),
+                        quote = F, sep = "\t", row.names = F, col.names = T
+                        )
+            write.table(temp_obj[!obj$ID %in% c(tf$SYMBOL, "PPT1"), ],
+                        paste0("LungCancer/10x/11_CNV/each_cells/", i, "/", j, "/", paste0("rna_Mix.txt")),
+                        quote = F, sep = "\t", row.names = F)
+            write.table(c(tf$SYMBOL[tf$SYMBOL %in% temp_obj$ID], "PPT1"), 
+                        paste0("LungCancer/10x/11_CNV/each_cells/", i, "/", j, "/", paste0("tf_name_Mix.txt")), 
+                        quote = F, col.names = F, row.names = F) 
+        }, error = function(e) { print(e) })
+    }
+    
+}
+```
+
+
+```{r}
+for (i in c("ATII", "Basal")) {
+
+    disease = ifelse(i == "ATII", "LUAD", "LUSC")
+    output_dir = full.path("11_CNV/each_cells", i, disease, "by_stage_M_vs_NM")
+    out_csv = paste(output_dir, "stage_markers.csv", sep = "/")
+    markers <- read.csv(out_csv, row.names = 1, stringsAsFactors = F)
+    
+    out_rds = paste(output_dir, "seurat_obj.rds", sep = "/")
+    
+    obj <- readRDS(out_rds)
+    
+    for (j in unique(markers$ident)) {
+
+          cells = rownames(meta[meta$cell_short == i & meta$Disease == disease & meta$Malignant & meta$Stage == j, ])
+              
+          set.seed(42)
+              
+          temp_lfc = markers[markers$avg_logFC > 0.25 & markers$p_val_adj < 0.05 & markers$ident == j, ]
+          
+          print("pseudobulk")
+          temp <- get_pseudobulk(expr[temp_lfc$gene, ], cells) # 
+          colnames(temp) <- paste0("M", 1:ncol(temp))
+          
+          print("scaling")
+          temp = as.data.frame(t(scale(t(temp))))
+          temp = na.omit(temp)
+
+          temp$ID = rownames(temp)
+          temp$Desc = temp$ID
+          temp <- temp[, c("ID", "Desc", colnames(temp)[!colnames(temp) %in% c("ID", "Desc")])]
+          
+          temp = temp[temp$ID %in% temp_lfc$gene, ]
+          
+          print("Writing")
+          
+          temp_dir = paste0("LungCancer/10x/11_CNV/each_cells/", i, "/", disease, "/by_stage_M_vs_NM/")
+          
+          if (!dir.exists(temp_dir)) {
+              dir.create(temp_dir, showWarnings = F, recursive = T)
+          }
+          
+          write.table(temp,
+                      paste0(temp_dir, "tf_", j, ".txt"),
+                      quote = F, sep = "\t", row.names = F, col.names = T
+                      )
+          write.table(temp[!temp$ID %in% tf$SYMBOL, ],
+                      paste0(temp_dir, "rna_", j, ".txt"),
+                      quote = F, sep = "\t", row.names = F)
+          write.table(tf$SYMBOL[tf$SYMBOL %in% temp$ID], 
+                      paste0(temp_dir, "tf_name_", j, ".txt"), 
+                      quote = F, col.names = F, row.names = F)
+    }
+    
+}
+```
+
+
+
+
+```{r}
+plot_gene_group(gnet_result,group_idx = 1)
+```
+
+
+```{r}
+plot_gene_group(gnet_result,group_idx = 2)
+```
+
+
+```{r}
+plot_gene_group(gnet_result,group_idx = 3)
+```
+
+
+```{r}
+plot_gene_group(gnet_result,group_idx = 4)
+```
+
+
+```{r}
+
+make_network_plot_of_gnet <- function(gnet_result) {
+    library(igraph)
+    library(ggnetwork)
+    
+    data = NULL
+    
+    group = as.data.frame(gnet_result$reg_group_table)
+    for (i in unique(group$group)) {
+        features = rownames(gnet_result$regulator_data)[group$feature[group$group == i] + 1]
+        targets = gnet_result$gene_group_table$gene[gnet_result$gene_group_table$group == i]
+        targets = as.character(targets)
+        
+        temp = data.frame(x=rep(features, times = length(targets)), y=rep(targets, times = length(features)))
+        temp$group = i
+        data = rbind(data, temp)
+    }
+    
+    g = graph_from_data_frame(data, directed = TRUE, vertices = NULL)
+
+    temp = fortify(g)
+    temp$name[!temp$name %in% data$x] = ""
+        
+    ggplot(
+        temp, 
+        aes(x = x, y = y, xend = xend, yend = yend, label = name)
+    ) +
+        geom_edges(color = "grey25") +
+        geom_nodes(aes(color = group)) +
+        geom_nodetext_repel(
+            size = 6,
+            fontface = "bold",
+            box.padding = unit(1, "lines")
+        ) +
+        theme_blank(base_family = "Arial Unicode MS") +
+        theme(
+            legend.position = "none",
+            legend.text = element_text(size = 10)
+        ) +
+        # scale_color_manual(values = c(
+        #     "Immune"="#E9B0B7",
+        #     "Non-immune"="#90D0E0"
+        # )) +
+        labs(
+            size = "Total num. of interaction", 
+            alpha = "Num. of interaction",
+            color = ""
+        ) +
+        guides(size = F, alpha = F) +
+        scale_size(range = c(1, 30)) +
+        scale_alpha(range = c(0.01, 1))
+    
+
+}
+
+
+files <- list.files(full.path("11_CNV/each_cells"), pattern= "gnet_res.rds", recursive = T, full.names = T)
+```
+
+
+```{r fig.height=6, fig.width=6}
+gnet_result <- readRDS("LungCancer10x//11_CNV/each_cells/Basal/LUSC/gnet_res.rds")
+make_network_plot_of_gnet(gnet_result)
+```
+
+```{R}
+i = "ATII"
+j = "LUAD"
+
+obj <- readRDS(full.path("11_CNV/each_cells", i, j, "seurat_obj.rds"))
+
+clt = paste0("res.", str_replace(as.character(modify[modify$Cell == i, "Res"]), "0+$", ""))
+
+obj@meta.data$ident = obj@meta.data[, clt]
+
+expr <- get_pseudobulk(obj)
+
+set.seed(42)
+expr <- expr[sc_lfc$gene[sc_lfc$cell == i & sc_lfc$ident == j], ]
+expr <- expr[apply(expr, 1, sd) > 0, ]
+expr = as.data.frame(t(scale(t(expr))))
+
+se <- SummarizedExperiment::SummarizedExperiment(assays=list(counts=as.matrix(expr)))
+
+gnet_result <- gnet(se, tf$SYMBOL[tf$SYMBOL %in% rownames(expr)], init_method = "kmeans", cor_cutoff=0.9, max_iter = 1)
+
+saveRDS(gnet_result, full.path("11_CNV/each_cells", i, j, "gnet_res.rds"))
+```
+
+
+
+```{r fig.height=6, fig.width=6}
+gnet_result <- readRDS("LungCancer10x//11_CNV/each_cells/ATII/LUAD/gnet_res.rds")
+make_network_plot_of_gnet(gnet_result)
+```
+
+
+```{r fig.height=6, fig.width=6}
+gnet_result <- readRDS("LungCancer10x//11_CNV/each_cells/ATII/LUAD/gnet_Malignant.rds")
+make_network_plot_of_gnet(gnet_result)
+```
+
+```{r fig.height=6, fig.width=6}
+gnet_result <- readRDS("LungCancer10x//11_CNV/each_cells/ATII/LUAD/gnet_Non_Malignent.rds")
+make_network_plot_of_gnet(gnet_result)
+```
+
+
+```{r fig.height=6, fig.width=6}
+gnet_result <- readRDS("LungCancer10x//11_CNV/each_cells/Basal/LUSC/gnet_Malignant.rds")
+make_network_plot_of_gnet(gnet_result)
+```
+
+```{r fig.height=6, fig.width=6}
+gnet_result <- readRDS("LungCancer10x//11_CNV/each_cells/Basal/LUSC/gnet_Non_Malignent.rds")
+make_network_plot_of_gnet(gnet_result)
+```
+
+
+## LeMoNe
+
+```{r}
+files = list.files(full.path("11_CNV/each_cells"), pattern = "reg_all.txt", recursive = T, full.names = T)
+```
+
+
+
+```{r fig.height=4, fig.width=6}
+make_network_of_LeMoNe <- function(path, top=5, score=NULL, perc = NULL, target = NULL, silence_gene = T, cluster = NULL, layout = igraph::in_circle(), return_igraph = T) {
+    library(ggnetwork)
+    library(igraph)
+    library(dplyr)
+  
+    reg <- read.table(path)
+    colnames(reg) <- c("TF", "Clt", "Score")
+    
+    if (!is.null(target)) {
+      reg = reg[reg$TF %in% target, ]
+    }
+    
+    if (!is.null(cluster)) {
+      reg = reg[reg$Clt == cluster, ]
+    }
+    
+    cluster <- read.table(paste0(dirname(path), "/data/tc4.txt"))
+    colnames(cluster) <- c("Gene", "Clt")
+    
+    reg <- merge(reg, cluster, by = "Clt")
+    reg <- reg[, c("TF", "Gene", "Clt", "Score")]
+    
+    
+    if (!is.null(score)) {
+        temp = reg[reg$Score > score, ]
+    } else if (!is.null(perc)) {
+      reg = reg[order(reg$Score, decreasing = T), ]
+      temp = reg[1:round(nrow(reg) * perc), ]
+      
+    } else {
+        temp <- reg %>%
+          group_by(Clt) %>%
+          top_n(top, wt = Score) %>%
+          as.data.frame()
+
+    }
+    
+    print(sort(unique(as.character(temp$TF))))
+    
+    p <- ggplot(reg, aes(x=Score)) + 
+      geom_density() + 
+      geom_vline(xintercept=min(temp$Score), color="blue", linetype="dashed", size=1)
+    
+    print(p)
+    
+    set.seed(42)
+    g = graph_from_data_frame(temp, directed = TRUE, vertices = NULL)
+    
+    if (return_igraph) {
+      vertex_attr(g) <- list(name = V(g)$name, isTF = V(g)$name %in% reg$TF)
+      return(g)
+    }
+    
+    temp = fortify(g, layout = layout)
+    
+    if (silence_gene) {
+      temp$name[!temp$name %in% reg$TF] = ""
+      temp$Clt = ifelse(temp$name %in% reg$TF, "TF", "Not")
+    } else {
+      temp$Score = 1
+      temp$Clt = ifelse(temp$name %in% reg$TF, "TF", "Not")
+    }
+    
+    ggplot(
+        temp, 
+        aes(x = x, y = y, xend = xend, yend = yend, label = name)
+    ) +
+        geom_edges(color = "grey25") +
+        geom_nodes(aes(color = as.character(Clt), size = Score)) +
+        geom_nodetext_repel(
+            aes(color = Clt),
+            size = 6,
+            # color = "red",
+            fontface = "bold",
+            box.padding = unit(1, "lines")
+        ) +
+        theme_blank(base_family = "Arial Unicode MS") +
+        theme(
+            legend.position = "none",
+            legend.text = element_text(size = 10)
+        ) +
+        # scale_color_manual(values = c(
+        #     "Immune"="#E9B0B7",
+        #     "Non-immune"="#90D0E0"
+        # )) +
+        labs(
+            size = "Total num. of interaction", 
+            alpha = "Num. of interaction",
+            color = ""
+        ) +
+        guides(size = F, alpha = F) +
+        scale_size(range = c(2, 10)) +
+        scale_alpha(range = c(0.01, 1))
+}
+```
+
+
+```{r fig.height=6, fig.width=6}
+  # igraph::nicely(), igraph::in_circle(), igraph::on_sphere(),
+  # igraph::as_bipartite(), igraph::as_star(), igraph::with_dh(),
+  # igraph::with_fr(), igraph::with_drl(), igraph::with_gem()
+lemonet = list()
+p <- make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/ATII/LUAD/LeMoNe/Malignant/reg_all.txt", perc = 0.1, layout = igraph::with_dh()) +
+   scale_color_manual(values = c("TF"="red", "Not"="black"))
+
+lemonet[["AT2"]] = make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/ATII/LUAD/LeMoNe/Malignant/reg_all.txt", perc = 0.1, layout = igraph::with_dh(), return_igraph = T)
+
+# ggsave(
+#     filename = full.path("11_CNV/DEGs/TF/LUAD.pdf"),
+#     width = 6, height = 6, plot = p, device = cairo_pdf
+# )
+```
+
+```{r}
+make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/ATII/LUAD/LeMoNe/Malignant/reg_all.txt", perc = .5, target = c("NKX2-1", "KLF6", "ELF3", "ATF3", "EGR1"))
+```
+
+
+```{r fig.height=6, fig.width=6}
+p <- make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/ATII/LUAD/LeMoNe/Malignant/reg_all.txt", perc = .1, target = c("NKX2-1"), silence_gene = F, layout = igraph::nicely())  # cluster = 7
+p = p + scale_color_manual(values = c("TF"="red", "Not"="black"))
+
+ggsave(
+    filename = full.path("11_CNV/DEGs/TF/NKX2-1.pdf"),
+    width = 6, height = 6, plot = p, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=6, fig.width=6}
+p <- make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/ATII/LUAD/LeMoNe/Malignant/reg_all.txt", perc = .1, target = c("ATF3"), silence_gene = F, layout = igraph::nicely())  # cluster = 7
+p = p + scale_color_manual(values = c("TF"="red", "Not"="black"))
+
+
+ggsave(
+    filename = full.path("11_CNV/DEGs/TF/ATF3.pdf"),
+    width = 6, height = 6, plot = p, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=6, fig.width=6}
+p <- make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/Basal/LUSC/LeMoNe/Malignant/reg_all.txt", perc = .1, target = c("KLF6"), silence_gene = F, layout = igraph::nicely())
+p = p + scale_color_manual(values = c("TF"="red", "Not"="black"))
+ 
+ggsave(
+    filename = full.path("11_CNV/DEGs/TF/KLF6.pdf"),
+    width = 6, height = 6, plot = p, device = cairo_pdf
+)
+```
+
+
+
+
+```{r}
+temp_lfc = sc_lfc[sc_lfc$cell == "ATII" & sc_lfc$gene %in% c("CREBBP", "RARA", "GATA6", "HOXB5", "PAX8"), ]
+
+
+temp = read.table("LungCancer/10x/11_CNV/each_cells/ATII/LUAD/LeMoNe/Malignant/reg_all.txt")
+
+temp = temp[temp$V1 == "NKX2-1", ]
+
+
+tc = read.table("LungCancer/10x/11_CNV/each_cells/ATII/LUAD/LeMoNe/Malignant/data/tc4.txt")
+tc = tc[tc$V2 %in% temp$V2, ]
+
+tc = tc[tc$V1 %in% c("CREBBP", "RARA", "GATA6", "HOXB5", "PAX8"), ]
+```
+
+
+```{r fig.height=4, fig.width=6}
+make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/ATII/LUAD/LeMoNe/Non_Malignant/reg_all.txt", perc = 0.1)
+```
+
+
+```{r fig.height=6, fig.width=6}
+  # igraph::nicely(), igraph::in_circle(), igraph::on_sphere(),
+  # igraph::as_bipartite(), igraph::as_star(), igraph::with_dh(),
+  # igraph::with_fr(), igraph::with_drl(), igraph::with_gem()
+
+
+p <- make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/Basal/LUSC/LeMoNe/Malignant/reg_all.txt", perc = 0.3, layout = igraph::with_dh()) +
+  scale_color_manual(values = c("TF"="red", "Not"="black"))
+
+
+lemonet[["Basal"]] = make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/Basal/LUSC/LeMoNe/Malignant/reg_all.txt", perc = 0.1, layout = igraph::with_dh(), return_igraph = T)
+
+# ggsave(
+#     filename = full.path("11_CNV/DEGs/TF/LUSC.pdf"),
+#     width = 6, height = 6, plot = p, device = cairo_pdf
+# )
+
+saveRDS(lemonet, full.path("lung_lemonet.rds"))
+```
+
+
+```{r}
+temp = read.table("LungCancer/10x/11_CNV/each_cells/Basal/LUSC/LeMoNe/Malignant/reg_all.txt")
+
+
+
+tc = read.table("LungCancer/10x/11_CNV/each_cells/Basal/LUSC/LeMoNe/Malignant/data/tc4.txt")
+tc = tc[tc$V2 %in% c(0, 1, 3, 8, 9), ]
+
+tc = tc[tc$V1 %in% c("LDHB", "LDHA", "XRCC1", "CDK18", "PABPC4"), ]
+```
+
+
+```{r}
+make_network_of_LeMoNe("LungCancer/10x/11_CNV/each_cells/Basal/LUSC/LeMoNe/Non_Malignant/reg_all.txt", perc = 0.5)
+```
+
+```{r}
+temp = read.table("LungCancer/10x/11_CNV/each_cells/Basal/LUSC/LeMoNe/Non_Malignant/reg_all.txt")
+
+temp = temp[temp$V1 == "PPT1", ]
+
+
+tc = read.table("LungCancer/10x/11_CNV/each_cells/Basal/LUSC/LeMoNe/Non_Malignant/data/tc4.txt")
+tc = tc[tc$V2 %in% temp$V2, ]
+
+tc = tc[tc$V1 %in% c("LDHB", "LDHA", "XRCC1", "CDK18", "PABPC4"), ]
+```
+
+
+## Called peaks and DAStk
+```{r}
+data = read.table("/mnt/raid63/LungCancerXieDanData/ATAC_seq/DAStk/LUAD_peaks_vs_LUSC_peaks_differential_md_scores.txt")
+
+data = data[data$V2 < 0.05, ]
+```
+
+
+## JUNB
+
+# "AZGP1,AQP5,SPINK1,ANXA1,CHI3L1,EEF1A2,S100A13,PPT1,KPNA2,PIGR,EGFR"
+```{r fig.height=8, fig.width=8}
+library(ggridges)
+library(ggplot2)
+library(stringr)
+
+files = list.files("LungCancer10x/11_CNV/gnet/", pattern = "txt", full.names = T)
+
+registerDoMC(5)
+foreach (i = files ) %dopar% {
+  data = read.csv(i, header = F)
+  output = str_replace_all(i, "txt$", "pdf")
+
+  data$Disease = str_replace_all(data$V1, "\\d+", "")
+  
+  p <- ggplot(data, aes(x = V7, y = V1, group = V1, fill=Disease)) +
+      geom_density_ridges(scale = 10, size = 0.25, rel_min_height = 0.03, alpha = 0.8) +
+      theme_ridges() +
+      scale_y_discrete(expand = c(0, 0), name="") +
+      scale_x_continuous(expand = c(0, 0), name = data[1, "V6"]) +
+      scale_fill_manual(
+        values = c("LUAD" = "#0084D1", "LUSC"="#A0C807"), labels = c("LUAD", "LUSC")
+      ) +
+      scale_color_manual(values = c("LUAD" = "#0084D1",  "LUSC"="#A0C807"), guide = "none") +
+      coord_cartesian(clip = "off") +
+      theme_ridges(center = TRUE) +
+      guides(fill = guide_legend(
+      override.aes = list(
+        fill = c("#0084D1", "#A0C807"),
+        color = NA, point_color = NA)
+      )
+    )
+  
+  ggsave(filename = output, height = 8, width = 8, plot = p)
+}
+
+```
+
+
+
+```{R}
+temp = dcast(unique(data), V1~V7, value.var = "V8", full = 0, fun.aggregate = mean)
+
+temp[is.na(temp)] = 0
+
+Heatmap(
+    temp[, colnames(temp) != "V1"],
+    cluster_rows = F, cluster_columns = F
+)
+```
+
+
+## Peaks from DAStk
+```{r}
+library(TFBSTools)
+library(JASPAR2020)
+library(GenomicRanges)
+library(IRanges)
+library(GenomicFeatures)
+
+# temp = read.csv("/mnt/raid63/LungCancerXieDanData/ATAC_seq/DAStk.score", header = F)
+# files = list.files("/mnt/raid63/LungCancerXieDanData/ATAC_seq/DAStk", pattern = "_peaks_md_scores.txt", full.names = T)
+# 
+# temp = read.csv(files[1], stringsAsFactors = F, header = F, sep = ";")
+```
+
+```{R}
+genome = makeTxDbFromGFF("/mnt/raid63/LungCancerXieDanData/genome/gencode.v32.annotation.gtf", format="gtf")
+temp = GenomicFeatures::as.list(genome)
+ids = temp$genes[str_detect(temp$genes$gene_id, "ENSG00000067082"), "tx_id"]
+klf6 = temp$transcripts[temp$transcripts$tx_id %in% ids, ]
+```
+
+
+
+```{R}
+luad = genomation::readBed("/mnt/raid63/LungCancerXieDanData/ATAC_seq/Peaks/LUAD_peaks.narrowPeak")
+lusc =genomation::readBed("/mnt/raid63/LungCancerXieDanData/ATAC_seq/Peaks/LUSC_peaks.narrowPeak")
+```
+
+
+```{r}
+findOverlaps(
+  luad, 
+  GRanges(
+    seqnames = unique(klf6$tx_chrom), strand = unique(klf6$tx_strand),
+    ranges = IRanges(start = ifelse(unique(klf6$tx_strand) == "-", min(klf6$tx_start), min(klf6$tx_start) - 1000), 
+                     end = 3785281) # ifelse(unique(klf6$tx_strand) == "-", max(klf6$tx_end) + 1000, max(klf6$tx_end)))
+  ),
+  # genes(genome)["ENSG00000067082.15"],
+  ignore.strand = T
+)
+```
+
+
+```{r}
+findOverlaps(
+  lusc, 
+  GRanges(
+    seqnames = unique(klf6$tx_chrom), strand = unique(klf6$tx_strand),
+    ranges = IRanges(start = ifelse(unique(klf6$tx_strand) == "-", min(klf6$tx_start), min(klf6$tx_start) - 1000), 
+                     end = 3785281) # ifelse(unique(klf6$tx_strand) == "-", max(klf6$tx_end) + 1000, max(klf6$tx_end)))
+  ),
+  # genes(genome)["ENSG00000067082.15"],
+  ignore.strand = T
+)
+```
+
+
+```{r}
+ids = temp$genes[str_detect(temp$genes$gene_id, "ENSG00000162772"), "tx_id"]
+atf3 = temp$transcripts[temp$transcripts$tx_id %in% ids, ]
+```
+
+
+
+```{r}
+findOverlaps(
+  luad, 
+  GRanges(
+    seqnames = unique(atf3$tx_chrom), strand = unique(atf3$tx_strand),
+    ranges = IRanges(start = ifelse(unique(atf3$tx_strand) == "-", min(atf3$tx_start), min(atf3$tx_start) - 1000), 
+                     end = ifelse(unique(atf3$tx_strand) == "-", max(atf3$tx_end) + 1000, max(atf3$tx_end)))
+  ),
+  # genes(genome)["ENSG00000067082.15"],
+  ignore.strand = T
+)
+```
+
+
+```{r}
+findOverlaps(
+  lusc, 
+  GRanges(
+    seqnames = unique(atf3$tx_chrom), strand = unique(atf3$tx_strand),
+    ranges = IRanges(start = ifelse(unique(atf3$tx_strand) == "-", min(atf3$tx_start), min(atf3$tx_start) - 1000), 
+                     end = ifelse(unique(atf3$tx_strand) == "-", max(atf3$tx_end) + 1000, max(atf3$tx_end)))
+  ),
+  # genes(genome)["ENSG00000067082.15"],
+  ignore.strand = T
+)
+```
+
+
+
+
+```{r}
+ids = temp$genes[str_detect(temp$genes$gene_id, "ENSG00000136352"), "tx_id"]
+nkx21 = temp$transcripts[temp$transcripts$tx_id %in% ids, ]
+```
+
+
+
+```{r}
+findOverlaps(
+  luad, 
+  GRanges(
+    seqnames = unique(nkx21$tx_chrom), strand = unique(nkx21$tx_strand),
+    ranges = IRanges(start = ifelse(unique(nkx21$tx_strand) == "-", min(nkx21$tx_start), min(nkx21$tx_start) - 1000), 
+                     end = ifelse(unique(nkx21$tx_strand) == "-", max(nkx21$tx_end) + 1000, max(nkx21$tx_end)))
+  ),
+  # genes(genome)["ENSG00000067082.15"],
+  ignore.strand = T
+)
+```
+
+
+```{r}
+findOverlaps(
+  lusc, 
+  GRanges(
+    seqnames = unique(nkx21$tx_chrom), strand = unique(nkx21$tx_strand),
+    ranges = IRanges(start = ifelse(unique(nkx21$tx_strand) == "-", min(nkx21$tx_start), min(nkx21$tx_start) - 1000), 
+                     end = ifelse(unique(nkx21$tx_strand) == "-", max(nkx21$tx_end) + 1000, max(nkx21$tx_end)))
+  ),
+  # genes(genome)["ENSG00000067082.15"],
+  ignore.strand = T
+)
+```
+
+
+### JUNB test
+```{r}
+ids = temp$genes[str_detect(temp$genes$gene_id, "ENSG00000171223"), "tx_id"]
+nkx21 = temp$transcripts[temp$transcripts$tx_id %in% ids, ]
+```
+
+
+
+```{r}
+findOverlaps(
+  luad, 
+  GRanges(
+    seqnames = unique(nkx21$tx_chrom), strand = unique(nkx21$tx_strand),
+    ranges = IRanges(start = ifelse(unique(nkx21$tx_strand) == "-", min(nkx21$tx_start), min(nkx21$tx_start) - 1000), 
+                     end = ifelse(unique(nkx21$tx_strand) == "-", max(nkx21$tx_end) + 1000, max(nkx21$tx_end)))
+  ),
+  # genes(genome)["ENSG00000067082.15"],
+  ignore.strand = T
+)
+```
+
+
+```{r}
+findOverlaps(
+  lusc, 
+  GRanges(
+    seqnames = unique(nkx21$tx_chrom), strand = unique(nkx21$tx_strand),
+    ranges = IRanges(start = ifelse(unique(nkx21$tx_strand) == "-", min(nkx21$tx_start), min(nkx21$tx_start) - 1000), 
+                     end = ifelse(unique(nkx21$tx_strand) == "-", max(nkx21$tx_end) + 1000, max(nkx21$tx_end)))
+  ),
+  # genes(genome)["ENSG00000067082.15"],
+  ignore.strand = T
+)
+```
+
+
+```{R}
+opts <- list()
+opts[["species"]] <- 9606
+opts[["name"]] <- "MA0605.2"
+# opts[["type"]] <- "SELEX"
+opts[["all_versions"]] <- TRUE
+PFMatrixList <- getMatrixSet(JASPAR2018, opts)
+PFMatrixList
+#> PFMatrixList of length 1
+#> names(1): MA0002.1
+
+opts2 <- list()
+opts2[["type"]] <- "SELEX"
+PFMatrixList2 <- getMatrixSet(JASPAR2014, opts2)
+PFMatrixList2
+```
+
+
+```{r}
+subject <- DNAString("GAATTCTCTCTTGTTGTAGTCTCTTGACAAAATG")
+sitesetList <- searchSeq(
+  pwmList, 
+  subject,
+  seqname="seq1",
+  min.score="60%", strand="*"
+)
+```
+

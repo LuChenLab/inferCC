@@ -1,0 +1,930 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+
+```{r include=FALSE}
+library(URD)
+library(ComplexHeatmap)
+library(circlize)
+require(gam)
+library(doMC)
+```
+
+
+### ATII
+```{R}
+obj <- readRDS(full.path("11_CNV/each_cells/ATII/LUAD/seurat_obj.rds"))
+```
+
+```{r}
+# Create an URD object, which will filter the data, then normalize and log-transform it.
+axial <- createURD(count.data = as.matrix(obj@raw.data), meta = obj@meta.data, min.cells=3, min.counts=3)
+
+# Copy stage from @meta to @group.ids 
+axial@group.ids$stage <- as.character(axial@meta[rownames(axial@group.ids),"Stage"])
+
+
+axial <-
+  findVariableGenes(
+  axial,
+  set.object.var.genes = T,
+  diffCV.cutoff = 0.3,
+  mean.min = .005,
+  mean.max = 100,
+  do.plot = T
+ )
+```
+
+
+```{r}
+axial <- calcKNN(axial, nn = 100)
+outliers <- knnOutliers(
+  axial,
+  nn.1 = 1,
+  nn.2 = 20,
+  x.max = 40,
+  slope.r = 1.2,
+  int.r = 1,
+  slope.b = 1,
+  int.b = 10,
+  title = "Identifying Outliers by k-NN Distance."
+)
+```
+
+
+```{R}
+sigma <- destiny::find_sigmas(as.matrix(axial@logupx.data), verbose = F)@optimal_sigma
+
+
+# In this case, knn=100 (larger than sqrt(n.cells)) works well because there are not many cell types.
+# Sigma 16 is slightly smaller than the sigma auto-determined by using NULL parameter.
+axial <- calcDM(axial, knn = 100, sigma=sigma, dcs.store = 10)
+```
+
+
+
+```{R fig.height=6, fig.width=6}
+make_dm_plot <- function(axial, output = NULL, title = "", dims = 6) {
+    mtx = as.data.frame(axial@dm@eigenvectors)
+    
+    mtx$Stage <- axial@meta[rownames(mtx), "Stage"]
+    
+    for(i in seq(1, dims, 2)) {
+        temp <- mtx[, c(paste0("DC", i), paste0("DC", i + 1), "Stage")]
+        colnames(temp) <- c("DC1", "DC2", "group")
+        
+        p <- ggplot(temp, aes(x=DC1, y = DC2, color = group)) +
+            geom_point_rast() +
+            scale_color_manual(values = c(
+                "I"="#65A9A3", 
+                "II"="#4A933E", 
+                "III"="#EC7A21", 
+                "IV"="#D73F47"
+            )) +
+            theme_bw(base_family = "Arial Unicode MS") +
+            theme(
+                aspect.ratio = 1,
+                legend.position = c(0.5, 0.1),
+                axis.text = element_text(size = 15),
+                axis.title = element_text(size = 18),
+                legend.text = element_text(size = 15),
+                legend.background = element_blank(),
+                plot.title = element_text(size = 15),
+                plot.subtitle = element_text(size = 10),
+                panel.grid = element_blank()
+            ) +
+            guides(color = guide_legend(nrow = 1, override.aes = list(size = 5))) +
+            labs(
+                color = "",
+                x = paste0("DC", i), 
+                y = paste0("DC", i + 1), 
+                title = title
+            )
+        
+        if (is.null(output)) {
+              print(p)
+        } else {
+          ggsave(
+              filename = paste0(output, "_DM_", i, ".pdf"),
+              plot = p,
+              width = 6,
+              height = 7, device = cairo_pdf
+          )
+        }
+    }
+
+}
+```
+
+
+```{r}
+axial@group.ids$ident = as.character(
+  as.numeric(as.character(
+    axial@meta[rownames(axial@group.ids), "res.0.03"]
+  )) + 1
+)
+root.cells <- cellsInCluster(axial, "ident", "1")
+
+
+# Here we use all cells from the first stage as the root
+# root.cells <- cellsInCluster(axial, "stage", "I")
+
+# Then we run 'flood' simulations
+axial.floods <- floodPseudotime(axial, root.cells = root.cells, n=50, minimum.cells.flooded = 2, verbose=F)
+
+# The we process the simulations into a pseudotime
+axial <- floodPseudotimeProcess(axial, axial.floods, floods.name="pseudotime")
+```
+
+
+```{r}
+pseudotimePlotStabilityOverall(axial)
+```
+
+
+```{r}
+axial <- readRDS(full.path("11_CNV/each_cells/ATII/LUAD/URD.rds"))
+```
+
+
+```{r}
+make_dm_plot(axial, output = full.path("11_CNV/each_cells/ATII/LUAD/URD"), title = "")
+```
+
+
+```{r}
+
+plotDimsRast <- function (object, label, label.type = "search", reduction.use = c("tsne", 
+                                                                  "pca", "dm"), dim.x = 1, dim.y = 2, colors = NULL, discrete.colors = NULL, 
+          point.size = 1, alpha = 1, point.shapes = F, plot.title = label, 
+          legend = T, legend.title = "", legend.point.size = 3 * point.size, 
+          label.clusters = F, cells = NULL, x.lim = NULL, y.lim = NULL, 
+          color.lim = NULL, na.rm = F, transitions.plot = 0, transitions.alpha = 0.5, 
+          transitions.df = NULL) 
+{
+  if (length(reduction.use) > 1) 
+    reduction.use <- reduction.use[1]
+  if (tolower(reduction.use) == "tsne") {
+    data.plot <- object@tsne.y
+    if (dim.x > dim(data.plot)[2] | dim.y > dim(data.plot)[2]) 
+      stop("Dimensions requested were not previously calculated.")
+    dim.x <- paste0("tSNE", dim.x)
+    dim.y <- paste0("tSNE", dim.y)
+  }
+  else if (tolower(reduction.use) == "pca") {
+    data.plot <- object@pca.scores
+    if (dim.x > dim(data.plot)[2] | dim.y > dim(data.plot)[2]) 
+      stop("Dimensions requested were not previously calculated.")
+    dim.x <- paste0("PC", dim.x)
+    dim.y <- paste0("PC", dim.y)
+    data.plot <- data.plot[, c(dim.x, dim.y)]
+  }
+  else if (tolower(reduction.use) == "dm") {
+    data.plot <- object@dm@eigenvectors
+    if (dim.x > dim(data.plot)[2] | dim.y > dim(data.plot)[2]) 
+      stop("Dimensions requested were not previously calculated.")
+    dim.x <- paste0("DC", dim.x)
+    dim.y <- paste0("DC", dim.y)
+    data.plot <- as.data.frame(data.plot[, c(dim.x, dim.y)])
+  }
+  else {
+    stop("The reduction provided is invalid.")
+  }
+  sig.score <- data.for.plot(object, label = label, label.type = label.type, 
+                             as.color = F, as.discrete.list = T)
+  data.plot$SIG <- sig.score[[2]][rownames(data.plot)]
+  if (na.rm) {
+    data.plot <- data.plot[complete.cases(data.plot), ]
+  }
+  if (!is.null(cells)) {
+    cells <- intersect(cells, rownames(data.plot))
+    data.plot <- data.plot[cells, ]
+  }
+  if (is.null(transitions.plot) || transitions.plot > 0 || 
+      !is.null(transitions.df)) {
+    if (is.null(transitions.df)) 
+      transitions.df <- edgesFromDM(object, cells = rownames(data.plot), 
+                                    edges.return = transitions.plot)
+    transitions.df$x1 <- data.plot[transitions.df$from, dim.x]
+    transitions.df$x2 <- data.plot[transitions.df$to, dim.x]
+    transitions.df$y1 <- data.plot[transitions.df$from, dim.y]
+    transitions.df$y2 <- data.plot[transitions.df$to, dim.y]
+    transitions.df$alpha <- transitions.df$weight/max(transitions.df$weight) * 
+      transitions.alpha
+  }
+  this.plot <- ggplot(data = data.plot, aes_string(x = dim.x, 
+                                                   y = dim.y))
+  if (!is.null(transitions.df)) 
+    this.plot <- this.plot + geom_segment(inherit.aes = F, 
+                                          data = transitions.df, aes(x = x1, y = y1, xend = x2, 
+                                                                     yend = y2, alpha = alpha))
+  if (sig.score[[1]]) {
+    if (point.shapes) {
+      shape.rep <- ceiling(length(unique(data.plot$SIG))/4) + 
+        1
+      this.plot <- this.plot + geom_point_rast(aes(color = SIG, 
+                                              shape = SIG), size = point.size, alpha = alpha) + 
+        scale_shape_manual(values = rep(c(0, 2, 8, 9), 
+                                        shape.rep))
+    }
+    else {
+      this.plot <- this.plot + geom_point_rast(aes(color = SIG), 
+                                          size = point.size, alpha = alpha, stroke = 0)
+    }
+    if (!is.null(discrete.colors)) {
+      this.plot <- this.plot + scale_color_manual(values = discrete.colors)
+    }
+  }
+  else {
+    if (is.null(colors)) 
+      colors <- defaultURDContinuousColors()
+    this.plot <- this.plot + geom_point_rast(aes(color = SIG), 
+                                        size = point.size) + scale_color_gradientn(colors = colors, 
+                                                                                   limits = color.lim)
+  }
+  this.plot <- this.plot + labs(title = plot.title, color = legend.title, 
+                                shape = legend.title)
+  this.plot <- this.plot + theme_bw() + theme(panel.grid.minor = element_blank(), 
+                                              panel.grid.major = element_blank(), plot.title = element_text(face = "bold"))
+  if (label.clusters && sig.score[[1]]) {
+    data.plot$CLUSTER <- data.plot$SIG
+    k.centers <- aggregate(data.plot[, 1:2], by = list(data.plot$CLUSTER), 
+                           FUN = "mean")
+    this.plot <- this.plot + geom_label(data = k.centers, 
+                                        aes_string(x = dim.x, y = dim.y, label = "Group.1"), 
+                                        color = "black", alpha = 0.6, show.legend = F)
+  }
+  if (!legend) {
+    this.plot <- this.plot + guides(color = FALSE, shape = FALSE)
+  }
+  else if (sig.score[[1]]) {
+    this.plot <- this.plot + guides(color = guide_legend(override.aes = list(size = legend.point.size)))
+  }
+  this.plot <- this.plot + guides(alpha = F)
+  if (!is.null(x.lim)) 
+    this.plot <- this.plot + xlim(x.lim[1], x.lim[2])
+  if (!is.null(y.lim)) 
+    this.plot <- this.plot + ylim(y.lim[1], y.lim[2])
+  return(this.plot)
+}
+```
+
+```{r fig.height=6, fig.width=7}
+p <- plotDimsRast(
+  axial, 
+  "pseudotime", 
+  plot.title = "Pseudotime",
+  reduction.use = "dm"
+) +
+  theme_void(base_family = "Arial Unicode MS") +
+  theme(
+        aspect.ratio = 1,
+        axis.text = element_text(size = 0),
+        axis.title = element_text(size = 0),
+        legend.text = element_text(size = 15),
+        legend.background = element_blank(),
+        plot.title = element_text(size = 15),
+        plot.subtitle = element_text(size = 10)
+    )
+
+p
+
+ggsave(
+    filename = full.path("11_CNV/each_cells/ATII/LUAD/URD_pseodotime_plot.pdf"),
+    plot = p, width = 7, height = 6, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=6}
+p <- plotDists(axial, "pseudotime", "Stage", plot.title = "Pseudotime by stage") +
+  scale_color_manual(values = c(
+      "I"="#65A9A3", 
+      "II"="#4A933E", 
+      "III"="#EC7A21", 
+      "IV"="#D73F47"
+  )) +
+  scale_fill_manual(values = c(
+    "I"="#65A9A3", 
+    "II"="#4A933E", 
+    "III"="#EC7A21", 
+    "IV"="#D73F47"
+)) +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+      legend.position = c(0.7, 1.05),
+      panel.grid = element_blank(),
+      legend.direction = "horizontal",
+      axis.text = element_text(size = 15),
+      axis.title = element_text(size = 18),
+      legend.text = element_text(size = 15),
+      legend.background = element_blank(),
+      plot.title = element_text(size = 15),
+      plot.subtitle = element_text(size = 10)
+  )
+
+
+p
+
+ggsave(
+    filename =  full.path("11_CNV/each_cells/ATII/LUAD/URD_pseodotime_density.pdf"),
+    plot = p, width = 6, height = 4, device = cairo_pdf
+)
+```
+
+```{R}
+pt <- axial@pseudotime
+t <- axial@pseudotime$pseudotime
+y <- as.matrix(axial@logupx.data)
+
+gam.pval <- t(apply(y, 1, function(z) {
+  d <- data.frame(z = z, t = t)
+  tmp <- gam(z ~ lo(t), data = d)
+  p <- summary(tmp)[4][[1]][1, 5]
+  coeff <- tmp$coefficients[2]
+  return(c(p, coeff))
+}))
+
+colnames(gam.pval) <- c('pvalue', 'coefficients')
+```
+
+
+```{r fig.height=6, fig.width=8}
+sampleorder <- order(pt$pseudotime)
+sampletime <- axial@meta[rownames(pt)[sampleorder],]$Stage
+
+colannotation <- HeatmapAnnotation(
+    Stage = sampletime,
+    col = list(Stage = c(
+        "I"="#65A9A3", 
+        "II"="#4A933E", 
+        "III"="#EC7A21", 
+        "IV"="#D73F47"
+    )),
+    show_annotation_name = F,
+    annotation_legend_param = list(
+          Stage = list(
+              direction = "horizontal",
+              nrow = 1,
+              labels_gp = gpar(fontsize = 12),
+              title_gp = gpar(fontsize = 15)
+          )
+    )
+)
+
+topgenes <- rownames(gam.pval[order(gam.pval[,1]),])
+topgenes <- head(topgenes, 200)
+
+
+scale.data <- t(scale(t(y[topgenes,sampleorder])))
+
+p <- Heatmap(
+      scale.data,
+      name = "Expr",
+      show_row_names = F,
+      show_column_names = F,
+      cluster_columns = F,
+      top_annotation = colannotation,
+      row_names_gp = gpar(fontsize = 2),
+      col = colorRamp2(c(-2,0,2), c("blue", "white", "red")),
+      heatmap_legend_param = list(direction = "horizontal")
+  )
+
+pdf(paste0(root.dir, "ATII/LUAD/URD_pseudotime_heatmap.pdf"), width = 8, height = 6)
+draw(
+    p,
+    column_title_gp = gpar(fontsize = 20),
+    merge_legend = TRUE, 
+    heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom"
+)
+dev.off()
+```
+
+```{r}
+saveRDS(axial, paste0(root.dir, "ATII/LUAD/URD.rds"))
+saveRDS(gam.pval, paste0(root.dir, "ATII/LUAD/gam.rds"))
+```
+
+
+## Basal
+
+```{r}
+axial = readRDS(full.path("11_CNV/each_cells/Basal/LUSC/URD.rds"))
+```
+
+
+```{r}
+# Here we use all cells from the first stage as the root
+axial@group.ids$ident = as.character(
+  as.numeric(as.character(
+    axial@meta[rownames(axial@group.ids), "res.0.2"]
+  )) + 1
+)
+root.cells <- cellsInCluster(axial, "ident", "4")
+
+# Then we run 'flood' simulations
+axial.floods <- floodPseudotime(axial, root.cells = root.cells, n=50, minimum.cells.flooded = 2, verbose=F)
+
+# The we process the simulations into a pseudotime
+axial <- floodPseudotimeProcess(axial, axial.floods, floods.name="pseudotime")
+```
+
+
+```{R}
+make_dm_plot(axial, output = full.path("11_CNV/each_cells/Basal/LUSC/URD"), title = "")
+```
+
+```{r fig.height=6, fig.width=7}
+p <- plotDimsRast(
+  axial, 
+  "pseudotime", 
+  plot.title = "Pseudotime",
+  reduction.use = "dm"
+) +
+  theme_void(base_family = "Arial Unicode MS") +
+  theme(
+        aspect.ratio = 1,
+        axis.text = element_text(size = 0),
+        axis.title = element_text(size = 0),
+        legend.text = element_text(size = 15),
+        legend.background = element_blank(),
+        plot.title = element_text(size = 15),
+        plot.subtitle = element_text(size = 10)
+    )
+
+p
+
+# ggsave(
+#     filename = full.path("11_CNV/each_cells/Basal/LUSC/URD_pseodotime_plot.pdf"),
+#     plot = p, width = 7, height = 6, device = cairo_pdf
+# )
+```
+
+
+```{r fig.height=4, fig.width=6}
+p <- plotDists(axial, "pseudotime", "Stage", plot.title = "Pseudotime by stage") +
+  scale_color_manual(values = c(
+      "I"="#65A9A3", 
+      "II"="#4A933E", 
+      "III"="#EC7A21", 
+      "IV"="#D73F47"
+  )) +
+  scale_fill_manual(values = c(
+    "I"="#65A9A3", 
+    "II"="#4A933E", 
+    "III"="#EC7A21", 
+    "IV"="#D73F47"
+)) +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+      legend.position = c(0.7, 1.05),
+      panel.grid = element_blank(),
+      legend.direction = "horizontal",
+      axis.text = element_text(size = 15),
+      axis.title = element_text(size = 18),
+      legend.text = element_text(size = 15),
+      legend.background = element_blank(),
+      plot.title = element_text(size = 15),
+      plot.subtitle = element_text(size = 10)
+  )
+
+
+p
+
+ggsave(
+    filename =  full.path("11_CNV/each_cells/Basal/LUSC/URD_pseodotime_density.pdf"),
+    plot = p, width = 6, height = 4, device = cairo_pdf
+)
+```
+
+---
+
+
+
+## make all of this into pipeline
+```{R}
+make_dm_plot <- function(axial, output = NULL, title = "", dims = 6) {
+    mtx = as.data.frame(axial@dm@eigenvectors)
+   
+    mtx$Stage <- axial@meta[rownames(mtx), "Stage"]
+    
+    for(i in seq(1, dims, 2)) {
+        temp <- mtx[, c(paste0("DC", i), paste0("DC", i + 1), "Stage")]
+        colnames(temp) <- c("DC1", "DC2", "group")
+        
+        p <- ggplot(temp, aes(x=DC1, y = DC2, color = group)) +
+            geom_point(size = 0.1) +
+            scale_color_manual(values = c(
+                "I"="#65A9A3", 
+                "II"="#4A933E", 
+                "III"="#EC7A21", 
+                "IV"="#D73F47"
+            )) +
+            theme_bw() +
+            theme(
+                aspect.ratio = 1,
+                legend.position = c(0.5, 0.1),
+                axis.text = element_text(size = 15),
+                axis.title = element_text(size = 18),
+                legend.text = element_text(size = 15),
+                legend.background = element_blank(),
+                plot.title = element_text(size = 15),
+                plot.subtitle = element_text(size = 10)
+            ) +
+            guides(color = guide_legend(nrow = 1, override.aes = list(size = 5))) +
+            labs(
+                color = "",
+                x = paste0("DC", i), 
+                y = paste0("DC", i + 1), 
+                title = title
+            )
+        
+        if (is.null(output)) {
+              print(p)
+        } else {
+          ggsave(
+              filename = paste0(output, "_DM_", i, ".pdf"),
+              plot = p,
+              width = 6,
+              height = 7
+          )
+        }
+    }
+
+}
+
+
+create_URD <- function(obj_path, urd_path) {
+   
+    if (file.exists(urd_path)) {
+        print(paste("load", urd_path))
+        axial <- readRDS(urd_path)
+    } else {
+        print(paste("load", obj_path))
+        obj <- readRDS(obj_path)
+
+        # Create an URD object, which will filter the data, then normalize and log-transform it.
+        axial <- createURD(count.data = as.matrix(obj@raw.data), meta = obj@meta.data, min.cells=3, min.counts=3)
+        
+        # Copy stage from @meta to @group.ids 
+        axial@group.ids$stage <- as.character(axial@meta[rownames(axial@group.ids),"Stage"])
+        saveRDS(axial, urd_path)
+    }
+    return (axial)
+}
+
+
+find_var_genes <- function(axial, urd_path, force) {
+    if (length(axial@var.genes) == 0 || force ) {
+          axial <- findVariableGenes(
+              axial,
+              set.object.var.genes = T,
+              diffCV.cutoff = 0.3,
+              mean.min = .005,
+              mean.max = 100,
+              do.plot = T
+          )
+          saveRDS(axial, urd_path)
+    }
+    axial
+}
+
+
+calc_knn <- function(axial, urd_path, force, nn=100, x.max=40) {
+      # calculate KNN
+      if (length(axial@knn) == 0 || force) {
+          axial <- calcKNN(axial, nn = nn)
+          outliers <- knnOutliers(
+              axial,
+              nn.1 = 1,
+              nn.2 = 20,
+              x.max = x.max,
+              slope.r = 1.2,
+              int.r = 1,
+              slope.b = 1,
+              int.b = 10,
+              title = "Identifying Outliers by k-NN Distance."
+          )
+          saveRDS(axial, urd_path)
+      }
+    axial
+}
+
+
+calc_destiny <- function(axial, urd_path, force, num_knn = NULL, sigma=16) {
+    if (nrow(axial@dm@eigenvectors) == 0 || force) {
+        # In this case, knn=100 (larger than sqrt(n.cells)) works well because there are not many cell types.
+        # Sigma 16 is slightly smaller than the sigma auto-determined by using NULL parameter.
+      
+        if (is.null(num_knn)) {
+            num_knn = sqrt(nrow(axial@meta)) / 10
+            num_knn = ceiling(num_knn) * 10
+        }
+        
+        axial <- calcDM(axial, knn = num_knn, sigma=sigma, dcs.store = 10)
+        saveRDS(axial, urd_path)
+    }
+    axial
+}
+
+calc_pseudotime <- function(axial, urd_path, force) {
+    # print(length(axial@pseudotime.stability))
+    if (length(axial@pseudotime.stability) < 2 || force) {
+        # Here we use all cells from the first stage as the root
+        root.cells <- cellsInCluster(axial, "stage", "I")
+        
+        # Then we run 'flood' simulations
+        axial.floods <- floodPseudotime(axial, root.cells = root.cells, n=50, minimum.cells.flooded = 2, verbose=F)
+        
+        # The we process the simulations into a pseudotime
+        axial <- floodPseudotimeProcess(axial, axial.floods, floods.name="pseudotime")
+        saveRDS(axial, urd_path)
+    }
+    axial
+}
+
+
+calc_gam <- function(axial, indir, force, top_var=2000, n.cores = 10) {
+    library(gam)
+    library(doMC)
+    if (file.exists(paste(indir, "gam.rds", sep = "/")) && !force) {
+        gam.pval <- readRDS(paste(indir, "gam.rds", sep = "/"))
+    } else {
+        pt <- axial@pseudotime
+        t <- axial@pseudotime$pseudotime
+        y <- as.matrix(axial@logupx.data)
+        
+        vars <- names(sort(apply(y,1,var),decreasing = TRUE))[1:top_var]
+        y <- y[vars,]
+        
+        registerDoMC(n.cores)
+        gam.pval <- foreach(i=1:nrow(y), .combine = "rbind") %dopar% {
+            z = y[i,]
+            d <- data.frame(z = z, t = t)
+            tmp <- gam(z ~ lo(t), data = d)
+            p <- summary(tmp)[4][[1]][1, 5]
+            coeff <- tmp$coefficients[2]
+            return(c(p, coeff))
+        }
+        
+        colnames(gam.pval) <- c('pvalue', 'coefficients')
+        rownames(gam.pval) <- vars
+        saveRDS(gam.pval, paste(indir, "gam.rds", sep = "/"))
+    }
+    
+    gam.pval
+}
+
+
+# obj_path -> path to seurat obj
+urd_pipeline <- function(obj_path, force = F, random_select = T, seed = 42, num_knn=NULL, sigma=16, x.max=40) {
+    library(ComplexHeatmap)
+    library(circlize)
+    library(dplyr)
+  
+    indir = dirname(obj_path)
+    cell = basename(dirname(indir))
+    disease = basename(indir)
+    
+    urd_path = paste(indir, "URD.rds", sep = "/")
+     
+    axial <- create_URD(obj_path, urd_path)
+    
+    axial <- find_var_genes(axial, urd_path, force)
+    
+    axial <- calc_knn(axial, urd_path, force, ifelse(is.null(num_knn), 100, num_knn), x.max=x.max)
+
+    # destiny
+    axial <- calc_destiny(axial, urd_path, force, num_knn = num_knn, sigma = sigma)
+    
+    print("Make dm plot")
+    make_dm_plot(axial, output = paste(indir, "URD", sep = "/"), title = paste0(cell, " (", disease, ")"))
+    
+    axial <- calc_pseudotime(axial, urd_path, force)
+    
+    print("Make pseudotime plot")
+    print(paste(indir, "URD_pseodotime_plot.pdf", sep = "/"))
+    p <- plotDim(
+        axial, 
+        "pseudotime", 
+        plot.title = "Pseudotime",
+        reduction.use = "dm"
+    ) +
+        theme(
+              aspect.ratio = 1,
+              axis.text = element_text(size = 15),
+              axis.title = element_text(size = 18),
+              legend.text = element_text(size = 15),
+              legend.background = element_blank(),
+              plot.title = element_text(size = 15),
+              plot.subtitle = element_text(size = 10)
+        )
+  
+    ggsave(
+        filename = paste(indir, "URD_pseodotime_plot.pdf", sep = "/"),
+        plot = p,
+        width = 7,
+        height = 6
+    )
+      
+    p <- plotDists(axial, "pseudotime", "Stage", plot.title = "Pseudotime by stage") +
+        scale_color_manual(values = c(
+            "I"="#65A9A3", 
+            "II"="#4A933E", 
+            "III"="#EC7A21", 
+            "IV"="#D73F47"
+        )) +
+        scale_fill_manual(values = c(
+          "I"="#65A9A3", 
+          "II"="#4A933E", 
+          "III"="#EC7A21", 
+          "IV"="#D73F47"
+      )) +
+        theme(
+            legend.position = c(0.7, 1.05),
+            legend.direction = "horizontal",
+            axis.text = element_text(size = 15),
+            axis.title = element_text(size = 18),
+            legend.text = element_text(size = 15),
+            legend.background = element_blank(),
+            plot.title = element_text(size = 15),
+            plot.subtitle = element_text(size = 10)
+        )
+
+      ggsave(
+          filename = paste(indir, "URD_pseodotime_density.pdf", sep = "/"),
+          plot = p,
+          width = 6,
+          height = 4
+      )
+      
+      print("Gam")
+      if (!file.exists(paste(indir, "gam.rds", sep = "/"))) {
+          gam.pval <- calc_gam(axial, indir, force)
+      } else {
+          gam.pva <- readRDS(paste(indir, "gam.rds", sep = "/"))
+      }
+      
+      print("Make heatmap")
+  
+      if (random_select) {
+          set.seed(seed)
+          size_ = sort(table(axial@meta$Stage), decreasing = T)[2]
+          meta = axial@meta
+          meta$Cells = rownames(meta)
+          meta <- meta %>%
+            group_by(Stage) %>%
+            sample_n(size_, replace = T) %>%
+            unique() %>%
+            as.data.frame()
+      } else {
+          meta <- axial@meta
+          meta$Cells = rownames(meta)
+      }
+
+      pt <- axial@pseudotime[unique(meta$Cells), , drop = F]
+      t <- axial@pseudotime$pseudotime
+      y <- as.matrix(axial@logupx.data)
+  
+      sampleorder <- order(pt$pseudotime)
+      sampletime <- axial@meta[rownames(pt)[sampleorder],]$Stage
+      
+      colannotation <- HeatmapAnnotation(
+          Stage = sampletime,
+          col = list(Stage = c(
+              "I"="#65A9A3", 
+              "II"="#4A933E", 
+              "III"="#EC7A21", 
+              "IV"="#D73F47"
+          )),
+          show_annotation_name = F,
+          annotation_legend_param = list(
+                Stage = list(
+                    direction = "horizontal",
+                    nrow = 1,
+                    labels_gp = gpar(fontsize = 12),
+                    title_gp = gpar(fontsize = 15)
+                )
+          )
+      )
+
+      topgenes <- rownames(gam.pval[order(gam.pval[,1]),])
+      topgenes <- head(topgenes, 200)
+
+      scale.data <- t(scale(t(y[topgenes,sampleorder])))
+      
+      p <- Heatmap(
+            na.omit(scale.data),
+            name = "Expr",
+            show_row_names = F,
+            show_column_names = F,
+            cluster_columns = F,
+            top_annotation = colannotation,
+            row_names_gp = gpar(fontsize = 2),
+            col = colorRamp2(c(-2,0,2), c("blue", "white", "red")),
+            heatmap_legend_param = list(direction = "horizontal")
+        )
+      
+      pdf(paste(indir, "URD_pseudotime_heatmap.pdf", sep = "/"), width = 8, height = 6)
+      draw(
+          p,
+          column_title_gp = gpar(fontsize = 20),
+          merge_legend = TRUE, 
+          heatmap_legend_side = "bottom", 
+          annotation_legend_side = "bottom"
+      )
+      dev.off()
+}
+```
+
+
+```{r}
+
+library(doMC)
+
+
+registerDoMC(20)
+
+files = list.files(root.dir, pattern = "seurat.rds", full.names = T, recursive = T)
+
+#, .errorhandling = "pass"
+foreach(f = files, .errorhandling = "pass") %dopar% {
+    urd_pipeline(f)
+}
+
+
+urd_pipeline("LungCancer10x/11_CNV/each_cells/Basal/LUSC/seurat_obj.rds", sigma = 50, force = T)
+```
+
+
+
+## ATII after CNV
+```{r}
+urd_pipeline(full.path("11_CNV/each_cells/ATII/seurat_obj_LUAD.rds"), F)
+```
+
+
+
+## Basal after CNV
+```{r}
+urd_pipeline(full.path("11_CNV/each_cells/Basal/seurat_obj_LUSC.rds"), T, x.max=80, num_knn = 150, sigma = "local")
+```
+
+
+---
+## Basal
+
+```{r}
+axial <- readRDS(paste0(root.dir, "Basal/LUSC/URD.rds"))
+```
+
+
+```{r}
+axial <- calcDM(axial, knn = 150, sigma.use = "local")
+
+plotDim(axial, "Stage", reduction.use = "dm")
+```
+
+```{r}
+make_dm_plot(axial)
+```
+
+```{r}
+axial <- calcDM(axial, knn = 100, sigma=16, dcs.store = 10)
+```
+
+
+
+```{r}
+dirs = list.dirs(full.path("11_CNV/each_cells"), recursive = F)
+
+for (i in dirs) {
+    cell = basename(i)
+  
+    for (j in c("LUAD", "LUSC")) {
+        print(paste(cell, j))
+      
+        input_dir = paste(i, j, "seurat_obj.rds", sep = "/")
+        
+        tryCatch({
+            urd_pipeline(input_dir, F)
+        }, error = function(e) {})
+       
+        gc()
+    }
+}
+
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

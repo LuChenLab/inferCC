@@ -1,0 +1,611 @@
+---
+title: "delta"
+author: "Zhang Yiming"
+date: "2020/2/22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_chunk$set(echo = TRUE)
+root.dir = "LungCancer10x/"
+
+full_path <- function(...) {
+    paste(root.dir, ..., sep = "/")
+}
+
+```
+
+
+```{r include=FALSE}
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(reshape2)
+library(openxlsx)
+library(stringr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(DESeq2)
+```
+
+## R Markdown
+
+
+### Test gene on protein level
+```{R}
+read_protein <- function(path, scale = F) {
+    
+    wb <- loadWorkbook(path)
+    sheets <- wb$sheet_names
+    
+    res = NULL
+    data <- read.xlsx(wb, sheet = which(sheets == "SNR532"))
+    data <- data[, !colnames(data) %in% c("Block", "Column", "Row")]
+    
+    if (scale) {
+      data[, 3:ncol(data)] <- t(scale(t(data[, 3:ncol(data)])))
+    }
+    # data[, 3:ncol(data)] <- scale(data[, 3:ncol(data)])
+    data <- reshape2::melt(data, id.vars = c("Name", "ID"))
+    data$source = "SNR532"
+    res = rbind(data, res)
+    
+    data <- read.xlsx(wb, sheet = which(sheets == "SNR635"))
+    data <- data[, !colnames(data) %in% c("Block", "Column", "Row")]
+    if (scale) {
+      data[, 3:ncol(data)] <- t(scale(t(data[, 3:ncol(data)])))
+    }
+    
+    # data[, 3:ncol(data)] <- scale(data[, 3:ncol(data)])
+    data <- reshape2::melt(data, id.vars = c("Name", "ID"))
+    data$source = "SNR635"
+    
+    res = rbind(res, data)
+    
+    res$variable = as.character(res$variable)
+    res$variable[str_detect(res$variable, "^LA")] <- "LUAD"
+    res$variable[str_detect(res$variable, "^LS")] <- "LUSC"
+    res$variable[str_detect(res$variable, "^NC")] <- "Normal"
+    res <- res[res$variable %in% c("LUAD", "LUSC", "Normal"), ]
+    
+    return(res)
+}
+```
+
+
+```{r}
+protein_expr_mean <- function(data) {
+    library(dplyr)
+    data %>%
+      group_by(Name, variable, source) %>%
+      mutate(value = mean(value)) %>%
+      dplyr::select(Name, variable, value, source) %>%
+      unique() %>%
+      as.data.frame()
+}
+```
+
+
+## read protein and calculate the 
+```{r}
+data1 <- read_protein(full_path("10_protein/1_round.xlsx"), scale = F)
+data2 <- read_protein(full_path("10_protein/2_round.xlsx"), scale = F)
+```
+
+```{r}
+data1 <- protein_expr_mean(data1)
+data2 <- protein_expr_mean(data2)
+```
+
+
+## read mfuzz
+```{r}
+atii_mfuzz <- read.csv(full_path("03_each_cells/Batch/ATII/LUAD/mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+basal_mfuzz <- read.csv(full_path("03_each_cells/Batch/Basal/LUSC/mfuzz.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+## read TCGA data
+
+```{r}
+tcga <- read.csv(full_path("TCGA/Lung.csv"), row.names = 1, stringsAsFactors = F)
+
+tcga_meta <- data.frame(
+    Disease = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][8] }),
+    Stage = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][9] })
+)
+
+tcga <- melt(as.matrix(tcga))
+tcga$Disease <- as.character(tcga_meta[tcga$Var2, "Disease"])
+tcga$Stage <- as.character(tcga_meta[tcga$Var2, "Stage"])
+
+tcga <- tcga %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value, Disease, Stage) %>%
+  unique() %>%
+  as.data.frame()
+```
+
+## read GTEx
+```{r}
+gtex <- readRDS(full_path("09_bulk/GTEx/gtex_lung.rds"))
+gtex <- melt(as.matrix(gtex))
+gtex <- gtex %>%
+  group_by(Var1) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value) %>%
+  unique() %>%
+  as.data.frame()
+
+gtex$Disease = "Normal"
+gtex$Stage = "Normal"
+```
+
+
+```{r}
+bulk_expr <- rbind(tcga, gtex)
+```
+
+```{r}
+# plot the 
+make_plot <- function(expr, protein, genes, disease = "LUAD", protein_source = "SNR532", stage = "I", log=F) {
+    expr <- expr[
+      as.character(expr$Disease) %in% c(disease, "Normal") & 
+        as.character(expr$Var1) %in% genes & 
+        as.character(expr$Stage) %in% c(stage, "Normal"), 
+      ]
+    
+    protein <- protein[
+      as.character(protein$source) == protein_source &
+        as.character(protein$Name) %in% genes & 
+        as.character(protein$variable) %in% c(disease, "Normal"), 
+      ]
+    
+    protein <- protein[!is.na(protein$Name) & protein$Name != "", ]
+    
+    rownames(expr) <- make.unique(paste(expr$Var1, expr$Disease, sep = "_"))
+    rownames(protein) <- make.unique(paste(protein$Name, protein$variable, sep = "_"))
+    
+    protein$gene <- expr[rownames(protein), "value"]
+    protein <- na.omit(protein)
+    
+    if (log) {
+      protein$value = log2(protein$value + 1)
+      protein$gene = log2(protein$gene + 1)
+    }
+    
+    protein <- protein %>%
+      group_by(variable) %>%
+      mutate(value = value - mean(value), gene = gene - mean(gene)) %>%
+      as.data.frame()
+    
+    ggplot(data = protein, aes(x = value, y = gene)) +
+      # geom_hex() +
+      geom_point(size = .1)+
+      stat_density2d(geom="raster", aes(fill=..density.., alpha=..density..), contour=FALSE) +
+      facet_grid(.~variable) +
+      theme_bw() +
+      stat_cor()
+}
+```
+
+
+```{r}
+make_plot(bulk_expr, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"]) + labs(title = "TCGA (Stage I) + GTEx & M.I")
+```
+
+
+```{r}
+ make_plot(bulk_expr, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], stage = "II")  + labs(title = "TCGA (Stage II) + GTEx & M.I")
+```
+
+
+```{r}
+make_plot(bulk_expr, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=T) + labs(title = "TCGA (Stage I) + GTEx & M.I")
+```
+
+
+```{r}
+make_plot(bulk_expr, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=T, stage = "II") + labs(title = "TCGA (Stage II) + GTEx & M.I")
+```
+
+
+## 先log2再取mean
+
+## read protein and calculate the 
+```{r}
+data1 <- read_protein(full_path("10_protein/1_round.xlsx"), scale = F)
+data2 <- read_protein(full_path("10_protein/2_round.xlsx"), scale = F)
+```
+
+```{r}
+data1 <- protein_expr_mean(data1)
+data2 <- protein_expr_mean(data2)
+
+data1$value = log2(data1$value + 1)
+data2$value = log2(data2$value + 1)
+```
+
+
+
+## read TCGA data
+
+```{r}
+tcga <- read.csv(full_path("TCGA/Lung.csv"), row.names = 1, stringsAsFactors = F)
+
+tcga_meta <- data.frame(
+    Disease = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][8] }),
+    Stage = sapply(colnames(tcga), function(x) { str_split(x, "\\.")[[1]][9] })
+)
+
+tcga <- melt(as.matrix(tcga))
+tcga$Disease <- as.character(tcga_meta[tcga$Var2, "Disease"])
+tcga$Stage <- as.character(tcga_meta[tcga$Var2, "Stage"])
+tcga$value = log2(tcga$value + 1)
+
+tcga <- tcga %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value, Disease, Stage) %>%
+  unique() %>%
+  as.data.frame()
+```
+
+## read GTEx
+```{r}
+gtex <- readRDS(full_path("09_bulk/GTEx/gtex_lung.rds"))
+gtex <- melt(as.matrix(gtex))
+
+gtex$value = log2(gtex$value + 1)
+
+gtex <- gtex %>%
+  group_by(Var1) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value) %>%
+  unique() %>%
+  as.data.frame()
+
+gtex$Disease = "Normal"
+gtex$Stage = "Normal"
+```
+
+
+```{r}
+bulk_expr <- rbind(tcga, gtex)
+```
+
+
+```{r}
+make_plot(bulk_expr, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"]) + labs(title = "TCGA (Stage I) + GTEx & M.I")
+```
+
+
+```{r}
+ make_plot(bulk_expr, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], stage = "II")  + labs(title = "TCGA (Stage II) + GTEx & M.I")
+```
+
+
+----
+
+
+```{r}
+expr <- readRDS(full_path("02_rds/all_cell_expr.rds"))
+
+meta <- read.csv(full_path("02_rds/meta_after_singleR.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+```{r}
+expr_luad <- melt(as.matrix(expr[atii_mfuzz$gene, rownames(meta)[meta$Disease %in% c("LUAD", "LUAD_Normal")]]))
+expr_luad$Disease <- as.character(meta[as.character(expr_luad$Var2), "Disease"])
+expr_luad$Stage <- as.character(meta[as.character(expr_luad$Var2), "Stage"])
+
+expr_luad$value = log2(expr_luad$value + 1)
+
+expr_luad <- expr_luad %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = sum(value)) %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value, Disease, Stage) %>%
+  unique() %>%
+  as.data.frame()
+
+expr_luad$Disease[expr_luad$Disease == "LUAD_Normal"] <- "Normal"
+expr_luad$Stage[expr_luad$Disease == "LUAD_Normal"] <- "Normal"
+```
+
+
+```{r}
+make_plot(expr_luad, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=F, stage = "I") + labs(title = "Pseudo bulk (Stage I) & M.I")
+```
+
+```{r}
+make_plot(expr_luad, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=, stage = "I") + labs(title = "Pseudo bulk (Stage I) & M.I")
+```
+
+
+```{r}
+make_plot(expr_luad, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.II"], log=T, stage = "I") + labs(title = "Pseudo bulk (Stage I) & M.II")
+```
+
+```{r}
+make_plot(expr_luad, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=T, stage = "II") + labs(title = "Pseudo bulk (Stage II) & M.I")
+```
+
+```{r}
+make_plot(expr_luad, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.II"], log=T, stage = "II") + labs(title = "Pseudo bulk (Stage II) & M.II")
+```
+
+### 先log
+
+
+```{r}
+expr_luad <- melt(as.matrix(expr[atii_mfuzz$gene, rownames(meta)[meta$Disease %in% c("LUAD", "LUAD_Normal")]]))
+expr_luad$Disease <- as.character(meta[as.character(expr_luad$Var2), "Disease"])
+expr_luad$Stage <- as.character(meta[as.character(expr_luad$Var2), "Stage"])
+
+expr_luad <- expr_luad %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = sum(value)) %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value, Disease, Stage) %>%
+  unique() %>%
+  as.data.frame()
+
+expr_luad$Disease[expr_luad$Disease == "LUAD_Normal"] <- "Normal"
+expr_luad$Stage[expr_luad$Disease == "LUAD_Normal"] <- "Normal"
+```
+
+
+```{r}
+make_plot(expr_luad, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=F, stage = "I") + labs(title = "Pseudo bulk (Stage I) & M.I")
+```
+
+```{r}
+make_plot(expr_luad, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=T, stage = "I") + labs(title = "Pseudo bulk (Stage I) & M.I")
+```
+
+---
+
+
+
+```{r}
+expr_atii <- melt(as.matrix(expr[atii_mfuzz$gene, rownames(meta)[meta$Disease %in% c("LUAD", "LUAD_Normal") & meta$cell_short == "ATII"]]))
+expr_atii$Disease <- as.character(meta[as.character(expr_atii$Var2), "Disease"])
+expr_atii$Stage <- as.character(meta[as.character(expr_atii$Var2), "Stage"])
+
+expr_atii <- expr_atii %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = sum(value)) %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value, Disease, Stage) %>%
+  unique() %>%
+  as.data.frame()
+
+expr_atii$Disease[expr_atii$Disease == "LUAD_Normal"] <- "Normal"
+expr_atii$Stage[expr_atii$Disease == "LUAD_Normal"] <- "Normal"
+```
+
+
+
+```{r}
+make_plot(expr_atii, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=T, stage = "I") + labs(title = "Pseudo bulk (Stage I) & M.I")
+```
+
+## DESeq normalize
+
+```{r}
+expr_atii <- melt(as.matrix(expr[atii_mfuzz$gene, rownames(meta)[meta$Disease %in% c("LUAD", "LUAD_Normal")]]))
+
+expr_atii$Disease <- as.character(meta[as.character(expr_atii$Var2), "Disease"])
+expr_atii$Stage <- as.character(meta[as.character(expr_atii$Var2), "Stage"])
+expr_atii$Sample = as.character(meta[as.character(expr_atii$Var2), "SampleID"])
+
+expr_atii <- expr_atii %>%
+  group_by(Var1, Sample) %>%
+  mutate(value = sum(value)) %>%
+  group_by(Var1, Sample) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value, Sample) %>%
+  unique() %>%
+  as.data.frame()
+
+expr_atii <- dcast(expr_atii, Var1~Sample, fun.aggregate = mean, fill = 0)
+row.names(expr_atii) <- expr_atii$Var1
+expr_atii <- expr_atii[, colnames(expr_atii) != "Var1"]
+
+
+expr_meta <- unique(meta[, c("SampleID", "Disease", "Stage")])
+rownames(expr_meta) <- expr_meta$SampleID
+
+
+dds <- DESeqDataSetFromMatrix(countData = expr_atii, colData = expr_meta[colnames(expr_atii), ], design = ~ Disease)
+dds <- estimateSizeFactors(dds)
+normalized_counts <- counts(dds, normalized=TRUE)
+
+expr_atii <- melt(as.matrix(normalized_counts))
+expr_atii$Disease <- expr_meta[expr_atii$Var2, "Disease"]
+expr_atii$Stage <- expr_meta[expr_atii$Var2, "Stage"]
+
+expr_atii <- expr_atii %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = sum(value)) %>%
+  group_by(Var1, Disease, Stage) %>%
+  mutate(value = mean(value)) %>%
+  dplyr::select(Var1, value, Disease, Stage) %>%
+  unique() %>%
+  as.data.frame()
+
+expr_atii$Disease[expr_atii$Disease == "LUAD_Normal"] <- "Normal"
+expr_atii$Stage[expr_atii$Disease == "LUAD_Normal"] <- "Normal"
+```
+
+
+```{r}
+make_plot(expr_atii, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=F, stage = "I") + labs(title = "Pseudo bulk (Stage I) & M.I")
+```
+
+```{r}
+make_plot(expr_atii, data1, genes = atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"], log=T, stage = "I") + labs(title = "Pseudo bulk (Stage I) & M.I")
+```
+
+
+```{r}
+temp_meta = meta[meta$cell_short == "ATII" & meta$Disease %in% c("LUAD", "LUAD_Normal"), ]
+
+temp_protein = data1[data1$source == "SNR532" & data1$Name %in% atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"] & data1$variable != "LUSC", ]
+temp_protein$value[temp_protein$variable == "Normal"] = -1 * temp_protein$value[temp_protein$variable == "Normal"]
+
+temp_expr <- melt(as.matrix(t(scale(t(expr[atii_mfuzz$gene, rownames(temp_meta)])))))
+temp_expr$Disease <- temp_meta[temp_expr$Var2, "Disease"]
+# temp_expr$value[temp_expr$Disease == "LUAD_Normal"] <- temp_expr$value[temp_expr$Disease == "LUAD_Normal"] * -1
+temp_expr$Disease[temp_expr$Disease == "LUAD_Normal"] <- "Normal"
+
+
+set.seed(42)
+temp_protein$gene = 0
+
+for(i in unique(temp_protein$Name)) {
+    for (j in unique(temp_protein$variable)) {
+        temp = temp_expr[temp_expr$Var1 == i & temp_expr$Disease == j, ]
+        temp = temp[sample(1:nrow(temp), sum(temp_protein$Name == i & temp_protein$variable == j), replace = T), ]
+        temp_protein$gene[temp_protein$Name == i & temp_protein$variable == j] = temp$value
+    }
+}
+
+
+ggplot(temp_protein, aes(x=value, y = gene, color=variable)) +
+    geom_point() +
+  labs(x = "protein", title = "SNR532 & M.I")
+```
+
+
+```{r}
+temp_meta = meta[meta$cell_short == "ATII" & meta$Disease %in% c("LUAD", "LUAD_Normal"), ]
+
+temp_protein = data1[data1$source == "SNR635" & data1$Name %in% atii_mfuzz$gene[atii_mfuzz$Clt == "M.I"] & data1$variable != "LUSC", ]
+temp_protein$value[temp_protein$variable == "Normal"] = -1 * temp_protein$value[temp_protein$variable == "Normal"]
+
+temp_expr <- melt(as.matrix(t(scale(t(expr[atii_mfuzz$gene, rownames(temp_meta)])))))
+temp_expr$Disease <- temp_meta[temp_expr$Var2, "Disease"]
+# temp_expr$value[temp_expr$Disease == "LUAD_Normal"] <- temp_expr$value[temp_expr$Disease == "LUAD_Normal"] * -1
+temp_expr$Disease[temp_expr$Disease == "LUAD_Normal"] <- "Normal"
+
+
+set.seed(42)
+temp_protein$gene = 0
+
+for(i in unique(temp_protein$Name)) {
+    for (j in unique(temp_protein$variable)) {
+        temp = temp_expr[temp_expr$Var1 == i & temp_expr$Disease == j, ]
+        temp = temp[sample(1:nrow(temp), sum(temp_protein$Name == i & temp_protein$variable == j), replace = T), ]
+        temp_protein$gene[temp_protein$Name == i & temp_protein$variable == j] = temp$value
+    }
+}
+
+
+ggplot(temp_protein, aes(x=value, y = gene, color=variable)) +
+    geom_point() +
+  labs(x = "protein", title = "SNR635 & M.I")
+```
+
+
+```{r}
+temp_meta = meta[meta$cell_short == "ATII" & meta$Disease %in% c("LUAD", "LUAD_Normal"), ]
+
+temp_protein = data1[data1$source == "SNR532" & data1$Name %in% atii_mfuzz$gene[atii_mfuzz$Clt == "M.II"] & data1$variable != "LUSC", ]
+temp_protein$value[temp_protein$variable == "Normal"] = -1 * temp_protein$value[temp_protein$variable == "Normal"]
+
+temp_expr <- melt(as.matrix(t(scale(t(expr[atii_mfuzz$gene, rownames(temp_meta)])))))
+temp_expr$Disease <- temp_meta[temp_expr$Var2, "Disease"]
+# temp_expr$value[temp_expr$Disease == "LUAD_Normal"] <- temp_expr$value[temp_expr$Disease == "LUAD_Normal"] * -1
+temp_expr$Disease[temp_expr$Disease == "LUAD_Normal"] <- "Normal"
+
+
+set.seed(42)
+temp_protein$gene = 0
+
+for(i in unique(temp_protein$Name)) {
+    for (j in unique(temp_protein$variable)) {
+        temp = temp_expr[temp_expr$Var1 == i & temp_expr$Disease == j, ]
+        temp = temp[sample(1:nrow(temp), sum(temp_protein$Name == i & temp_protein$variable == j), replace = T), ]
+        temp_protein$gene[temp_protein$Name == i & temp_protein$variable == j] = temp$value
+    }
+}
+
+
+ggplot(temp_protein, aes(x=value, y = gene, color=variable)) +
+    geom_point() +
+  labs(x = "protein", title = "SNR532 & M.II")
+```
+
+
+```{r}
+temp_meta = meta[meta$cell_short == "ATII" & meta$Disease %in% c("LUAD", "LUAD_Normal"), ]
+
+temp_protein = data1[data1$source == "SNR635" & data1$Name %in% atii_mfuzz$gene[atii_mfuzz$Clt == "M.II"] & data1$variable != "LUSC", ]
+temp_protein$value[temp_protein$variable == "Normal"] = -1 * temp_protein$value[temp_protein$variable == "Normal"]
+
+temp_expr <- melt(as.matrix(t(scale(t(expr[atii_mfuzz$gene, rownames(temp_meta)])))))
+temp_expr$Disease <- temp_meta[temp_expr$Var2, "Disease"]
+# temp_expr$value[temp_expr$Disease == "LUAD_Normal"] <- temp_expr$value[temp_expr$Disease == "LUAD_Normal"] * -1
+temp_expr$Disease[temp_expr$Disease == "LUAD_Normal"] <- "Normal"
+
+
+set.seed(42)
+temp_protein$gene = 0
+
+for(i in unique(temp_protein$Name)) {
+    for (j in unique(temp_protein$variable)) {
+        temp = temp_expr[temp_expr$Var1 == i & temp_expr$Disease == j, ]
+        temp = temp[sample(1:nrow(temp), sum(temp_protein$Name == i & temp_protein$variable == j), replace = T), ]
+        temp_protein$gene[temp_protein$Name == i & temp_protein$variable == j] = temp$value
+    }
+}
+
+
+ggplot(temp_protein, aes(x=value, y = gene, color=variable)) +
+    geom_point() +
+  labs(x = "protein", title = "SNR635 & M.II")
+```
+
+
+```{r}
+temp_meta = meta[meta$cell_short == "ATII" & meta$Disease %in% c("LUAD", "LUAD_Normal"), ]
+
+temp_protein = data1[data1$source == "SNR635" & data1$Name %in% atii_mfuzz$gene[atii_mfuzz$Clt == "M.II"] & data1$variable != "LUSC", ]
+temp_protein$value[temp_protein$variable == "Normal"] = -1 * temp_protein$value[temp_protein$variable == "Normal"]
+temp_protein$value = temp_protein$value - mean(temp_protein$value)
+
+temp_expr <- melt(as.matrix(t(scale(t(expr[atii_mfuzz$gene, rownames(temp_meta)])))))
+temp_expr$Disease <- temp_meta[temp_expr$Var2, "Disease"]
+# temp_expr$value[temp_expr$Disease == "LUAD_Normal"] <- temp_expr$value[temp_expr$Disease == "LUAD_Normal"] * -1
+temp_expr$Disease[temp_expr$Disease == "LUAD_Normal"] <- "Normal"
+temp_expr$value = as.numeric(as.character(temp_expr$value))
+temp_expr <- na.omit(temp_expr)
+temp_expr$value = temp_expr$value - mean(temp_expr$value)
+
+set.seed(42)
+temp_protein$gene = 0
+
+for(i in unique(temp_protein$Name)) {
+    for (j in unique(temp_protein$variable)) {
+        temp = temp_expr[temp_expr$Var1 == i & temp_expr$Disease == j, ]
+        temp = temp[sample(1:nrow(temp), sum(temp_protein$Name == i & temp_protein$variable == j), replace = T), ]
+        temp_protein$gene[temp_protein$Name == i & temp_protein$variable == j] = temp$value
+    }
+}
+
+
+ggplot(temp_protein, aes(x=value, y = gene, color=variable)) +
+    geom_point() +
+  labs(x = "protein", title = "SNR635 & M.II")
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

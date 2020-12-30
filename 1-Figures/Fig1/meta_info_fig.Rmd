@@ -1,0 +1,2648 @@
+---
+title: "meta_info_plot"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(stringsAsFactors = F)
+
+root.dir = "LungCancer10x/"
+full.path <- function(...) { return(paste(root.dir, ..., sep = "/")) }
+```
+
+## R Markdown
+
+
+
+```{r cars, include=FALSE}
+library(ComplexHeatmap)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(stringr)
+library(openxlsx)
+```
+
+
+```{r}
+meta <- read.csv(paste0(root.dir, "02_rds/meta.csv"), stringsAsFactors = F, row.names = 1)
+```
+
+
+## set color platte
+```{r}
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+stage_colors = c(
+    "I"="#65A9A3", 
+    "II"="#4A933E", 
+    "III"="#EC7A21", 
+    "IV"="#D73F47", 
+    "LUAD_Normal"="#FECC1B", 
+    "LUSC_Normal"="#778793",
+    " "="white"
+)
+disease_colors = c(
+    "LUAD" = "#0084D1", 
+    "LUAD_Normal"="#FECC1B", 
+    "Normal(LUAD)"="#FECC1B", 
+    "Normal"="#73BDFF", 
+    "LUSC_Normal"="#778793", 
+    "Normal(LUSC)"="#778793", 
+    "LUSC"="#A0C807",
+    "LELC"="#6A0019", 
+    "CPI"="#C5000B"
+)
+tissue_colors = c(
+    "Bronichi"="#FB290F", 
+    "Lymph node"="#488F17", 
+    "Tumor"="#FC8210"
+)
+patient_colors = gg_color_hue(35)
+names(patient_colors) <- c(
+  sapply(1:23, function(x){sprintf("PA%02d", x)}),
+  sapply(1:12, function(x){sprintf("PS%02d", x)})
+)
+gender_color = c("Male"="#0997F9", "Female"="#E12E9B")
+
+have_color = c(T="grey", F="white", "have"="grey", "white"="white")
+
+colors_pal = c(
+    stage_colors, 
+    disease_colors, 
+    tissue_colors, 
+    patient_colors, 
+    gender_color,
+    have_color
+)
+```
+
+
+## Format meta info
+```{R}
+meta <- meta[meta$Batch != 3, c("PatientID", "Disease", "Age", "Stage", "Gender", "Batch")]
+meta <- unique(meta)
+
+temp_meta <- meta %>% 
+    dplyr::select(PatientID, Disease, Age, Stage, Gender) %>%
+    unique()
+
+
+temp_meta <- melt(temp_meta, id=c("PatientID", "Disease"))
+temp_meta$variable <- as.character(temp_meta$variable)
+temp_meta$Disease <- as.character(sapply(temp_meta$Disease, function(x) { str_split(x, "_")[[1]][1] }))
+temp_meta <- unique(temp_meta)
+
+
+## format adjacent data
+temp_adjacent <- meta[meta$Disease %in% c("LUAD_Normal", "LUSC_Normal"), c("PatientID", "Disease", "Disease")]
+colnames(temp_adjacent) <- c("PatientID", "Disease", "value")
+temp_adjacent$Disease <- as.character(sapply(temp_adjacent$Disease, function(x) { str_split(x, "_")[[1]][1] }))
+temp_adjacent$value <- as.character(sapply(temp_adjacent$value, function(x) { str_split(x, "_")[[1]][1] }))
+
+temp_adjacent$variable = "Adjacent"
+
+temp_meta <- rbind(
+    temp_meta,
+    unique(temp_adjacent)
+)
+
+
+## format Disease
+temp_disease <- meta[meta$Disease %in% c("LUAD", "LUSC"), c("PatientID", "Disease", "Disease")]
+colnames(temp_disease) <- c("PatientID", "Disease", "value")
+temp_disease$Disease <- as.character(temp_disease$Disease)
+temp_disease$value <- as.character(temp_disease$value)
+temp_disease$variable = "Tumor"
+temp_meta <- rbind(
+    temp_meta,
+    unique(temp_disease)
+)
+
+
+levels = c("ATAC-seq", "RNA-seq", "WGS (tumor)", "WGS (adjacent)", "Stage", "Gender", "Age", "Tumor", "Adjacent")
+temp_meta$x = sapply(temp_meta$variable, function(x) { return(which(levels == x)) })
+
+# temp_meta$variable = factor(temp_meta$variable, levels = levels)
+temp_meta$PatientID <- factor(temp_meta$PatientID, levels = sort(unique(temp_meta$PatientID)))
+
+temp_meta$y = as.numeric(temp_meta$PatientID)
+```
+
+
+## Plot
+```{R fig.height=5, fig.width=10}
+p1 <- ggplot(temp_meta, aes(x=y, y=-x)) + 
+    geom_point(
+        data = subset(temp_meta, temp_meta$variable == "Tumor"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # Disease
+    geom_point(
+        data = subset(temp_meta, temp_meta$variable == "Adjacent"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # Adjacent
+    geom_text(
+        data = subset(temp_meta, temp_meta$variable == "Age"),
+        aes(label = value),
+        color="black",
+        size=5,
+        # angle = 45
+    ) +  # Age
+    geom_point(
+        data = subset(temp_meta, temp_meta$variable == "Stage"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # Stage
+    geom_point(
+        data = subset(temp_meta, temp_meta$variable == "Gender"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +      # Gender
+    scale_color_manual(
+        values=colors_pal,
+        breaks=c("LUAD", "LUSC", "I", "II", "III", "IV", "Male", "Female")
+    ) +
+    theme_classic(base_family = "Arial Unicode MS") +
+    theme(
+        axis.ticks = element_blank(),
+        axis.text.y = element_text(size = 15),
+        axis.text.x = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        legend.text = element_text(size = 20),
+        strip.text = element_text(size = 15),
+        strip.background = element_rect(fill = "grey75"),
+        axis.title = element_text(size = 20),
+        legend.position = "top"
+    ) +
+    facet_grid(.~Disease, scales = "free", space = "free") +
+    labs(x="", y="scRNA-seq", color="") +
+    scale_y_continuous(
+        breaks = seq(-length(levels), -1),
+        labels = rev(levels),
+        limits = c(-length(levels) - 0.5, 0.5)
+    ) +
+    guides(color=guide_legend(nrow = 1, override.aes = list(size = 6), byrow = T))
+
+p1
+```
+
+
+# bulk meta
+```{R}
+bulk <- read.xlsx(paste0(root.dir, "09_bulk/bulk_meta.xlsx"), rowNames=T)
+
+bulk$SampleID = rownames(bulk)
+```
+
+```{r}
+bulk <- bulk[, c("Gender", "Age", "SampleID", "Stage")]
+
+colnames(bulk) <- c("Gender", "Age", "SampleID", "Stage")
+
+bulk$Gender <- str_to_title(bulk$Gender)
+bulk$Disease <- str_replace(bulk$SampleID, "\\d+", "")
+# bulk <- bulk[bulk$Disease != "BSPN", ]
+
+bulk$Stage <- sapply(bulk$Stage, function(x) {
+    if (is.na(x) || x == "/") {
+        " "
+    } else {
+        str_replace_all(x, "(A|B|\\s)", "")
+    }
+})
+
+bulk$PatientID <- rownames(bulk)
+
+patient_order <- bulk$PatientID[order(bulk$Stage)]
+
+unique(bulk$Stage)
+```
+
+
+
+## get number of WGS, RNA-seq and ATAC-seq
+```{r}
+# ATAC
+files = list.files("/mnt/raid63/LungCancerXieDanData/ATAC_seq/Bam/", pattern = "bw")
+data_num = data.frame(
+    variable=rep("ATAC-seq", length(files)),
+    SampleID = sapply(files, function(x) {
+        str_split(x, "_")[[1]][2]
+    })
+)
+
+bulk[, 'ATAC-seq'] = bulk$SampleID %in% data_num$SampleID
+
+# RNA-seq
+files = list.files("/mnt/raid63/LungCancerXieDanData/RNA_seq/Raw/", pattern = ".fq.tar.gz$")
+data_num = data.frame(
+    variable=rep("RNA-seq", length(files)),
+    SampleID = sapply(files, function(x) {
+        str_split(x, "_")[[1]][1]
+    })
+)
+bulk[, 'RNA-seq'] = bulk$SampleID %in% data_num$SampleID
+bulk[bulk$SampleID == "LUAD50", "RNA-seq"] = ""
+
+# WGS
+files = list.files("/mnt/raid63/LungCancerXieDanData/DNA/Raw/")
+data_num = data.frame(
+    variable=rep("WGS", length(files)),
+    SampleID = sapply(files, function(x) {
+        str_split(x, "\\.")[[1]][1]
+    })
+)
+bulk[, 'WGS'] = bulk$SampleID %in% data_num$SampleID
+```
+
+
+
+```{r}
+temp_bulk <- bulk %>% 
+    arrange(Stage) %>%
+    dplyr::select(PatientID, Disease, Age, Stage, Gender, `ATAC-seq`, WGS, `RNA-seq`) %>%
+    unique()
+
+
+temp_bulk <- melt(temp_bulk, id=c("PatientID", "Disease"))
+
+temp_bulk$variable <- as.character(temp_bulk$variable)
+
+temp_bulk$PatientID = factor(temp_bulk$PatientID, levels = patient_order)
+
+temp_bulk$value[temp_bulk$value == T] = "have"
+temp_bulk$value[temp_bulk$value == F] = " "
+
+for(i in colnames(temp_bulk)) {
+    temp_bulk[, i] <- as.character(temp_bulk[, i])
+}
+
+temp_wgs <- temp_bulk[temp_bulk$variable == "WGS", ]
+
+for(i in colnames(temp_wgs)) {
+    temp_wgs[, i] <- as.character(temp_wgs[, i])
+}
+
+temp_wgs$variable <- "WGS (adjacent)"
+temp_bulk$variable[temp_bulk$variable == "WGS"] = "WGS (tumor)"
+
+
+temp_bulk <- rbind(temp_bulk, temp_wgs)
+for(i in colnames(temp_bulk)) {
+    temp_bulk[, i] <- as.character(temp_bulk[, i])
+}
+
+
+
+levels = c("Stage", "Gender", "Age", "Tumor", "Adjacent", "ATAC-seq", "RNA-seq", "WGS (tumor)", "WGS (adjacent)")
+temp_levels = levels[!levels %in% c("Tumor", "Adjacent")]
+
+temp_bulk$x = sapply(temp_bulk$variable, function(x) { return(which(temp_levels == x)) })
+
+temp_bulk$PatientID <- factor(
+  as.character(temp_bulk$PatientID), 
+  levels = sort(unique(temp_bulk$PatientID))
+)
+
+temp_bulk$y = as.numeric(temp_bulk$PatientID)
+temp_bulk$y[temp_bulk$Disease != "BSPN"] <- temp_bulk$y[temp_bulk$Disease != "BSPN"] + 1
+
+temp_bulk <- rbind(
+  data.frame(
+    "PatientID" = rep(F, length(temp_levels) - 1), 
+    "Disease"=rep("BSPN", length(temp_levels) - 1), 
+    "variable"=temp_levels[temp_levels != "Age"], 
+    "y"=rep(0, length(temp_levels) - 1), 
+    "x"=rep(1, length(temp_levels) - 1), 
+    "value" = rep(F, length(temp_levels) - 1)
+  ),
+  temp_bulk
+)
+
+temp_bulk <- rbind(
+  data.frame(
+    "PatientID" = rep(F, length(temp_levels) - 1), 
+    "Disease"=rep("BSPN", length(temp_levels) - 1), 
+    "variable"=temp_levels[temp_levels != "Age"], 
+    "y"=rep(5, length(temp_levels) - 1), 
+    "x"=rep(1, length(temp_levels) - 1), 
+    "value" = rep(F, length(temp_levels) - 1)
+  ),
+  temp_bulk
+)
+
+# temp_bulk$y[temp_bulk$y <= 5] <- temp_bulk$y[temp_bulk$y <= 5] + 1
+```
+
+
+## Plot
+```{R fig.height=12, fig.width=5}
+p2 <- ggplot(
+    temp_bulk, 
+    aes(
+        x=x, # factor(variable, levels = c("Stage", "Gender", "Age", "ATAC-seq", "RNA-seq", "WGS", "Sample")), 
+        y=-y
+    )
+) + 
+    geom_text(
+        data = subset(temp_bulk, temp_bulk$variable == "Age"),
+        aes(label = value),
+        color="black", 
+        size=5,
+        # angle = 45
+    ) +  # Age
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "Stage"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # Stage
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "ATAC-seq"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # ATAC-seq
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "RNA-seq"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # RNA-seq
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "WGS (tumor)"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # WGS tumor
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "WGS (adjacent)"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # WGS normal
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "Gender"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +      # Gender
+    scale_color_manual(
+        values=colors_pal,
+        breaks=c("I", "II", "III", "IV", "Male", "Female")
+    ) +
+    theme_classic(base_family = "Arial Unicode MS") +
+    theme(
+        axis.ticks = element_blank(),
+        axis.text.y = element_blank(),
+        axis.text.x = element_text(size = 15, angle = 90, hjust = 1, vjust = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        legend.text = element_text(size = 15),
+        strip.text = element_text(size = 15),
+        strip.background = element_rect(fill = "grey75"),
+        axis.title = element_text(size = 20),
+        legend.position = "none"
+    ) +
+    facet_grid(Disease~., scales = "free", space = "free") +
+    labs(x="", y="Bulk", color="") +
+    scale_x_continuous(
+        breaks = seq(1, length(temp_levels)),
+        labels = temp_levels,
+        limits = c(0.5, length(temp_levels) + 0.5)
+    )
+
+p2
+```
+
+```{r fig.height=18, fig.width=6}
+ggsave(
+    filename = paste0(root.dir, "02_rds/number_of_samples_sc_vertical.pdf"),
+    width = 10,
+    height = 4,
+    plot = p1,
+    # units = "in", dpi = 1200,
+    # compression = "lzw"
+)
+
+
+ggsave(
+    filename = paste0(root.dir, "02_rds/number_of_samples_bk_vertical.pdf"),
+    width = 5,
+    height = 12,
+    plot = p2,
+    # units = "in", dpi = 1200,
+    # compression = "lzw"
+)
+```
+
+
+
+
+## Format meta info
+```{R}
+meta <- meta[meta$Batch != 3, c("PatientID", "Disease", "Age", "Stage", "Gender", "Batch")]
+meta <- unique(meta)
+
+temp_meta <- meta %>% 
+    dplyr::select(PatientID, Disease, Age, Stage, Gender) %>%
+    unique()
+
+
+temp_meta <- melt(temp_meta, id=c("PatientID", "Disease"))
+temp_meta$variable <- as.character(temp_meta$variable)
+temp_meta$Disease <- as.character(sapply(temp_meta$Disease, function(x) { str_split(x, "_")[[1]][1] }))
+temp_meta <- unique(temp_meta)
+
+
+## format adjacent data
+temp_adjacent <- meta[meta$Disease %in% c("LUAD_Normal", "LUSC_Normal"), c("PatientID", "Disease", "Disease")]
+colnames(temp_adjacent) <- c("PatientID", "Disease", "value")
+temp_adjacent$Disease <- as.character(sapply(temp_adjacent$Disease, function(x) { str_split(x, "_")[[1]][1] }))
+temp_adjacent$value <- as.character(sapply(temp_adjacent$value, function(x) { str_split(x, "_")[[1]][1] }))
+
+temp_adjacent$variable = "Adjacent"
+
+temp_meta <- rbind(
+    temp_meta,
+    unique(temp_adjacent)
+)
+
+
+## format Disease
+temp_disease <- meta[meta$Disease %in% c("LUAD", "LUSC"), c("PatientID", "Disease", "Disease")]
+colnames(temp_disease) <- c("PatientID", "Disease", "value")
+temp_disease$Disease <- as.character(temp_disease$Disease)
+temp_disease$value <- as.character(temp_disease$value)
+temp_disease$variable = "Tumor"
+temp_meta <- rbind(
+    temp_meta,
+    unique(temp_disease)
+)
+
+temp_meta$variable = factor(temp_meta$variable, levels = c("Tumor", "Adjacent", "Stage", "Gender", "Age"))
+temp_meta$y = as.numeric(temp_meta$variable)
+```
+
+
+## Plot
+```{R fig.height=3, fig.width=10}
+p1 <- ggplot(temp_meta, aes(x=PatientID, y=-y)) + 
+    geom_point(
+        data = subset(temp_meta, temp_meta$variable == "Tumor"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # Disease
+    geom_point(
+        data = subset(temp_meta, temp_meta$variable == "Adjacent"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # Adjacent
+    geom_text(
+        data = subset(temp_meta, temp_meta$variable == "Age"),
+        aes(label = value),
+        color="black",
+        size=5,
+        angle = 45
+    ) +  # Age
+    geom_point(
+        data = subset(temp_meta, temp_meta$variable == "Stage"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # Stage
+    geom_point(
+        data = subset(temp_meta, temp_meta$variable == "Gender"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +      # Gender
+    scale_color_manual(
+        values=colors_pal,
+        breaks=c("LUAD", "LUSC", "I", "II", "III", "IV", "Male", "Female")
+    ) +
+    theme_classic(base_family = "Arial Unicode MS") +
+    theme(
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 15),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        legend.text = element_text(size = 20),
+        strip.text.x = element_text(size = 15),
+        strip.background = element_rect(fill = "grey75"),
+        axis.title = element_text(size = 20),
+        legend.position = "top"
+    ) +
+    facet_grid(.~Disease, scales = "free_x", space = "free") +
+    labs(x="", y="scRNA-seq", color="") +
+    scale_y_continuous(
+        breaks = seq(-1, -5),
+        labels = c("Tumor", "Adjacent", "Stage", "Gender", "Age"),
+        limit = c(-5.5, -0.5)
+    ) +
+    guides(color=guide_legend(nrow = 1, override.aes = list(size = 6)))
+
+p1
+```
+
+
+# bulk meta
+```{R}
+bulk <- read.xlsx(paste0(root.dir, "09_bulk/bulk_meta.xlsx"), rowNames=T)
+
+unique(bulk$Stage)
+bulk$SampleID = rownames(bulk)
+head(bulk)
+```
+
+```{r}
+bulk <- bulk[, c("Gender", "Age", "SampleID", "Stage")]
+
+colnames(bulk) <- c("Gender", "Age", "SampleID", "Stage")
+
+bulk$Gender <- str_to_title(bulk$Gender)
+bulk$Disease <- str_replace(bulk$SampleID, "\\d+", "")
+# bulk <- bulk[bulk$Disease != "BSPN", ]
+
+bulk$Stage <- sapply(bulk$Stage, function(x) {
+    if (is.na(x) || x == "/") {
+        " "
+    } else {
+        str_replace_all(x, "(A|B|\\s)", "")
+    }
+})
+
+bulk$PatientID <- rownames(bulk)
+
+patient_order <- bulk$PatientID[order(bulk$Stage)]
+
+unique(bulk$Stage)
+```
+
+
+
+## get number of WGS, RNA-seq and ATAC-seq
+```{r}
+# ATAC
+files = list.files("/mnt/raid63/LungCancerXieDanData/ATAC_seq/Bam/", pattern = "bw")
+data_num = data.frame(
+    variable=rep("ATAC-seq", length(files)),
+    SampleID = sapply(files, function(x) {
+        str_split(x, "_")[[1]][2]
+    })
+)
+
+bulk[, 'ATAC-seq'] = bulk$SampleID %in% data_num$SampleID
+
+# RNA-seq
+files = list.files("/mnt/raid63/LungCancerXieDanData/RNA_seq/Raw/", pattern = ".fq.tar.gz$")
+data_num = data.frame(
+    variable=rep("RNA-seq", length(files)),
+    SampleID = sapply(files, function(x) {
+        str_split(x, "_")[[1]][1]
+    })
+)
+bulk[, 'RNA-seq'] = bulk$SampleID %in% data_num$SampleID
+bulk[bulk$SampleID == "LUAD50", "RNA-seq"] = ""
+
+# WGS
+files = list.files("/mnt/raid63/LungCancerXieDanData/DNA/Raw/")
+data_num = data.frame(
+    variable=rep("WGS", length(files)),
+    SampleID = sapply(files, function(x) {
+        str_split(x, "\\.")[[1]][1]
+    })
+)
+bulk[, 'WGS'] = bulk$SampleID %in% data_num$SampleID
+```
+
+
+
+```{r}
+temp_bulk <- bulk %>% 
+    arrange(Stage) %>%
+    dplyr::select(PatientID, Disease, Age, Stage, Gender, `ATAC-seq`, WGS, `RNA-seq`) %>%
+    unique()
+
+
+temp_bulk <- melt(temp_bulk, id=c("PatientID", "Disease"))
+
+temp_bulk$variable <- as.character(temp_bulk$variable)
+
+temp_bulk$PatientID = factor(temp_bulk$PatientID, levels = patient_order)
+
+temp_bulk$value[temp_bulk$value == T] = "have"
+temp_bulk$value[temp_bulk$value == F] = " "
+
+for(i in colnames(temp_bulk)) {
+    temp_bulk[, i] <- as.character(temp_bulk[, i])
+}
+
+temp_wgs <- temp_bulk[temp_bulk$variable == "WGS", ]
+
+for(i in colnames(temp_wgs)) {
+    temp_wgs[, i] <- as.character(temp_wgs[, i])
+}
+
+temp_wgs$variable <- "WGS (adjacent)"
+temp_bulk$variable[temp_bulk$variable == "WGS"] = "WGS (tumor)"
+
+
+temp_bulk <- rbind(temp_bulk, temp_wgs)
+for(i in colnames(temp_bulk)) {
+    temp_bulk[, i] <- as.character(temp_bulk[, i])
+}
+
+
+temp_bulk$variable = factor(
+    temp_bulk$variable, 
+    levels = c("Stage", "Gender", "Age", "ATAC-seq", "RNA-seq", "WGS (tumor)", "WGS (adjacent)")
+)
+
+temp_bulk$y = as.numeric(temp_bulk$variable)
+```
+
+
+## Plot
+```{R fig.height=3, fig.width=15}
+p2 <- ggplot(
+    temp_bulk, 
+    aes(
+        y=-y, # factor(variable, levels = c("Stage", "Gender", "Age", "ATAC-seq", "RNA-seq", "WGS", "Sample")), 
+        x=PatientID
+    )
+) + 
+    geom_text(
+        data = subset(temp_bulk, temp_bulk$variable == "Age"),
+        aes(label = value),
+        color="black", 
+        size=5,
+        angle = 45
+    ) +  # Age
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "Stage"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # Stage
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "ATAC-seq"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # ATAC-seq
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "RNA-seq"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # RNA-seq
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "WGS (tumor)"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # WGS tumor
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "WGS (adjacent)"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +   # WGS normal
+    geom_point(
+        data = subset(temp_bulk, temp_bulk$variable == "Gender"),
+        aes(color=value),
+        shape=15,
+        size=5
+    ) +      # Gender
+    scale_color_manual(
+        values=colors_pal,
+        breaks=c("I", "II", "III", "IV", "Male", "Female")
+    ) +
+    theme_classic(base_family = "Arial Unicode MS") +
+    theme(
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 15),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        legend.text = element_text(size = 15),
+        strip.text.x = element_text(size = 15),
+        strip.background = element_rect(fill = "grey75"),
+        axis.title = element_text(size = 20),
+        legend.position = "none"
+    ) +
+    facet_grid(.~Disease, scales = "free", space = "free") +
+    labs(x="", y="Bulk", color="") +
+    scale_y_continuous(
+        breaks = seq(-1, -7),
+        labels = c("Stage", "Gender", "Age", "ATAC-seq", "RNA-seq", "WGS (tumor)", "WGS (adjacent)"),
+        limits = c(-7.5, -0.5)
+    )
+
+p2
+```
+
+
+
+
+
+
+```{r}
+table(temp_bulk[temp_bulk$value == "have", c("Disease", "variable")])
+```
+
+
+```{r}
+# meta <- read.csv(paste0(root.dir, "02_rds/meta_after_singleR.csv"), stringsAsFactors = F, row.names = 1)
+# meta$cell_short[meta$cell_short == "Mφ"] = "Mo"
+
+meta = readRDS(paste0(root.dir, "11_CNV/meta.rds"))
+
+nm_meta <- read.xlsx(paste0(root.dir, "02_rds/NM_meta.xlsx"))
+rownames(nm_meta) <- nm_meta$SampleID
+
+meta[meta$Batch == 3, "Stage"] <- nm_meta[meta$SampleID[meta$Batch == 3], "Stage"]
+meta[meta$Batch == 3, "Disease"] <- nm_meta[meta$SampleID[meta$Batch == 3], "Disease"]
+
+meta <- meta[meta$cell_short != "" & !is.na(meta$cell_short), ]
+meta$cell_short[meta$cell_short == "Mo"] = "Mφ"
+
+meta$group <- as.character(meta$cell_short)
+
+
+meta$Disease = as.character(meta$Disease)
+meta$Disease <- sapply(meta$Disease, function(x) {
+    disease = c(
+        "LUAD"="LUAD",
+        "LUSC"="LUSC",
+        "LUAD_Normal"="Normal (LUAD)",
+        "LUSC_Normal"="Normal (LUSC)",
+        "LULC"="LULC",
+        "LULC_Normal"="Normal (LULC)",
+        "Pleiomorphic"="UPS",
+        "Pleiomorphic Normal"="Normal (UPS)"
+    )
+    
+    as.character(disease[x])
+})
+
+```
+
+
+```{r}
+immune = c(
+    "Gran",
+    "B",
+    "Mast",
+    "DC",
+    "CD4",
+    "CD8",
+    "NK",
+    "Mφ",
+    "Tregs"
+)
+```
+
+```{r fig.height=8, fig.width=4}
+library(wesanderson)
+plot_order = c(sort(unique(meta$group), decreasing = T), "Total")
+
+
+### make percentage plot of stage
+temp <- as.data.frame(
+    meta %>% 
+        dplyr::select(group, Stage) %>% 
+        dplyr::group_by(group, Stage) %>% 
+        dplyr::add_tally() %>% 
+        unique() %>% 
+        dplyr::group_by(group) %>% 
+        dplyr::mutate(freq = n / sum(n)) %>% unique()
+)
+
+temp1 <- as.data.frame(table(meta$Stage))
+colnames(temp1) <- c("Stage", "n")
+
+temp1$group = "Total"
+temp1$freq = temp1$n / sum(as.numeric(temp1$n))
+
+temp1 <- temp1[, colnames(temp)]
+
+temp <- rbind(temp, temp1)
+
+temp$group <- factor(temp$group, levels = plot_order)
+
+temp$ident <- "Non immune"
+temp$ident[temp$group %in% immune] = "Immune"
+temp$ident[temp$group == "Total"] = "Total"
+temp$ident = factor(temp$ident, levels = c("Total", "Non immune", "Immune"))
+
+p1 <- ggplot(data = temp, aes(x=group, y=freq, fill=Stage)) + 
+    geom_bar(stat = "identity", width = .75) + 
+    facet_grid(ident~., scale="free_y", space = "free", switch = "both") +
+    coord_flip() + 
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_blank(), 
+        legend.justification = "center",
+        strip.text.y = element_text(size = 15),
+        plot.title = element_text(hjust = 0.5, size = 18)
+    ) +
+    labs(y="Fraction of cells", x = "") +
+    # scale_x_discrete(breaks=plot_order) + 
+    guides(fill = guide_legend(ncol=4)) + 
+    scale_fill_manual(values=stage_colors)
+
+p1 <- p1 + theme(legend.position = "none")
+
+p1
+```
+
+```{r fig.height=8, fig.width=4}
+Disease = c(
+    "LUAD" = "#0084D1", 
+    "Normal (LUAD)"="#FECC1B", 
+    "Normal"="#73BDFF", 
+    "Normal (LUSC)"="#778793", 
+    "LUSC"="#A0C807",
+    "LULC"="#91822B",
+    "Normal (LULC)"="#EDCAB0",
+    "UPS"="#EBAAA4",
+    "Normal (UPS)"="#B43018"
+)
+
+### make percentage of tissue
+temp <- as.data.frame(
+    meta %>% 
+        dplyr::select(group, Disease) %>% 
+        dplyr::group_by(group, Disease) %>% 
+        dplyr::add_tally() %>% 
+        unique() %>% 
+        dplyr::group_by(group) %>% 
+        dplyr::mutate(freq = n / sum(n)) %>% 
+        unique()
+)
+
+temp1 <- as.data.frame(table(meta$Disease))
+
+colnames(temp1) <- c("Disease", "n")
+temp1$group = "Total"
+temp1$freq = temp1$n / sum(as.numeric(temp1$n))
+
+temp1 <- temp1[, colnames(temp)]
+temp <- rbind(temp, temp1)
+
+temp$group <- factor(temp$group, levels = plot_order)
+
+temp$ident <- "Non immune"
+temp$ident[temp$group %in% immune] = "Immune"
+temp$ident[temp$group == "Total"] = "Total"
+temp$ident = factor(temp$ident, levels = c("Total", "Non immune", "Immune"))
+
+
+## combine colors of tissue and disease
+p2 <- ggplot(data = temp, aes(x=group, y=freq, fill=Disease)) + 
+    geom_bar(stat = "identity", width = .75) + 
+    facet_grid(ident~., scale="free_y", space = "free", switch = "both") +
+    coord_flip() + 
+    theme_bw() +
+    theme(
+        legend.position = "right", 
+        legend.title = element_blank(), 
+        legend.justification = "center",
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.text.y = element_blank(),
+        plot.title = element_text(hjust = 0.5, size = 18)
+    ) +
+    labs(y="Fraction of cells", x = "") +
+    # scale_x_discrete(breaks=plot_order) + 
+    guides(fill = guide_legend(ncol=1)) + 
+    scale_fill_manual(values=Disease)
+
+p2_legend <- get_legend(p2)
+
+p2 <- p2 + theme(legend.position = "none")
+
+p2
+```
+
+```{r fig.height=8, fig.width=4}
+Patients = as.character(wes_palette("FantasticFox1", length(unique(meta$PatientID)), type = "continuous"))
+names(Patients) <- unique(meta$PatientID)
+
+### make percentage barplot of patients
+temp <- as.data.frame(
+    meta %>% 
+        dplyr::select(group, PatientID) %>% 
+        dplyr::group_by(group, PatientID) %>% 
+        dplyr::add_tally() %>% 
+        unique() %>% 
+        dplyr::group_by(group) %>% 
+        dplyr::mutate(freq = n / sum(n)) %>% 
+        unique()
+)
+
+temp1 <- as.data.frame(table(meta$PatientID))
+colnames(temp1) <- c("PatientID", "n")
+temp1$group = "Total"
+temp1$freq = temp1$n / sum(temp1$n)
+
+temp <- rbind(temp, temp1)
+temp$group <- factor(temp$group, levels = plot_order)
+
+temp$ident <- "Non immune"
+temp$ident[temp$group %in% immune] = "Immune"
+temp$ident[temp$group == "Total"] = "Total"
+temp$ident = factor(temp$ident, levels = c("Total", "Non immune", "Immune"))
+
+
+p3 <- ggplot(data = temp, aes(x=group, y=freq, fill=PatientID)) + 
+    geom_bar(stat = "identity", width = .75) + 
+    facet_grid(ident~., scale="free_y", space = "free", switch = "both") +
+    coord_flip() + 
+    theme_bw() +
+    theme(
+        legend.position = "right", 
+        legend.title = element_blank(), 
+        legend.justification = "center",
+        legend.spacing.x = unit(0.1, 'cm'),
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        # legend.text = element_text(size = 10),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.text.y = element_blank(),
+        plot.title = element_text(hjust = 0.5, size = 18)
+    ) +
+    labs(y="Fraction of cells", x = "") +
+    # scale_x_discrete(breaks=plot_order) + 
+    guides(fill = guide_legend(ncol=3)) + 
+    scale_fill_manual(values=Patients)
+p3_legend <- get_legend(p3)
+
+p3 <- p3 + theme(legend.position = "none")
+
+p3
+```
+
+```{r fig.height=8, fig.width=4}
+library(ggthemes)
+library(scales)
+
+### make bar plot of number of cells
+temp <- as.data.frame(
+    meta %>% 
+        dplyr::select(group) %>% 
+        dplyr::group_by(group) %>% 
+        dplyr::add_tally() %>% 
+        unique()
+)
+
+temp1 <- data.frame(group="Total", n=nrow(meta))
+temp <- rbind(temp, temp1)
+temp$group <- factor(temp$group, levels = plot_order)
+
+temp$ident <- "Non immune"
+temp$ident[temp$group %in% immune] = "Immune"
+temp$ident[temp$group == "Total"] = "Total"
+temp$ident = factor(temp$ident, levels = c("Total", "Non immune", "Immune"))
+
+
+p4 <- ggplot(temp, aes(x=group, y=n, fill=stata_pal("s1color")(1))) + 
+    geom_bar(stat = "identity") +
+    coord_flip() + 
+    facet_grid(ident~., scale="free_y", space = "free", switch = "both") +
+    theme_bw() +
+    theme(
+        legend.position = "none",
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        legend.text = element_text(size = 10),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.text.y = element_blank()
+    ) +
+    labs(y="Number of cells", x = "") +
+    # scale_x_discrete(breaks=plot_order) +
+    scale_y_log10(
+        breaks = trans_breaks("log10", function(x) 10^x),
+        labels = trans_format("log10", math_format(10^.x))
+    )
+
+p4
+```
+
+
+```{r fig.height=8, fig.width=4}
+### make boxplot of transcript number
+meta1 = meta
+meta1$group <- "Total"
+meta <- rbind(meta, meta1)
+meta$group <- factor(meta$group, levels = plot_order)
+
+meta$ident <- "Non immune"
+meta$ident[meta$group %in% immune] = "Immune"
+meta$ident[meta$group == "Total"] = "Total"
+meta$ident = factor(meta$ident, levels = c("Total", "Non immune", "Immune"))
+
+
+p5 <- ggplot(meta, aes(x=group, group=group, y=nUMI)) + 
+    geom_boxplot(fill = hc_pal()(1)) + 
+    coord_flip() + 
+    facet_grid(ident~., scale="free_y", space = "free", switch = "both") +
+    # scale_x_discrete(breaks=plot_order[1:(length(plot_order) - 1)]) +
+    labs(y="Number of transcripts", x = "") + 
+    scale_y_log10(
+        breaks = trans_breaks("log10", function(x) 10^x),
+        labels = trans_format("log10", math_format(10^.x))
+    ) +
+    theme_bw() + 
+    theme(
+        axis.text = element_text(size = 15),
+        axis.title = element_text(size = 15),
+        legend.text = element_text(size = 10),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        axis.text.y = element_blank()
+    )
+
+
+p5
+```
+
+
+```{r fig.height=10, fig.width=20}
+p_body = plot_grid(p1, p2, p3, p4, p5, nrow = 1)
+
+p_body
+```
+
+```{r fig.height=3, fig.width=20}
+
+legend_data = data.frame(
+    color = c("I", "II", "III", "IV", "LUAD", "LUSC", "LULC", "UPS", "Normal (LUAD)", "Normal (LUSC)", "Normal (LULC)", "Normal (UPS)"),
+    x = c(1, 2, 3, 4, 7, 8, 9, 10, 12, 14.5, 17, 19.5),
+    y = c(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
+)
+
+patients_id = unique(meta$PatientID)
+pa_patients = patients_id[str_detect(patients_id, "^PA")]
+not_pa_patients = patients_id[!str_detect(patients_id, "^PA")]
+
+legend_data = rbind(
+    legend_data, 
+    data.frame(color = pa_patients, x = seq(1: length(pa_patients)), y = rep(2, length(pa_patients)))
+)
+
+legend_data = rbind(
+    legend_data, 
+    data.frame(color = not_pa_patients, x = seq(1: length(not_pa_patients)), y = rep(3, length(not_pa_patients)))
+)
+
+
+legend_title = data.frame(
+    text = c("Stage", "Disease", "Patient"),
+    x = c(0, 6, 0),
+    y = c(-1, -1, -2)
+)
+
+null_theme <- theme(
+    legend.position = "none",
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    axis.line = element_blank()
+)
+
+p_legend = ggplot(legend_data, aes(x = x, y = -y, color = color)) +
+    geom_point(shape = 15, size = 8) +
+    geom_text(aes(x = x, y = -y - 0.5, label = color), color = "black", size = 5) +
+    geom_text(data = legend_title, aes(x = x, y = y, label = text), color = "black", size = 6) +
+    theme_classic() +
+    null_theme +
+    ylim(-4, -0.5) +
+    scale_color_manual(values = c(stage_colors, Patients, Disease))
+
+p_legend
+```
+
+```{r fig.height=1, fig.width=20}
+title1 = ggplot(data.frame(x = 1, y = 1, label = "Stage"), aes(x = x, y = y, label = label)) + 
+    geom_point(size = 0) + 
+    geom_text(size = 8) +
+    theme_classic() + 
+    null_theme +
+    ylim(0.9, 1.2)
+
+title2 = ggplot(data.frame(x = 1, y = 1, label = "Disease"), aes(x = x, y = y, label = label)) + 
+    geom_point(size = 0) + 
+    geom_text(size = 8) +
+    theme_classic() + 
+    null_theme +
+    ylim(0.9, 1.2)
+
+title3 = ggplot(data.frame(x = 1, y = 1, label = "Patient"), aes(x = x, y = y, label = label)) + 
+    geom_point(size = 0) + 
+    geom_text(size = 8) + 
+    theme_classic() + 
+    null_theme +
+    ylim(0.9, 1.2)
+
+p_title = plot_grid(
+    title1, title2, title3, NULL, NULL,
+    nrow = 1
+)
+
+
+p_title
+```
+
+
+```{r fig.height=12, fig.width=20}
+p <- plot_grid(p_title, p_body, p_legend, ncol = 1, rel_heights = c(0.1, 0.8, 0.3), align = "v")
+
+ggsave(
+    filename = paste0(root.dir, "02_rds/all_cells_combined_bar.png"),
+    plot = p,
+    width = 20,
+    height = 12,
+    dpi = 1200, units = "in"
+)
+
+p
+```
+
+
+## meta maglinant and non maglinant bar plot
+```{R}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+meta$Sample <- ifelse(str_detect(meta$Disease, "Normal"), "Adjacent", "Tumor")
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+```
+
+
+## barplot of of malignant, sep by sample
+```{r}
+temp <- meta %>% 
+  filter(!is.na(Malignant)) %>%
+  group_by(cell_short, Disease, Malignant, Sample) %>%
+  add_tally() %>%
+  dplyr::select(cell_short, Disease, Malignant, Sample, n) %>%
+  unique() %>% 
+  group_by(cell_short, Disease, Malignant) %>%
+  mutate(p = round(n / sum(n) * 100), 2) %>%
+  as.data.frame()
+
+
+temp1 <- dcast(temp, cell_short+Disease+Malignant~Sample, value.var = "p", fun.aggregate = mean, fill = 0)
+
+
+temp1$p_val = NULL
+for (i in unique(temp1$cell_short)) {
+  for (j in unique(temp1$Disease)) {
+    tryCatch({
+      temp2 = temp1[temp1$cell_short == i & temp1$Disease == j, c("Adjacent", "Tumor")]
+      temp2 <- t(temp2)
+
+      val = chisq.test(temp2)
+      
+      temp1[temp1$cell_short == i & temp1$Disease == j, "p_val"] = val$p.value
+      
+      rm(temp2)
+      rm(val)
+    }, error = function(e) {
+      print(e)
+    })
+  }
+}
+
+temp1 <- unique(temp1[, c("cell_short", "Disease", "p_val")])
+rownames(temp1) <- paste(temp1$cell_short, temp1$Disease)
+
+temp1$pval = sapply(temp1$p_val, function(x) {
+  if (x < 0.001) {
+    return("***")
+  }
+  
+  if (x < 0.01) {
+    return ("**")
+  }
+  
+  if (x < 0.05) {
+    return("*")
+  }
+  return("-")
+})
+
+temp1$pval = paste0(temp1$cell_short, "\n", temp1$pval)
+
+temp$Malignant <- ifelse(temp$Malignant, "Malignant", "Non Malignant")
+temp$pval = temp1[paste(temp$cell_short, temp$Disease), "pval"]
+
+immune = c("Gran", "B","Mast", "DC", "CD4", "CD8", "NK", "Mo", "Tregs")
+
+non_immune = unique(temp$cell_short)
+non_immune = non_immune[!non_immune %in% immune]
+
+temp$cell_short = factor(temp$cell_short, levels = c(sort(non_immune), sort(immune)))
+
+
+or = unique(temp[, c("cell_short", "pval")])
+or = or[order(or$cell_short), ]
+
+temp$pval <- factor(temp$pval, levels = or$pval)
+
+temp$Sample = factor(temp$Sample, levels = c("Tumor", "Adjacent"))
+```
+
+
+```{R fig.height=6, fig.width=12}
+p <- ggplot(temp, aes(x=Malignant, y=n, fill=Sample, label = paste0(p, "%"))) +
+  geom_bar(stat = "identity") +
+  facet_grid(Disease~cell_short, scales = "free") +
+  geom_text(size = 3, position = position_stack(vjust = 0.5)) +
+  scale_y_log10() +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.grid = element_blank()
+  ) +
+  labs(x= "", y="")
+
+
+g <- ggplot_gtable(ggplot_build(p))
+stripr <- which(grepl('strip-t', g$layout$name))
+fills <- c(rep("#90D0E0", length(non_immune)), rep("#E9B0B7", length(immune)))
+k <- 1
+for (i in stripr) {
+  j <- which(grepl('rect', g$grobs[[i]]$grobs[[1]]$childrenOrder))
+  g$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+  k <- k+1
+}
+
+pdf(full.path("11_CNV/barplot_number_of_mag_non_mag.pdf"), width = 12, height = 6)
+grid.draw(g)
+dev.off()
+```
+
+
+```{r fig.height=4, fig.width=12}
+
+for (i in unique(temp$Disease)) {
+  p <- ggplot(temp[temp$Disease == i, ], aes(x=Malignant, y=p, fill=Sample, label = n)) +
+    geom_bar(stat = "identity") +
+    facet_grid(.~pval, scales = "free", space = "free") +
+    geom_text(size = 3, position = position_stack(vjust = 0.5), angle = 90) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      panel.grid = element_blank()
+    ) +
+    labs(x= "", y="", title = i)
+  
+  g <- ggplot_gtable(ggplot_build(p))
+  stripr <- which(grepl('strip-t', g$layout$name))
+  fills <- c(rep("#90D0E0", length(non_immune)), rep("#E9B0B7", length(immune)))
+  k <- 1
+  for (ij in stripr) {
+    j <- which(grepl('rect', g$grobs[[ij]]$grobs[[1]]$childrenOrder))
+    g$grobs[[ij]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+    k <- k+1
+  }
+  
+  pdf(full.path(paste0("11_CNV/barplot_percentage_of_mag_non_mag_", i, ".pdf")), width = 8, height = 4)
+  grid.draw(g)
+  dev.off()
+}
+
+```
+
+
+
+
+## barplot of of sample, sep by maglinant
+```{r}
+temp <- meta %>% 
+  filter(!is.na(Malignant)) %>%
+  group_by(cell_short, Disease, Malignant, Sample) %>%
+  add_tally() %>%
+  dplyr::select(cell_short, Disease, Malignant, Sample, n) %>%
+  unique() %>% 
+  group_by(cell_short, Disease, Sample) %>%
+  mutate(p = round(n / sum(n) * 100), 2) %>%
+  as.data.frame()
+
+
+temp$Malignant <- ifelse(temp$Malignant, "Malignant", "Non Malignant")
+
+temp1 <- dcast(temp, cell_short+Disease+Sample~Malignant, value.var = "p", fun.aggregate = mean, fill = 0)
+
+
+temp1$p_val = NULL
+for (i in unique(temp1$cell_short)) {
+  for (j in unique(temp1$Disease)) {
+    tryCatch({
+      temp2 = temp1[temp1$cell_short == i & temp1$Disease == j, c("Malignant", "Non Malignant")]
+      temp2 <- t(temp2)
+
+      val = chisq.test(temp2)
+      
+      temp1[temp1$cell_short == i & temp1$Disease == j, "p_val"] = val$p.value
+      
+      rm(temp2)
+      rm(val)
+    }, error = function(e) {
+      print(e)
+    })
+  }
+}
+
+temp1 <- unique(temp1[, c("cell_short", "Disease", "p_val")])
+rownames(temp1) <- paste(temp1$cell_short, temp1$Disease)
+
+temp1$pval = sapply(temp1$p_val, function(x) {
+  if (x < 0.001) {
+    return("***")
+  }
+  
+  if (x < 0.01) {
+    return ("**")
+  }
+  
+  if (x < 0.05) {
+    return("*")
+  }
+  return("-")
+})
+
+temp1$pval = paste0(temp1$cell_short, "\n", temp1$pval)
+
+temp$pval = temp1[paste(temp$cell_short, temp$Disease), "pval"]
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mo", "Tregs")
+
+non_immune = unique(temp$cell_short)
+non_immune = non_immune[!non_immune %in% immune]
+
+temp$cell_short = factor(temp$cell_short, levels = c(sort(non_immune), sort(immune)))
+or = unique(temp[, c("cell_short", "pval")])
+or = or[order(or$cell_short), ]
+
+temp$pval <- factor(temp$pval, levels = or$pval)
+
+temp$Sample = factor(temp$Sample, levels = c("Tumor", "Adjacent"))
+```
+
+
+```{R fig.height=6, fig.width=12}
+p <- ggplot(temp, aes(x=Sample, y=n, fill=Malignant, label = paste0(p, "%"))) +
+  geom_bar(stat = "identity") +
+  facet_grid(Disease~cell_short, scales = "free") +
+  geom_text(size = 3, position = position_stack(vjust = 0.5)) +
+  scale_y_log10() +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.grid = element_blank()
+  ) +
+  labs(x= "", y="")
+
+
+g <- ggplot_gtable(ggplot_build(p))
+stripr <- which(grepl('strip-t', g$layout$name))
+fills <- c(rep("#90D0E0", length(non_immune)), rep("#E9B0B7", length(immune)))
+k <- 1
+for (i in stripr) {
+  j <- which(grepl('rect', g$grobs[[i]]$grobs[[1]]$childrenOrder))
+  g$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+  k <- k+1
+}
+
+pdf(full.path("11_CNV/barplot_number_of_tumor_adjacent.pdf"), width = 12, height = 6)
+grid.draw(g)
+dev.off()
+```
+
+
+```{r fig.height=4, fig.width=12}
+for (i in unique(temp$Disease)) {
+  p <- ggplot(temp[temp$Disease == i, ], aes(x=Sample, y=p, fill=Malignant, label = n)) +
+    geom_bar(stat = "identity") +
+    facet_grid(.~pval, scales = "free", space = "free") +
+    geom_text(size = 3, position = position_stack(vjust = 0.5), angle = 90) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      panel.grid = element_blank()
+    ) +
+    labs(x= "", y="", title = i)
+  
+  g <- ggplot_gtable(ggplot_build(p))
+  stripr <- which(grepl('strip-t', g$layout$name))
+  fills <- c(rep("#90D0E0", length(non_immune)), rep("#E9B0B7", length(immune)))
+  k <- 1
+  for (ij in stripr) {
+    j <- which(grepl('rect', g$grobs[[ij]]$grobs[[1]]$childrenOrder))
+    g$grobs[[ij]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+    k <- k+1
+  }
+  
+  pdf(full.path(paste0("11_CNV/barplot_percentage_of_tumor_adjacent_", i, ".pdf")), width = 8, height = 4)
+  grid.draw(g)
+  dev.off()
+}
+```
+
+
+### make bar plots sep by stage
+```{r}
+format_meta_info_for_barplot <- function(meta, stage=NULL, color_by_maglinant=T) {
+  meta <- meta[!is.na(meta$Malignant), ]
+  
+  if (!is.null(stage)) {
+    meta <- meta[meta$Stage == stage, ]
+  }
+  
+  if(!color_by_maglinant) {
+    temp <- meta %>% 
+      group_by(cell_short, Disease, Malignant, Sample, Stage) %>%
+      add_tally() %>%
+      dplyr::select(cell_short, Disease, Malignant, Sample, n, Stage) %>%
+      unique() %>% 
+      group_by(cell_short, Disease, Malignant, Stage) %>%
+      mutate(p = round(n / sum(n) * 100), 2) %>%
+      as.data.frame()
+    
+    
+    temp1 <- dcast(temp, cell_short+Disease+Malignant+Stage~Sample, value.var = "p", fun.aggregate = mean, fill = 0)
+    
+    sel_cols = c("Adjacent", "Tumor")
+    
+    
+    for(i in unique(temp1$cell_short)) {
+      for (j in unique(temp1$Disease)) {
+        temp2 = temp1[temp1$cell_short == i & temp1$Disease == j, ]
+        
+        temp2 = dcast(
+            melt(temp2), 
+            Malignant+variable~Stage, 
+            value.var = "value", 
+            fun.aggregate = mean, 
+            fill = 0
+        )
+        
+        temp2 = na.omit(temp2)
+        
+        temp2 <- temp2[, !colnames(temp2) %in% c("Malignant", "Sample", "variable")]
+        
+        val = chisq.test(temp2)
+        temp1[temp1$cell_short == i & temp1$Disease == j, "p_val"] = val$p.value
+
+      }
+    }
+  } else {
+      temp <- meta %>% 
+        group_by(cell_short, Disease, Malignant, Sample, Stage) %>%
+        add_tally() %>%
+        dplyr::select(cell_short, Disease, Malignant, Sample, n, Stage) %>%
+        unique() %>% 
+        group_by(cell_short, Disease, Sample, Stage) %>%
+        mutate(p = round(n / sum(n) * 100), 2) %>%
+        as.data.frame()
+      
+      
+      temp$Malignant <- ifelse(temp$Malignant, "Malignant", "Non Malignant")
+      
+      temp1 <- dcast(temp, cell_short+Disease+Sample+Stage~Malignant, value.var = "p", fun.aggregate = mean, fill = 0)
+      
+      sel_cols = c("Non Malignant", "Malignant")
+      
+      for(i in unique(temp1$cell_short)) {
+        for (j in unique(temp1$Disease)) {
+          temp2 = temp1[temp1$cell_short == i & temp1$Disease == j, ]
+          
+          temp2 = dcast(
+              melt(temp2), 
+              Sample+variable~Stage, 
+              value.var = "value", 
+              fun.aggregate = mean, 
+              fill = 0
+          )
+          
+          temp2 = na.omit(temp2)
+          
+          temp2 <- temp2[, !colnames(temp2) %in% c("Malignant", "Sample", "variable")]
+          val = chisq.test(temp2)
+          temp1[temp1$cell_short == i & temp1$Disease == j, "p_val"] = val$p.value
+        }
+      }
+  }
+  
+  
+  temp1 <- unique(temp1[, c("cell_short", "Disease", "p_val")])
+  rownames(temp1) <- paste(temp1$cell_short, temp1$Disease)
+  
+  temp1$p_val[is.na(temp1$p_val)] <- 1
+  
+  temp1$pval = sapply(temp1$p_val, function(x) {
+    if (x < 0.001) {
+      return("***")
+    }
+    
+    if (x < 0.01) {
+      return ("**")
+    }
+    
+    if (x < 0.05) {
+      return("*")
+    }
+    return("-")
+  })
+  
+  temp1$pval = paste0(temp1$cell_short, "\n", temp1$pval)
+  
+  if (!color_by_maglinant) {
+      temp$Malignant <- ifelse(temp$Malignant, "Malignant", "Non Malignant")
+  }
+  
+  temp$pval = temp1[paste(temp$cell_short, temp$Disease), "pval"]
+  
+  immune = c("Gran", "B","Mast", "DC", "CD4", "CD8", "NK", "Mo", "Tregs")
+  
+  non_immune = unique(temp$cell_short)
+  non_immune = non_immune[!non_immune %in% immune]
+  
+  temp$cell_short = factor(temp$cell_short, levels = c(sort(non_immune), sort(immune)))
+  
+  
+  or = unique(temp[, c("cell_short", "pval")])
+  or = or[order(or$cell_short), ]
+  
+  temp$pval <- factor(temp$pval, levels = or$pval)
+  
+  temp$Sample = factor(temp$Sample, levels = c("Tumor", "Adjacent"))
+  
+  temp
+}
+
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mφ", "Tregs")
+
+non_immune = unique(meta$cell_short)
+non_immune = non_immune[!non_immune %in% immune]
+```
+
+
+
+```{r fig.height=8, fig.width=15}
+temp = format_meta_info_for_barplot(meta, color_by_maglinant = F)
+temp$Immu <- temp$cell_short %in% immune
+
+
+
+for (i in unique(temp$Disease)) {
+  p1 <- ggplot(temp[temp$Disease == i & !temp$Immu, ], aes(x=Stage, y=p, fill=Sample, label = n)) +
+      geom_bar(stat = "identity") +
+      facet_grid(Malignant~pval, scales = "free", space = "free") +
+      geom_text(size = 3, position = position_stack(vjust = 0.5), angle = 90) +
+      theme_bw(base_family = "Arial Unicode MS") +
+      theme(
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        panel.grid = element_blank()
+      ) +
+      labs(x= "", y="", title = i)
+  
+  p2 <- ggplot(temp[temp$Disease == i & temp$Immu, ], aes(x=Stage, y=p, fill=Sample, label = n)) +
+    geom_bar(stat = "identity") +
+    facet_grid(Malignant~pval, scales = "free", space = "free") +
+    geom_text(size = 3, position = position_stack(vjust = 0.5), angle = 90) +
+    theme_bw(base_family = "Arial Unicode MS") +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      panel.grid = element_blank()
+    ) +
+    labs(x= "", y="", title = i)
+
+  # g <- ggplot_gtable(ggplot_build(p))
+  # stripr <- which(grepl('strip-t', g$layout$name))
+  # 
+  # 
+  # fills = unique(temp[temp$Disease == i, c("cell_short", "Stage")])
+  # fills$Immu <- fills$cell_short %in% immune
+  # fills <- c(rep("#90D0E0", table(fills$Immu)["FALSE"]), rep("#E9B0B7", table(fills$Immu)["TRUE"]))
+  # 
+  # k <- 1
+  # for (ij in stripr) {
+  #   j <- which(grepl('rect', g$grobs[[ij]]$grobs[[1]]$childrenOrder))
+  #   g$grobs[[ij]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+  #   k <- k+1
+  # }
+  
+  pdf(full.path(paste0("11_CNV/barplot_stage/mag_not_mag_", i, ".pdf")), width = 10, height = 10)
+  # grid.draw(g)
+  print(cowplot::plot_grid(p1, p2, ncol=1))
+  dev.off()
+}
+
+
+
+temp = format_meta_info_for_barplot(meta, color_by_maglinant = T)
+temp$Immu <- temp$cell_short %in% immune
+
+for (i in unique(temp$Disease)) {
+  p1 <- ggplot(temp[temp$Disease == i & !temp$Immu, ], aes(x=Stage, y=p, fill=Malignant, label = n)) +
+      geom_bar(stat = "identity") +
+      facet_grid(Sample~pval, scales = "free", space = "free") +
+      geom_text(size = 3, position = position_stack(vjust = 0.5), angle = 90) +
+      theme_bw(base_family = "Arial Unicode MS") +
+      theme(
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        panel.grid = element_blank()
+      ) +
+      labs(x= "", y="", title = i)
+  
+  p2 <- ggplot(temp[temp$Disease == i & temp$Immu, ], aes(x=Stage, y=p, fill=Malignant, label = n)) +
+      geom_bar(stat = "identity") +
+      facet_grid(Sample~pval, scales = "free", space = "free") +
+      geom_text(size = 3, position = position_stack(vjust = 0.5), angle = 90) +
+      theme_bw(base_family = "Arial Unicode MS") +
+      theme(
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        panel.grid = element_blank()
+      ) +
+      labs(x= "", y="", title = i)
+
+  # g <- ggplot_gtable(ggplot_build(p))
+  # stripr <- which(grepl('strip-t', g$layout$name))
+  # fills = unique(temp[temp$Disease == i, c("cell_short", "Stage")])
+  # fills$Immu <- fills$cell_short %in% immune
+  # fills <- c(rep("#90D0E0", table(fills$Immu)["FALSE"]), rep("#E9B0B7", table(fills$Immu)["TRUE"]))
+  # 
+  # k <- 1
+  # for (ij in stripr) {
+  #   j <- which(grepl('rect', g$grobs[[ij]]$grobs[[1]]$childrenOrder))
+  #   g$grobs[[ij]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+  #   k <- k+1
+  # }
+
+  pdf(full.path(paste0("11_CNV/barplot_stage/tumor_adjacent_", i, ".pdf")), width = 10, height = 10)
+  # grid.draw(g)
+  print(cowplot::plot_grid(p1, p2, ncol=1))
+  dev.off()
+}
+```
+
+
+
+```{R fig.height=6, fig.width=12}
+
+dir.create(full.path("11_CNV/barplot_stage"), recursive = T, showWarnings = F)
+
+
+for (s in unique(meta$Stage)) {
+    temp = format_meta_info_for_barplot(meta, s, color_by_maglinant = F)
+
+    for (i in unique(temp$Disease)) {
+        p <- ggplot(temp[temp$Disease == i, ], aes(x=Malignant, y=p, fill=Sample, label = n)) +
+          geom_bar(stat = "identity") +
+          facet_grid(.~pval, scales = "free", space = "free") +
+          geom_text(size = 3, position = position_stack(vjust = 0.5), angle = 90) +
+          theme_bw(base_family = "Arial Unicode MS") +
+          theme(
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+            panel.grid = element_blank()
+          ) +
+          labs(x= "", y="", title = i)
+
+        g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- c(rep("#90D0E0", length(non_immune)), rep("#E9B0B7", length(immune)))
+        k <- 1
+        for (ij in stripr) {
+          j <- which(grepl('rect', g$grobs[[ij]]$grobs[[1]]$childrenOrder))
+          g$grobs[[ij]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+          k <- k+1
+        }
+
+        pdf(full.path(paste0("11_CNV/barplot_stage/mag_not_mag_", i, "_", s, ".pdf")), width = 8, height = 4)
+        grid.draw(g)
+        dev.off()
+
+        rm(g)
+        rm(p)
+    }
+}
+```
+
+
+```{R}
+for (s in unique(meta$Stage)) {
+
+    temp = format_meta_info_for_barplot(meta, s, color_by_maglinant = T)
+
+    for (i in unique(temp$Disease)) {
+        p <- ggplot(temp[temp$Disease == i, ], aes(x=Sample, y=p, fill=Malignant, label = n)) +
+          geom_bar(stat = "identity") +
+          facet_grid(.~pval, scales = "free", space = "free") +
+          geom_text(size = 3, position = position_stack(vjust = 0.5), angle = 90) +
+          theme_bw(base_family = "Arial Unicode MS") +
+          theme(
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+            panel.grid = element_blank()
+          ) +
+          labs(x= "", y="", title = i)
+        
+        g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- c(rep("#90D0E0", length(non_immune)), rep("#E9B0B7", length(immune)))
+        k <- 1
+        for (ij in stripr) {
+          j <- which(grepl('rect', g$grobs[[ij]]$grobs[[1]]$childrenOrder))
+          g$grobs[[ij]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+          k <- k+1
+        }
+
+        pdf(full.path(paste0("11_CNV/barplot_stage/tumor_adjacent_", i, "_", s, ".pdf")), width = 8, height = 4)
+        grid.draw(g)
+        dev.off()
+        
+        rm(g)
+        rm(p)
+    }
+}
+```
+
+
+```{r}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+meta$Disease1 <- str_replace_all(meta$Disease, "_Normal", "")
+meta$cell_short[meta$cell_short == "ATII"] = "AT2"
+meta$cell_short[meta$cell_short == "Mo"] = "Mφ"
+```
+
+
+#### Malignant and Non-malignent by cell types
+```{R fig.height=6, fig.width=12}
+temp = meta[!is.na(meta$Malignant), ] %>%
+  group_by(Malignant, cell_short, Disease1) %>%
+  add_tally() %>%
+  dplyr::select(Malignant, cell_short, Disease1, n) %>%
+  unique() %>%
+  group_by(cell_short, Disease1) %>%
+  mutate(p = n / sum(n) * 100) %>%
+  as.data.frame()
+
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mφ", "Tregs")
+
+non_immune = unique(meta$cell_short)
+non_immune = sort(non_immune[!non_immune %in% immune])
+
+temp$Malignant = ifelse(temp$Malignant, "Malignant", "Non-Malignant")
+
+temp$cell_short = factor(temp$cell_short, levels = c(non_immune, immune))
+
+
+ggplot(temp, aes(x=Disease1, y=p, label=n, fill=Malignant)) +
+  geom_bar(stat = "identity") +
+  geom_text(position = position_stack(vjust = 0.5), size = 5, angle = 90) +
+  facet_grid(.~cell_short, scales = "free", space = "free") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  ) +
+  labs(x="", y="")
+```
+
+
+```{R fig.height=6, fig.width=12}
+temp = meta[!is.na(meta$Malignant) & !str_detect(meta$Disease, "Normal"), ] %>%
+  group_by(Malignant, cell_short, Disease) %>%
+  add_tally() %>%
+  dplyr::select(Malignant, cell_short, Disease, n) %>%
+  unique() %>%
+  group_by(cell_short, Disease) %>%
+  mutate(p = n / sum(n) * 100) %>%
+  as.data.frame()
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mo", "Tregs")
+
+non_immune = unique(meta$cell_short)
+non_immune = sort(non_immune[!non_immune %in% immune])
+
+temp$Malignant = ifelse(temp$Malignant, "Malignant", "Non-Malignant")
+
+
+temp$cell_short = factor(temp$cell_short, levels = c(non_immune, immune))
+
+ggplot(temp, aes(x=Disease, y=p, label=n, fill=Malignant)) +
+  geom_bar(stat = "identity") +
+  geom_text(position = position_stack(vjust = 0.5), size = 5, angle = 90) +
+  facet_grid(.~cell_short, scales = "free", space = "free") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  ) +
+  labs(x="", y="")
+```
+
+
+
+```{R fig.height=6, fig.width=12}
+temp = meta[!is.na(meta$Malignant) & str_detect(meta$Disease, "Normal"), ] %>%
+  group_by(Malignant, cell_short, Disease) %>%
+  add_tally() %>%
+  dplyr::select(Malignant, cell_short, Disease, n) %>%
+  unique() %>%
+  group_by(cell_short, Disease) %>%
+  mutate(p = n / sum(n) * 100) %>%
+  as.data.frame()
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mo", "Tregs")
+
+non_immune = unique(meta$cell_short)
+non_immune = sort(non_immune[!non_immune %in% immune])
+
+temp$Malignant = ifelse(temp$Malignant, "Malignant", "Non-Malignant")
+
+
+temp$cell_short = factor(temp$cell_short, levels = c(non_immune, immune))
+
+ggplot(temp, aes(x=Disease, y=p, label=n, fill=Malignant)) +
+  geom_bar(stat = "identity") +
+  geom_text(position = position_stack(vjust = 0.5), size = 5, angle = 90) +
+  facet_grid(.~cell_short, scales = "free", space = "free") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  ) +
+  labs(x="", y="")
+```
+
+#### Malignant cell by stage
+
+```{R fig.height=6, fig.width=16}
+temp = meta[!is.na(meta$Malignant), ] %>%
+  group_by(Stage, cell_short, Disease1, Malignant) %>%
+  add_tally() %>%
+  dplyr::select(Stage, Malignant, cell_short, Disease1, n) %>%
+  unique() %>%
+  group_by(cell_short, Disease1, Stage) %>%
+  mutate(p = n / sum(n) * 100) %>%
+  as.data.frame()
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mo", "Tregs")
+
+non_immune = unique(meta$cell_short)
+non_immune = sort(non_immune[!non_immune %in% immune])
+
+temp$Malignant = ifelse(temp$Malignant, "Malignant", "Non-Malignant")
+
+
+temp$cell_short = factor(temp$cell_short, levels = c(non_immune, immune))
+
+ggplot(temp, aes(x=Stage, y=p, label=n, fill=Malignant)) +
+  geom_bar(stat = "identity") +
+  geom_text(position = position_stack(vjust = 0.5), size = 5, angle = 90) +
+  facet_grid(Disease1~cell_short, scales = "free", space = "free") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  ) +
+  labs(x="", y="")
+```
+
+
+### Meta by patients
+```{r fig.height=8, fig.width=6}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+meta$Disease1 <- str_replace_all(meta$Disease, "_Normal", "")
+
+
+temp = meta[!is.na(meta$Malignant), ] %>%
+  group_by(PatientID, cell_short, Disease1, Malignant) %>%
+  add_tally() %>%
+  dplyr::select(PatientID, Malignant, cell_short, Disease1, n) %>%
+  unique() %>%
+  as.data.frame()
+
+
+temp$Malignant = ifelse(temp$Malignant, "Malignant", "Non-Malignant")
+temp <- reshape2::dcast(temp, PatientID+cell_short+Disease1~Malignant, value.var = "n", fun.aggregate = mean, fill = 0)
+temp$p = (temp[, "Malignant"] + 1) / (temp[, "Non-Malignant"] + 1)
+
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mφ", "Tregs")
+
+temp$Immu = ifelse(temp$cell_short %in% immune, "Immune", "Stromal")
+temp$Immu = factor(temp$Immu, levels = c("Stromal", "Immune"))
+
+# ggplot(temp, aes(x=cell_short, y=PatientID, color = log10(p + 1), size = log10(Malignant + 1))) +
+#   geom_point() +
+#   facet_grid(.~Immu,  scales = "free", space = "free") +
+#   theme_bw(base_family = "Arial Unicode MS") +
+#   theme(
+#     panel.grid = element_blank(),
+#     axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 12)
+#   ) +
+#   labs(x="", y="", size = "log10(Fold Change)", color = "log10(Num. of cells + 1)")
+
+
+temp1 = dcast(temp, PatientID+Disease1~cell_short, value.var = "p", fun.aggregate = mean)
+rownames(temp1) <- temp1$PatientID
+
+cairo_pdf(full.path("01_first_plots/Ratio_malignant_non.pdf"), width = 6, height = 8)
+Heatmap(
+  log10(temp1[, !colnames(temp1) %in% c("PatientID", "Disease1")] + 1), 
+  name = "log10(%)",
+  col = colorRamp2(c(-2, 0, 2), c("blue", "white", "red")),
+  show_row_names = T, 
+  cluster_rows = F, cluster_columns = F,
+  row_split = temp1$Disease1, column_split = factor(
+    ifelse(colnames(temp1)[!colnames(temp1) %in% c("PatientID", "Disease1")] %in% immune, "Immune", "Stromal"),
+    levels = c("Stromal", "Immune")
+  ),
+  border = T,
+  row_title_gp = gpar(fontfamily = "Arial Unicode MS", fontsize = 15),
+  column_title_gp = gpar(fontfamily = "Arial Unicode MS", fontsize = 15),
+  heatmap_legend_param = list(
+      labels_gp = gpar(fontfamily = "Arial Unicode MS"),
+      title_gp = gpar(fontfamily = "Arial Unicode MS")
+  )
+)
+dev.off()
+```
+
+
+
+
+```{r fig.height=4, fig.width=8}
+
+temp$Disease1 <- factor(temp$Disease1, levels = c("LUAD", "LUSC"))
+
+# p1 <- ggviolin(
+#   temp[!temp$cell_short %in% immune, ], x="Disease1", y="p", fill="Disease1",
+#   add = "boxplot", add.params = list(fill = "white"),
+#   ggtheme = theme_pubr(base_family = "Arial Unicode MS"),
+#   palette = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+# ) + 
+#   facet_grid(.~cell_short, scales = "free", space = "free") +
+#   stat_compare_means(comparisons = list(c("LUAD", "LUSC")), size = 5) +
+#   labs(x = "", y="", fill="")
+# 
+# p2 <- ggviolin(
+#   temp[temp$cell_short %in% immune, ], x="Disease1", y="p", fill="Disease1",
+#   add = "boxplot", add.params = list(fill = "white"),
+#   palette = c("LUAD" = "#0084D1", "LUSC"="#A0C807"),
+#   ggtheme = theme_pubr(base_family = "Arial Unicode MS")
+# ) + 
+#   facet_grid(.~cell_short, scales = "free", space = "free") +
+#   stat_compare_means(comparisons = list(c("LUAD", "LUSC")), size = 5) +
+#   theme(
+#     legend.position = "none",
+#     strip.text = element_text(size = 15)
+#   ) +
+#   labs(x = "", y="")
+# 
+# 
+# cowplot::plot_grid(p1, p2, ncol = 1, rel_heights = c(1.2, 1))
+
+temp_cell = temp %>%
+  group_by(cell_short) %>%
+  mutate(val = mean(p)) %>%
+  dplyr::select(cell_short, val) %>%
+  unique() %>%
+  as.data.frame()
+
+
+temp$cell_short = factor(
+  temp$cell_short,
+  levels = temp_cell$cell_short[order(temp_cell$val, decreasing = T)]
+)
+
+
+p <- ggboxplot(
+  temp, x="cell_short", fill="Disease1", y="p",
+  ggtheme = theme_pubr(base_family = "Arial Unicode MS"),
+  palette = c("LUAD" = "#0084D1", "LUSC"="#A0C807")
+) +
+  theme(
+    legend.position = "none", 
+    axis.text.y = element_text(size = 12),
+    axis.text.x = element_text(size = 12, angle = 45, vjust = 0.5, hjust = 0.5),
+  ) +
+  labs(x="", y="log10(Malignant / Non Malignant)") +
+  ylim(0, 50)
+
+
+ggsave(
+  filename = full.path("01_first_plots/Ratio_boxplot_malignant_non.pdf"),
+  plot = p, width = 8, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r fig.height=4, fig.width=8}
+meta <- readRDS(full.path("11_CNV/meta.rds"))
+
+meta$Disease1 <- str_replace_all(meta$Disease, "_Normal", "")
+
+temp = meta[!is.na(meta$Malignant), ] %>%
+  group_by(PatientID, cell_short, Disease1, Malignant) %>%
+  add_tally() %>%
+  dplyr::select(PatientID, Malignant, cell_short, Disease1, n) %>%
+  unique() %>%
+  as.data.frame()
+
+
+temp$Malignant = ifelse(temp$Malignant, "Malignant", "Non-Malignant")
+temp <- reshape2::dcast(temp, PatientID+cell_short+Disease1~Malignant, value.var = "n", fun.aggregate = mean, fill = 0)
+temp$p = (temp[, "Malignant"] + 1) / (temp[, "Non-Malignant"] + 1)
+
+
+immune = c( "Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mφ", "Tregs")
+
+temp$Immu = ifelse(temp$cell_short %in% immune, "Immune", "Stromal")
+temp$Immu = factor(temp$Immu, levels = c("Stromal", "Immune"))
+temp$cell_short = as.factor(temp$cell_short)
+
+# dat = my_segment(
+#   data = temp,
+#   measurevar="p",
+#   groupvars=c("cell_short", "Disease1"),
+#   splitvar = "Disease1",
+#   xvar = "cell_short",
+#   facet = "Immu",
+#   do.return = T
+# )
+
+temp$Disease1 = factor(temp$Disease1)
+
+## T Test
+for (c in unique(temp$cell_short)) {
+  x = temp$p[temp$cell_short == c & temp$Disease1 == "LUAD"]
+  y = temp$p[temp$cell_short == c & temp$Disease1 == "LUSC"]
+  # val  = c()
+  # for (i in 1:10) {
+  #   set.seed(i)
+  #   common = min(length(x), length(y))
+  #   p = t.test(x[sample(1:length(x), common)], y[sample(1:length(y), common)], correct = F)
+  #   val  = c(val, p$p.value)
+  # }
+  # 
+  # print(mean(val))
+  
+  p = t.test(x, y)
+  print(paste(c, p$p.value))
+}
+
+
+## Prop test
+val  = c()
+for (c in unique(temp$cell_short)) {
+  x = temp$Malignant[temp$cell_short == c & temp$Disease1 == "LUAD"]
+  y = temp$`Non-Malignant`[temp$cell_short == c & temp$Disease1 == "LUAD"]
+  
+  x1 = temp$Malignant[temp$cell_short == c & temp$Disease1 == "LUSC"]
+  y1 = temp$`Non-Malignant`[temp$cell_short == c & temp$Disease1 == "LUSC"]
+  
+  # val  = c()
+  # for (i in 1:10) {
+  #   set.seed(i)
+  #   common = min(length(x), length(y))
+  #   p = t.test(x[sample(1:length(x), common)], y[sample(1:length(y), common)], correct = F)
+  #   val  = c(val, p$p.value)
+  # }
+  # 
+  # print(mean(val))
+  
+  p = prop.test(c(x, x1), c(x + y,  x1 + y1))
+  val[[c]] = p$p.value
+}
+val = as.data.frame(val)
+val$x = rownames(val)
+val$y = 1.8
+val$Immu = ifelse(val$x %in% immune, "Immune", "Stromal")
+val$Immu = factor(val$Immu, levels = c("Stromal", "Immune"))
+
+
+val$star <- sapply(val$val, function(x) {
+    if (x < 0.0001) {
+      return("****")
+    }
+    
+    if (x < 0.001) {
+      return("***")
+    }
+  
+    if (x < 0.01) {
+      return("**")
+    }
+  
+    if (x < 0.05) {
+      return("*")
+    }
+  
+    return("-")
+})
+
+
+
+temp$p1 = log10(temp$p + 1)
+p <- ggplot(data=temp, aes(x=cell_short, y=p1)) + 
+  geom_text(
+    data = val, 
+    aes(x=x, y=y, label = star),
+    size = 4
+  ) +
+  geom_split_violin(aes(fill=Disease1), trim=FALSE,color="white") + #绘制分半的小提琴图
+  my_segment(
+    data = temp,
+    measurevar="p1",
+    groupvars=c("cell_short", "Disease1", "Immu"),
+    splitvar = "Disease1",
+    xvar = "cell_short",
+    facet = "Immu",
+    mean_width = 0.3,
+    quarter_width = 0.15
+  ) +
+  facet_grid(.~Immu, scales = "free", space = "free") +
+  scale_fill_manual(values = c("LUAD" = "#0084D1", "LUSC"="#A0C807"))+ #设置填充的颜色 c("#56B4E9", "#E69F00")
+  ylim(-0.2, 1.8) +
+  theme_bw(base_family = "Arial Unicode MS") +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 15),
+    strip.text = element_text(size = 15),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)
+  ) +
+  labs(fill = "", x = "", y = "log10(Malignant / Non Malignant)")
+
+
+p
+
+ggsave(
+  filename = full.path("01_first_plots/Ratio_vln_malignant_non.pdf"),
+  plot = p, width = 8, height = 4, device = cairo_pdf
+)
+```
+
+
+```{r}
+
+my_segment <- function(
+    data = NULL, 
+    measurevar, ## which var to summary
+    groupvars = NULL, ## which vars to group when summary
+    splitvar = NULL, ## which var to split in violin
+    xvar = NULL, ## x axis
+    Color, ## color for Median, Mean, 1st/3rd quarter, default c("blue", "red", "black")
+    na.rm = FALSE,
+    .drop = TRUE
+    ) {
+  library(plyr)
+  
+  if (missing(Color)) {
+    Color <- c("blue", "red", "black")
+  } else if (!is.vector(Color) | length(Color) < 3) {
+    stop("'Color' error!")
+  }
+  
+  if (length(levels(data[, splitvar])) != 2) {
+    stop("levels of 'splitvar' for split violin should be 2!")
+  }
+  
+  lvls <- lapply(data[, groupvars], levels)
+  
+  vars <-
+    syms(
+      c(groupvars, measurevar, "Median", "First_quartile", "Third_quartile")
+    )
+  
+  # New version of length which can handle NA's: if na.rm==T, don't count them
+  length2 <- function(x, na.rm=FALSE) {
+    if (na.rm) {
+      sum(!is.na(x))
+    } else {
+      length(x)
+    }
+  }
+  
+  my_gather <- 
+    function(mydata, key.col, val.col, gather.cols) {
+      new.data <- 
+        tidyr::gather_(
+          data = mydata,
+          key_col = key.col,
+          value_col = val.col,
+          gather_cols = colnames(mydata)[gather.cols])
+      return(new.data)
+      }
+  
+  # This does the summary. For each group's data frame, return a vector with
+  # N, mean, and sd
+  dat <- 
+    ddply(
+      data, 
+      groupvars, 
+      .drop = .drop,
+      .fun = function(xx, col) {
+         quart <- unname(quantile(xx[[col]], c(0.25, 0.5, 0.75), na.rm = na.rm))
+         res <- c(
+           Mean = mean(xx[[col]], na.rm=na.rm),
+           Median = quart[2],
+           First_quartile = quart[1],
+           Third_quartile = quart[3]
+         )
+      },
+      measurevar
+  )
+  
+  # Rename the "mean" column    
+  dat <- plyr::rename(dat, c("Mean" = measurevar))
+
+  dat <- 
+    dat %>% 
+    my_gather("Type", "Height", (length(groupvars)+1):length(vars)) %>%
+    plyr::dlply(splitvar)
+  
+  dat1 <- dat[[1]]
+  dat1$x_s <- match(dat1[, xvar], lvls[[xvar]]) - ifelse(dat1$Type %in% c(measurevar, "Median"),  0.4, 0.25)
+  dat1$x_e <- match(dat1[, xvar], lvls[[xvar]])
+  dat1$cols <- ifelse(dat1$Type %in% c(measurevar, "Median"), Color[1], Color[3])
+  dat1$cols[dat1$Type == measurevar] <- Color[2]
+  
+  dat2 <- dat[[2]]
+  dat2$x_s <- match(dat2[, xvar], lvls[[xvar]])
+  dat2$x_e <- match(dat2[, xvar], lvls[[xvar]]) + ifelse(dat2$Type %in% c(measurevar, "Median"),  0.4, 0.25)
+  dat2$cols <- ifelse(dat2$Type %in% c(measurevar, "Median"), Color[1], Color[3])
+  dat2$cols[dat2$Type == measurevar] <- Color[2]
+  
+  dat <- rbind(dat1, dat2)
+  dat$Type[dat$Type %in% c("First_quartile", "Third_quartile")] <- "1st/3rd Quarter"
+  dat$Type[dat$Type == measurevar] <- "Mean"
+  dat$Type <- factor(dat$Type, levels = c("Median", "Mean", "1st/3rd Quarter"))
+
+  # p <- list(
+  #   geom_segment(
+  #     data = dat,
+  #     aes(
+  #       x = x_s,
+  #       xend = x_e,
+  #       y = Height,
+  #       yend = Height,
+  #       color = Type)
+  #     ),
+  #   scale_color_manual(values = Color)
+  #   )
+  # 
+  # return(p)
+  
+  dat
+}
+
+
+
+test = my_segment(
+    data = temp,
+    measurevar="p",
+    groupvars=c("cell_short", "Disease1", "Immu"),
+    splitvar = "Disease1",
+    xvar = "cell_short"
+)
+```
+
+
+### Stage bar plots
+
+```{r}
+axis_size = 18
+axis_title_size = 20
+title_size = 25
+legend.position="right"
+legend_text_size = 15
+legend_title_size = 20
+
+
+my_theme <- theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    plot.title = element_text(hjust = 0.5, face="bold", size = title_size),
+    legend.position = legend.position,
+    axis.text = element_text(size = axis_size),
+    axis.title = element_text(size = axis_title_size),
+    legend.text = element_text(size = legend_text_size),
+    legend.title = element_text(size = legend_title_size),
+    panel.grid = element_blank(),
+    strip.text = element_text(size = 15)
+)
+```
+
+
+
+```{r}
+bulk <- read.xlsx(paste0(root.dir, "09_bulk/bulk_meta.xlsx"), rowNames=T)
+bulk$SampleID = rownames(bulk)
+bulk <- bulk[, c("Disease", "Stage")]
+bulk <- bulk[bulk$Disease != "BSPN", ]
+bulk$cell_short <- bulk$Disease
+bulk$Source = "Bulk"
+
+meta <- readRDS(paste0(root.dir, "/11_CNV/meta.rds"))
+meta$Disease <- str_replace_all(meta$Disease, "_Normal", "")
+meta <- meta[str_detect(meta$Disease, "LU(AD|SC)"), c("Disease", "Stage", "cell_short")]
+meta$Source <- "Single cell"
+
+meta <- rbind(bulk, meta)
+```
+
+
+```{r}
+temp <- meta %>%
+  group_by(Disease, Stage, Source, cell_short) %>%
+  add_tally() %>%
+  dplyr::select(Disease, Source, cell_short, Stage, n) %>%
+  unique() %>%
+  group_by(Disease, Source, cell_short) %>%
+  mutate(p = n / sum(n)) %>%
+  as.data.frame()
+```
+
+
+```{R fig.height=4, fig.width=4}
+p1 <- ggplot(temp[temp$Source == "Bulk", ], aes(x=cell_short, y=p, fill=Stage)) +
+  geom_bar(stat = "identity") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  my_theme +
+  labs(title = "Bulk", x="", y="") +
+  theme(legend.position = "none")
+
+print(p1)
+```
+
+
+```{r fig.height=4, fig.width=10}
+immune = c("Gran", "B","Mast", "DC",
+    "CD4", "CD8", "NK", "Mφ", "Tregs")
+
+immune = immune[immune %in% temp$cell_short]
+non_immune = unique(temp$cell_short)[!unique(temp$cell_short) %in% c(immune, "LUAD", "LUSC")]
+
+cells = c(sort(non_immune), sort(immune), "LUAD", "LUSC")
+
+temp$cell_short = factor(temp$cell_short, levels = cells)
+
+p2 <- ggplot(temp[temp$Source == "Single cell", ], aes(x=cell_short, y=p, fill=Stage)) +
+  geom_bar(stat = "identity") +
+  facet_grid(.~Disease, scales = "free", space = "free") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  my_theme +
+  labs(title = "Single cell", x="", y="")
+
+print(p2)
+```
+
+
+```{R fig.height=4, fig.width=12}
+temp$Disease[temp$Source == "Bulk"] = "Bulk"
+
+temp$Stage <- factor(temp$Stage, levels = c("IV", "III", "II", "I"))
+
+
+a = sapply(cells, function(x) {
+    cols = c(
+      "Immune"="#E9B0B7", "Stromal"="#90D0E0",
+      "LUAD" = "#0084D1", "LUSC"="#A0C807"
+    )
+    
+    if (x %in% c("LUAD", "LUSC")) {
+      return(cols[[x]])
+    } else if (x %in% immune) {
+      return(cols[["Immune"]])
+    } 
+    return(cols[["Stromal"]])
+})
+
+# a = list(
+#   c("LUAD" = "#0084D1", "LUSC"="#A0C807"),
+#   a, a
+# )
+
+
+p2 <- ggplot(temp, aes(x=cell_short, y=p, fill=Stage)) +
+  geom_bar(stat = "identity") +
+  facet_grid(.~Disease, scales = "free", space = "free") +
+  theme_bw(base_family = "Arial Unicode MS") +
+  my_theme +
+  labs(title = "", x="", y="") +
+  scale_fill_manual(values = c(
+    "I"="#65A9A3", "II"="#4A933E", 
+    "III"="#EC7A21", "IV"="#D73F47"
+  )) +
+  theme(axis.text.x = element_text(size = axis_size, colour = a))
+
+
+print(p2)
+
+ggsave(
+  filename = paste0(root.dir, "02_rds/stage_barplot.pdf"),
+  plot = p2, device = cairo_pdf,
+  width = 12, height = 4
+)
+```
+
+
+###
+
+```{R}
+bulk <- read.xlsx(paste0(root.dir, "09_bulk/bulk_meta.xlsx"), rowNames=T)
+bulk$SampleID = rownames(bulk)
+
+meta <- readRDS(paste0(root.dir, "11_CNV/meta.rds"))
+meta$cell_short[meta$cell_short == "Epi"] = "AT1"
+```
+
+
+
+```{r}
+temp = bulk[bulk$Disease != "BSPN", c("Disease", "Disease", "Stage")]
+colnames(temp) <- c("ident", "Disease", "Stage")
+
+temp$Disease = "Bulk"
+
+temp1 = meta[str_detect(meta$Disease, "LU(AD|SC)"), c("cell_short", "Disease", "Stage")]
+colnames(temp1) <- c("ident", "Disease", "Stage")
+temp1$Disease = str_replace_all(as.character(temp1$Disease), "_Normal", "")
+
+temp = rbind(temp, temp1)
+
+temp <- temp %>%
+  group_by(ident, Disease, Stage) %>%
+  add_tally() %>%
+  unique() %>%
+  group_by(ident, Disease) %>%
+  mutate(p = n / sum(n)) %>%
+  as.data.frame()
+```
+
+
+```{r fig.height=4, fig.width=9}
+temp$Stage = factor(as.character(temp$Stage), levels = rev(c("I", "II", "III", "IV")))
+
+immu = c(
+    "Gran",
+    "B",
+    "Mast",
+    "DC",
+    "CD4",
+    "CD8",
+    "NK",
+    "Mφ",
+    "Tregs"
+)
+
+non_immu = unique(temp$ident)
+non_immu = non_immu[!non_immu %in% immu]
+
+temp$ident <- factor(as.character(temp$ident), levels = c(sort(non_immu), sort(immu)))
+
+col = c(rep("#90D0E0", length(non_immu) - 2), rep("#E9B0B7", length(immu)))
+
+
+p <- ggplot(temp, aes(x=ident, y=p, fill=Stage)) +
+  geom_bar(stat = "identity") +
+  facet_grid(.~Disease, space = "free", scale = "free") +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 15),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, colour = col),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 15),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15)
+  ) +
+  labs(x="", y="Stage proportion (%)") +
+  scale_fill_manual(values =  c(
+    "I"="#65A9A3", 
+    "II"="#4A933E", 
+    "III"="#EC7A21", 
+    "IV"="#D73F47", 
+    "LUAD"="#FECC1B", 
+    "LUSC"="#778793",
+    " "="white"
+))
+
+ggsave(
+  filename = paste0(root.dir, "/02_rds/stage_barplot.pdf"),
+  plot = p, width = 9, height = 4, device = cairo_pdf
+)
+```
+
+
+#### by early advanced
+
+```{r}
+temp = bulk[bulk$Disease != "BSPN", c("Disease", "Disease", "Stage")]
+colnames(temp) <- c("ident", "Disease", "Stage")
+
+temp$Disease = "Bulk"
+
+temp1 = meta[str_detect(meta$Disease, "LU(AD|SC)"), c("cell_short", "Disease", "Stage")]
+colnames(temp1) <- c("ident", "Disease", "Stage")
+temp1$Disease = str_replace_all(as.character(temp1$Disease), "_Normal", "")
+
+temp = rbind(temp, temp1)
+
+temp$Stage[temp$Stage %in% c("I", "II")] = "Early"
+temp$Stage[temp$Stage %in% c("III", "IV")] = "Advanced"
+
+temp <- temp %>%
+  group_by(ident, Disease, Stage) %>%
+  add_tally() %>%
+  unique() %>%
+  group_by(ident, Disease) %>%
+  mutate(p = n / sum(n)) %>%
+  as.data.frame()
+```
+
+
+```{r fig.height=4, fig.width=9}
+temp$Stage = factor(as.character(temp$Stage), levels = c("Advanced", "Early"))
+
+immu = c(
+    "Gran",
+    "B",
+    "Mast",
+    "DC",
+    "CD4",
+    "CD8",
+    "NK",
+    "Mφ",
+    "Tregs"
+)
+
+non_immu = unique(temp$ident)
+non_immu = non_immu[!non_immu %in% immu]
+
+temp$ident <- factor(as.character(temp$ident), levels = c(sort(non_immu), sort(immu)))
+
+col = c(rep("#90D0E0", length(non_immu) - 2), rep("#E9B0B7", length(immu)))
+
+
+p <- ggplot(temp, aes(x=ident, y=p, fill=Stage)) +
+  geom_bar(stat = "identity") +
+  facet_grid(.~Disease, space = "free", scale = "free") +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 15),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, colour = col),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 15),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15)
+  ) +
+  labs(x="", y="Stage proportion (%)") +
+  scale_fill_manual(values =  c(
+    "Advanced"="#FF0000", 
+    "Early"="#00A08A"
+))
+
+p
+ggsave(
+  filename = paste0(root.dir, "/02_rds/stage_barplot_early_advanced.pdf"),
+  plot = p, width = 9, height = 4, device = cairo_pdf
+)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

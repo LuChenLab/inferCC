@@ -1,0 +1,394 @@
+---
+title: "pseudotime_TF"
+author: "Zhang Yiming"
+date: "2020/3/10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+root.dir = "LungCancer10x/"
+full_path <- function(...) {
+    paste(root.dir, ..., sep = "/")
+}
+```
+
+
+```{r include=FALSE}
+library(stringr)
+library(doMC)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(URD)
+library(monocle)
+library(monocle3)
+library(gam)
+library(ComplexHeatmap)
+library(circlize)
+library(ggrepel)
+```
+
+
+```{R}
+tf <- read.csv(full_path("09_bulk/RNA_seq/DEGs/Res/TF.csv"), row.names = 1, stringsAsFactors = F)
+```
+
+
+```{r}
+
+### function to convert seurat obj to monocle3 obj
+convert_seurat_monocle <- function(
+    obj, 
+    choosen=NULL, 
+    n.pcs = 10, 
+    norm_method = 'log', 
+    relative_expr = TRUE,
+    reduced_element = 1
+) {
+    
+    if (is.null(choosen)) {
+        choosen = colnames(obj@raw.data)
+    }
+    
+    feature_info = data.frame(
+        row.names=rownames(obj@raw.data[,choosen]), 
+        gene_short_name=rownames(obj@raw.data[,choosen])
+    )
+    
+    ### create monocle object
+    cds <- new_cell_data_set(
+        as.matrix(obj@raw.data[,choosen]),
+        cell_metadata = obj@meta.data[choosen,],
+        gene_metadata = feature_info
+    )
+    
+    print("normalize")
+    # cds <- estimateSizeFactors(cds)
+    # cds <- estimateDispersions(cds)
+    
+    cds <- preprocess_cds(
+        cds, 
+        num_dim = n.pcs,
+        relative_expr = relative_expr,
+        norm_method = 'log', 
+        verbse=T,
+        residualModelFormulaStr = paste0('~',reduced_element)
+    )
+    
+    
+    ### replace pca with harmony
+    # harmony_mat <- 
+    cds@reducedDims$PCA <- obj@dr$harmony@cell.embeddings[rownames(cds@reducedDims$PCA), 1:n.pcs]
+    
+    ### dimesion reduction
+    cds <- reduce_dimension(cds, reduction_method = 'UMAP')
+    
+    
+    ### replace umap with Seurat umap results
+    # reducedDimA(cds)  <- t(obj@dr$umap@cell.embeddings[choosen, ]) -> reducedDims(cds)
+    print("set umap")
+    cds@reducedDims$UMAP <- obj@dr$umap@cell.embeddings[rownames(cds@reducedDims$UMAP), ]
+    
+    
+    print("cluster")
+    cds <- cluster_cells(cds)
+    # cds <- partitionCells(cds)
+    cds <- learn_graph(cds)
+    
+    
+    # cds <- clusterCells(cds,verbose = F,
+    #                     method = cluster_method,
+    #                     res = 1,
+    #                     louvain_iter = 1,
+    #                     cores = num_cores)
+    
+    
+    cds
+}
+
+```
+
+
+## ATII LUAD
+
+```{r pressure, echo=FALSE}
+urdobj <- readRDS(full_path("03_each_cells/Batch/ATII/LUAD/URD.rds"))
+obj <- readRDS(full_path("03_each_cells/Batch/ATII/LUAD/seurat.rds"))
+```
+
+
+```{r}
+cds = newCellDataSet(
+  cellData = as.matrix(urdobj@count.data),
+  phenoData = NULL,
+  featureData = NULL
+)
+
+pData(cds)$Cluster    = as.vector(urdobj@meta$Stage)
+cds                   = estimateSizeFactors(cds)
+pData(cds)$Pseudotime = urdobj@pseudotime[as.character(colnames(urdobj@count.data)), "pseudotime"]
+
+var.genes = differentialGeneTest(cds, fullModelFormulaStr = "~sm.ns(Pseudotime)")
+
+unique(var.genes$status)
+```
+
+
+```{R}
+feature_info = data.frame(
+    row.names=rownames(urdobj@count.data), 
+    gene_short_name=rownames(urdobj@count.data)
+)
+
+urdobj@meta$pseudotime <- urdobj@pseudotime[rownames(urdobj@meta), "pseudotime"]
+
+### create monocle object
+cds <- new_cell_data_set(
+    as.matrix(urdobj@count.data),
+    cell_metadata = urdobj@meta,
+    gene_metadata = feature_info
+)
+
+
+gene_fits <- fit_models(cds, model_formula_str = "~pseudotime+PatientID")
+fit_coefs <- coefficient_table(gene_fits)
+
+
+emb_time_terms <- fit_coefs %>% 
+  filter(term == "pseudotime") %>% 
+  filter (q_value < 0.05) %>%
+  dplyr::select(gene_short_name, term, q_value, estimate)
+```
+
+
+
+```{r}
+# fit a GAM with a loess term for pseudotime
+pt = urdobj@pseudotime[colnames(urdobj@count.data), "pseudotime"]
+Y = as.matrix(urdobj@count.data)
+Y = Y[intersect(rownames(Y), tf$SYMBOL), ]
+
+registerDoMC(10)
+gam.pval <- foreach(i=1:nrow(Y), .combine = "rbind") %dopar% {
+    z = Y[i, ]
+    d <- data.frame(z=z, t=pt)
+    suppressWarnings({
+      tmp <- suppressWarnings(gam(z ~ lo(pt), data=d))
+    })
+    p <- summary(tmp)[3][[1]][2,3]
+    p = as.data.frame(p)
+    colnames(p) <- "gam.pval"
+    p$gene = rownames(p)
+    p
+}
+
+
+gam.pval <- gam.pval[order(gam.pval$gam.pval, decreasing = T), ]
+```
+
+
+```{R}
+col_fun = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+Y = as.matrix(urdobj@count.data)[tf$SYMBOL[tf$SYMBOL %in% emb_time_terms$gene_short_name], ]
+Y = t(scale(t(Y)))
+pt = as.data.frame(urdobj@pseudotime)
+pt <- pt[order(pt$pseudotime), , drop = F]
+
+Y = Y[, rownames(pt)]
+
+
+### set colors
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+patient_colors = gg_color_hue(45)
+names(patient_colors) <- c(
+    sapply(1:23, function(x){sprintf("PA%02d", x)}),
+    sapply(1:12, function(x){sprintf("PS%02d", x)}),
+    sapply(1:10, function(x){sprintf("DL%01d", x)})
+)
+
+
+ta = HeatmapAnnotation(
+    PatientID = urdobj@meta[colnames(Y), "PatientID"],
+    col = list(
+        PatientID=patient_colors
+    )
+)
+
+Heatmap(
+    Y, name = "Expr",
+    col = col_fun,
+    border = T,
+    cluster_rows = T, cluster_columns = F, 
+    show_row_names = F, show_column_names = F,
+    top_annotation = ta
+)
+```
+
+
+```{R}
+col_fun = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+Y = as.matrix(urdobj@count.data)[emb_time_terms$gene_short_name, ]
+Y = t(scale(t(Y)))
+pt = as.data.frame(urdobj@pseudotime)
+pt <- pt[order(pt$pseudotime), , drop = F]
+
+Y = Y[, rownames(pt)]
+
+
+### set colors
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+patient_colors = gg_color_hue(45)
+names(patient_colors) <- c(
+    sapply(1:23, function(x){sprintf("PA%02d", x)}),
+    sapply(1:12, function(x){sprintf("PS%02d", x)}),
+    sapply(1:10, function(x){sprintf("DL%01d", x)})
+)
+
+
+ta = HeatmapAnnotation(
+    PatientID = urdobj@meta[colnames(Y), "PatientID"],
+    col = list(
+        PatientID=patient_colors
+    )
+)
+
+Heatmap(
+    Y, name = "Expr",
+    col = col_fun,
+    border = T,
+    cluster_rows = T, cluster_columns = F, 
+    show_row_names = F, show_column_names = F,
+    top_annotation = ta
+)
+```
+
+
+
+```{R}
+col_fun = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+Y = as.matrix(urdobj@count.data)[emb_time_terms$gene_short_name[order(emb_time_terms$estimate)], ]
+Y = t(scale(t(Y)))
+pt = as.data.frame(urdobj@pseudotime)
+pt <- pt[order(pt$pseudotime), , drop = F]
+
+Y = Y[, rownames(pt)]
+
+
+### set colors
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+patient_colors = gg_color_hue(45)
+names(patient_colors) <- c(
+    sapply(1:23, function(x){sprintf("PA%02d", x)}),
+    sapply(1:12, function(x){sprintf("PS%02d", x)}),
+    sapply(1:10, function(x){sprintf("DL%01d", x)})
+)
+
+
+ta = HeatmapAnnotation(
+    PatientID = urdobj@meta[colnames(Y), "PatientID"],
+    col = list(
+        PatientID=patient_colors
+    )
+)
+
+Heatmap(
+    Y, name = "Expr",
+    col = col_fun,
+    border = T,
+    cluster_rows = F, cluster_columns = F, 
+    show_row_names = F, show_column_names = F,
+    top_annotation = ta
+)
+```
+
+## Basal LUSC
+
+```{r pressure, echo=FALSE}
+urdobj <- readRDS(full_path("03_each_cells/Batch/Basal/LUSC/URD.rds"))
+```
+
+```{R}
+feature_info = data.frame(
+    row.names=rownames(urdobj@count.data), 
+    gene_short_name=rownames(urdobj@count.data)
+)
+
+urdobj@meta$pseudotime <- urdobj@pseudotime[rownames(urdobj@meta), "pseudotime"]
+
+### create monocle object
+cds <- new_cell_data_set(
+    as.matrix(urdobj@count.data),
+    cell_metadata = urdobj@meta,
+    gene_metadata = feature_info
+)
+
+
+gene_fits <- fit_models(cds, model_formula_str = "~pseudotime+PatientID")
+fit_coefs <- coefficient_table(gene_fits)
+
+
+emb_time_terms <- fit_coefs %>% 
+  filter(term == "pseudotime") %>% 
+  filter (q_value < 0.05) %>%
+  dplyr::select(gene_short_name, term, q_value, estimate)
+```
+
+
+```{R}
+col_fun = colorRamp2(c(-2, 0, 2), c("blue", "white", "red"))
+
+Y = as.matrix(urdobj@count.data)[emb_time_terms$gene_short_name[order(emb_time_terms$estimate)], ]
+Y = t(scale(t(Y)))
+pt = as.data.frame(urdobj@pseudotime)
+pt <- pt[order(pt$pseudotime), , drop = F]
+
+Y = Y[, rownames(pt)]
+
+
+### set colors
+gg_color_hue <- function(n) {
+    hues = seq(15, 375, length = n + 1)
+    hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+patient_colors = gg_color_hue(45)
+names(patient_colors) <- c(
+    sapply(1:23, function(x){sprintf("PA%02d", x)}),
+    sapply(1:12, function(x){sprintf("PS%02d", x)}),
+    sapply(1:10, function(x){sprintf("DL%01d", x)})
+)
+
+
+ta = HeatmapAnnotation(
+    PatientID = urdobj@meta[colnames(Y), "PatientID"],
+    col = list(
+        PatientID=patient_colors
+    )
+)
+
+Heatmap(
+    Y, name = "Expr",
+    col = col_fun,
+    border = T,
+    cluster_rows = F, cluster_columns = F, 
+    show_row_names = F, show_column_names = F,
+    top_annotation = ta
+)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
